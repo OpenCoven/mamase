@@ -35,7 +35,10 @@ const newContext = async (options = {}) => {
   return context;
 };
 const capture = async (page, name) => {
-  if (screenshots) await page.screenshot({ path: join(screenshots, `${name}.png`), fullPage: true });
+  if (screenshots) {
+    await page.locator("#toast").waitFor({ state: "hidden" });
+    await page.screenshot({ path: join(screenshots, `${name}.png`), fullPage: true, animations: "disabled" });
+  }
 };
 const watch = (page) => {
   currentPage = page;
@@ -66,7 +69,7 @@ const bounds = async (page, home = false) => {
     actions: document.querySelector(".home-copy .actions")?.getBoundingClientRect().toJSON(),
     kicker: document.querySelector(".home-kicker")?.getBoundingClientRect().toJSON(),
     panel: document.querySelector(".home-panel")?.getBoundingClientRect().toJSON(),
-    lastRun: document.querySelector(".recent-run:last-child")?.getBoundingClientRect().toJSON(),
+    lastRun: [...document.querySelectorAll(".recent-run")].filter((item) => item.getClientRects().length).at(-1)?.getBoundingClientRect().toJSON(),
   }));
   assert.equal(result.width, result.viewport, `Horizontal overflow at ${page.url()}: ${JSON.stringify(result)}`);
   if (home) {
@@ -805,11 +808,16 @@ try {
 
   for (const theme of ["dark", "light"]) {
     await lab.emulateMedia({ colorScheme: theme });
+<<<<<<< Updated upstream
     for (const [width, height] of [[1440, 900], [1024, 768], [760, 800], [390, 844], [320, 640], [320, 568], [844, 390]]) {
+=======
+    for (const [width, height] of [[1440, 900], [1024, 768], [768, 1024], [390, 844], [390, 800], [320, 900], [320, 640], [320, 568], [844, 390]]) {
+>>>>>>> Stashed changes
       await lab.setViewportSize({ width, height });
       for (const path of ["home", "projects", "datasets/teacher-data", "sessions", "sessions/run-0", "checkpoints/artifact-0", "playground", "evaluations", "resources", "settings"]) {
         await go(lab, path);
         await bounds(lab, path === "home");
+<<<<<<< Updated upstream
         if (path === "sessions") {
           const badges = lab.locator(".badge");
           assert.ok(await badges.count() > 0);
@@ -817,6 +825,9 @@ try {
           assert.match(await lab.locator("main").ariaSnapshot(), /running|planned/);
           await contrast(lab);
         }
+=======
+        if ([1440, 390, 320].includes(width) && height > 620) await capture(lab, `${theme}-${width}x${height}-${path.replaceAll("/", "-")}`);
+>>>>>>> Stashed changes
         if (path === "home" && height > 620) assert.equal(await lab.evaluate(() => document.documentElement.scrollHeight), height);
       }
       if (width === 320 && height === 568) {
@@ -892,7 +903,11 @@ try {
   }
   for (const artifact of longContent.artifacts) { artifact.name = "A".repeat(100); artifact.notes = "N".repeat(2000); }
   for (const theme of ["dark", "light"]) {
+<<<<<<< Updated upstream
     const context = await newContext({ viewport: { width: 320, height: 640 }, colorScheme: theme });
+=======
+    const context = await browser.newContext({ viewport: { width: 320, height: 640 }, colorScheme: theme, hasTouch: true });
+>>>>>>> Stashed changes
     await context.addInitScript((data) => localStorage.setItem("mamase.coven-lab.v1", JSON.stringify(data)), longContent);
     const page = await context.newPage();
     watch(page);

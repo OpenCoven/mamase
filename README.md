@@ -951,18 +951,19 @@ Explicit choices persist across reloads under `mamase.appearance.v1`, separately
 from workspace backups and resets. The saved theme is applied before the first
 paint. All views, dialogs, charts, and the original distillation-vessel hero
 illustration adapt to the selected theme without external image or font requests.
-The palette follows [OpenCoven UI's canonical tokens](https://github.com/OpenCoven/ui/blob/main/packages/ui/src/styles/globals.css):
-the dark canvas is `#050409`, panels are `#0f0d14`, and purple is reserved for
-presence, focus, and primary actions. Restrained glass surfaces use subtle
-reflections and translucent layers, with backdrop blur limited to the sidebar,
-mobile header, and dialogs. Solid surfaces remain available when blur is
-unsupported or reduced transparency / increased contrast is requested.
+The workspace uses neutral, opaque surfaces with muted lavender OpenCoven accents.
+Dark mode pairs a charcoal `#1b1c20` canvas with `#24252a` panels; light mode uses
+soft grey `#e9e9ee` and off-white `#f3f3f6`, rather than pure-white surfaces.
+Lavender identifies primary actions, selection, and keyboard focus. Status colors
+remain distinct, and holdout loss uses a dashed, muted teal line. Compact headers,
+8px panel corners, denser tables, and a smaller illustration prioritize records
+over decoration. Touch controls retain 44px targets and readable input sizes.
 
 Overview cards link to their corresponding workspace views, and the main action
 guides a new workspace to import data before planning training. The overview is
 bounded to the viewport and a maximum content width of 1800px, with explicit
-hero width/height limits. Compact
-screens show the latest two experiments and keep the full workflow available
+hero width/height limits. Desktop layouts show up to six recent experiments; phones
+show two or four, depending on available space, and keep the full workflow available
 through the handbook link rather than stacking additional panels below the fold.
 On very short viewports (620px high or less), or while a persistent storage
 warning is present, the overview scrolls naturally instead of overlapping or

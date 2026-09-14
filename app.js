@@ -5,7 +5,7 @@ import {
   validateEvaluation, exportRecipe, escapeHtml as esc, runsCsv, estimatedSteps,
   importTrainingResult, importEvaluationReport, previewProgressReport, importProgressReport,
 } from "./workspace.js";
-import { icon, button, link, field, select, badge, empty, table, formatDate, formatBytes, progress, lossChart, distillationArt } from "./ui.js";
+import { icon, button, link, field, select, badge, empty, table, formatDate, formatBytes, progress, lossChart } from "./ui.js";
 import { DRAFT_KEY, RUN_PAGE_SIZE, parseRoute, runUrl, selectRuns, searchWorkspace, compareEvaluations, readRecipeDraft } from "./experience.js";
 import { TrainingClient, encodeDataset, localJobActive } from "./training-client.js";
 import { mergeTrainingJob, trainingIdentity, managedRecipeIssue } from "./training-state.js";
@@ -113,9 +113,9 @@ function sidebar(page) {
   return `<aside class="sidebar" id="navigation" aria-label="Workspace navigation">
     <div class="brand-row"><a class="brand" href="#/home" aria-label="Mamase overview">mamase<span class="brand-dot">.</span></a>
       <button class="icon-button" type="button" data-action="toggle-sidebar" aria-label="${ui.collapsed ? "Expand" : "Collapse"} navigation">${icon("panel")}</button></div>
-    <div class="workspace-label"><span class="tiny-mark">${icon("spark")}</span><span>${esc(workspace?.name || "The Coven")}</span><span class="workspace-tag">${hosted ? "HOSTED" : "LOCAL"}</span></div>
-    ${workspace ? `<button type="button" class="workspace-search-button" data-action="search" aria-label="Search workspace">${icon("search")}<span>Search workspace</span><kbd>Ctrl K</kbd></button>` : ""}
-    <nav>${links.map(([id, label, glyph], index) => `${index === 7 ? '<div class="nav-section">Workspace</div>' : ""}<a href="#/${id}" class="nav-link ${page === id ? "active" : ""}" ${page === id ? 'aria-current="page"' : ""} aria-label="${label}" title="${label}">${icon(glyph)}<span>${label}</span>${id === "sessions" && workspace?.runs.length ? `<span class="nav-count">${workspace.runs.length}</span>` : ""}</a>`).join("")}</nav>
+    <div class="workspace-label"><span class="tiny-mark">${icon("spark")}</span><span class="workspace-identity"><small class="workspace-tag">${hosted ? "HOSTED" : "LOCAL"}</small><span class="workspace-name" title="${esc(workspace?.name || "The Coven")}">${esc(workspace?.name || "The Coven")}</span></span>
+      ${workspace ? `<button type="button" class="icon-button workspace-search-button" data-action="search" aria-label="Search workspace" title="Search workspace (Ctrl K)">${icon("search")}</button>` : ""}</div>
+    <nav>${links.map(([id, label, glyph], index) => `${[0, 2, 7].includes(index) ? `<div class="nav-section">${index === 0 ? "Workspace" : index === 2 ? "Model development" : "Resources"}</div>` : ""}<a href="#/${id}" class="nav-link ${page === id ? "active" : ""}" ${page === id ? 'aria-current="page"' : ""} aria-label="${label}" title="${label}">${icon(glyph)}<span>${label}</span>${id === "sessions" && workspace?.runs.length ? `<span class="nav-count">${workspace.runs.length}</span>` : ""}</a>`).join("")}</nav>
     <div class="sidebar-bottom"><div class="local-status"><span class="status-dot"></span><span>${hosted ? "Saved in this browser" : "Local workspace"}</span></div>
       <p>Knowledge stays in the coven.</p>
       <a class="profile" id="account-profile" href="#/settings" aria-label="Account settings">${accountProfile()}</a></div>
@@ -185,25 +185,24 @@ function homePage() {
   const completed = workspace.runs.filter((run) => run.status === "completed").length;
   const hasDataset = workspace.datasets.length > 0;
   return `<div class="home-page">
-    <div class="home-topline"><span>YOUR COVEN'S MODEL WORKSPACE</span><span>${icon("local")} Local-first. Yours to shape.</span></div>
-    <section class="home-stage"><div class="home-copy"><p class="home-kicker">Less model. <strong>More of us.</strong></p>
-      <h1>Distill knowledge.<br>Make it our own.</h1>
-      <p class="home-intro">A home for the coven's next generation of local models. Distill from teachers, shape with LoRA, and follow every experiment from first example to final weights.</p>
+    <section class="home-stage"><span class="frame-corners" aria-hidden="true"></span><div class="home-copy"><p class="home-kicker" title="${esc(workspace.name)}">${esc(workspace.name)} / Distillation lab</p>
+      <h1>What will we train next?</h1>
+      <p class="home-intro">Recipes, real observations, and models shaped for the coven.</p>
       <div class="actions">${link(hasDataset ? "Open the lab" : "Import a dataset", hasDataset ? "#/playground" : "#/datasets", hasDataset ? "lab" : "upload", "primary")}${link("The workflow", "#/resources", "arrow", "quiet")}</div>
-      <div class="hero-caption"><span></span>Small models. Shared knowledge. Our own way.</div></div>
-      <div class="hero-art">${distillationArt()}</div></section>
+      </div></section>
+    <section class="card home-workflow"><div class="section-heading"><h2>${icon("lab")} Training workflow</h2><span class="eyebrow">${hosted ? "Hosted planning workspace" : "Local training workspace"}</span></div>
+      <ol class="workflow"><li><span>1</span><div><a href="#/datasets">Curate the knowledge</a><p>Bring your examples or a teacher's responses.</p></div></li>
+      <li><span>2</span><div><a href="#/playground">Save a recipe, then train</a><p>Choose a workflow. Saving alone starts nothing.</p></div></li>
+      <li><span>3</span><div><a href="#/checkpoints">Review the saved output</a><p>Test fresh examples before choosing an adapter.</p></div></li></ol>
+    </section>
     <section class="metrics overview-metrics" aria-label="Workspace progress">
       ${metric("Training runs", num(workspace.runs.length), `${active} active · ${completed} completed`, "runs", "#/sessions")}
       ${metric("Curated examples", num(workspace.datasets.reduce((sum, dataset) => sum + dataset.records, 0)), `Across ${workspace.datasets.length} datasets`, "datasets", "#/datasets")}
       ${metric("Model artifacts", num(workspace.artifacts.length), "Registered local paths", "models", "#/checkpoints")}
       ${metric("Evaluations", num(workspace.evaluations.length), "Recorded benchmark results", "evaluations", "#/evaluations")}
     </section>
-    <section class="home-grid"><article class="home-panel"><div class="section-heading"><h2>${icon("runs")} Recent experiments</h2><a href="#/sessions" class="subtle-link">View all ${icon("arrow")}</a></div>
-      ${workspace.runs.length ? `<div class="recent-list">${workspace.runs.slice(-2).reverse().map((run) => `<a class="recent-run" href="#/sessions/${run.id}"><span class="item-icon">${icon(run.recipe.method === "lora" ? "spark" : "lab")}</span><div><strong>${esc(run.name)}</strong><small>${METHODS[run.recipe.method]} · ${esc(run.recipe.student.split("/").at(-1))}</small></div>${badge(run.status)}</a>`).join("")}</div>` : empty("Every model starts with an experiment.", hasDataset ? "Your dataset is ready. Give your first experiment a shape." : "Start with a dataset, then shape your first training recipe.", link(hasDataset ? "Create a training recipe" : "Add training examples", hasDataset ? "#/playground" : "#/datasets", "plus"), "runs", true)}
-    </article><article class="home-panel"><div class="section-heading"><h2>${icon("lab")} From teacher to familiar</h2><span class="muted">The workflow</span></div>
-      <ol class="workflow"><li><span>1</span><div><a href="#/datasets">Curate the knowledge</a><p>Bring your examples or a teacher's responses.</p></div></li>
-      <li><span>2</span><div><a href="#/playground">Save a recipe, then train</a><p>Choose a workflow. Saving alone starts nothing.</p></div></li>
-      <li><span>3</span><div><a href="#/checkpoints">Review the saved output</a><p>Test fresh examples before choosing an adapter.</p></div></li></ol>
+    <section class="home-grid"><article class="home-panel activity-panel"><div class="section-heading"><h2>${icon("runs")} Recent experiments</h2><a href="#/sessions" class="subtle-link">View all ${icon("arrow")}</a></div>
+      ${workspace.runs.length ? `<div class="recent-list">${workspace.runs.slice(-6).reverse().map((run) => `<a class="recent-run" data-status="${esc(run.status)}" href="#/sessions/${run.id}"><span class="item-icon">${icon(run.recipe.method === "lora" ? "spark" : "lab")}</span><div><strong>${esc(run.name)}</strong><small>${METHODS[run.recipe.method]} · ${esc(run.recipe.student.split("/").at(-1))}</small></div>${badge(run.status)}</a>`).join("")}</div>` : empty("No training runs yet", hasDataset ? "Your dataset is ready. Save a recipe to plan your first run." : "Import a dataset, then save your first training recipe.", link(hasDataset ? "Create a training recipe" : "Add training examples", hasDataset ? "#/playground" : "#/datasets", "plus"), "runs", true)}
     </article></section>
     <div class="local-note">${icon("local")} ${hosted ? "Hosted workspace: planning and records only. Export recipes to your local Mamase app to train. Browser storage is separate on each address." : "Launch local MLX jobs from saved runs, or record results from external trainers. Only real observations are tracked."}</div>
   </div>`;
@@ -493,8 +492,8 @@ function labPage() {
         <button type="button" data-action="method" data-method="lora" aria-pressed="${!distill}" class="method-card ${!distill ? "selected" : ""}">${icon("spark")}<strong>LoRA fine-tuning</strong><span>Teach a base model with your own curated examples.</span></button>
         <button type="button" data-action="method" data-method="distillation" aria-pressed="${distill}" class="method-card ${distill ? "selected" : ""}">${icon("lab")}<strong>Response distillation</strong><span>Train a student on a teacher's recorded responses.</span></button></div>
       <section class="form-section"><h3>Name the experiment</h3>
-        ${field("Run name", "name", draft.name, { attrs: 'maxlength="100" placeholder="e.g. Coven reasoning · v1"' })}
-        ${select("Program", "programId", draft.programId, programOptions())}
+        <div class="form-grid recipe-identity">${field("Run name", "name", draft.name, { attrs: 'maxlength="100" placeholder="e.g. Coven reasoning · v1"' })}
+        ${select("Program", "programId", draft.programId, programOptions())}</div>
         ${managed ? "" : `${identityFields(true)}<p class="help">The terminal preparation command loads IDENTITY.md and SOUL.md from the familiar folder you supply. These IDs must match that identity; training does not grant new tools.</p>`}
         ${field("Training objective", "objective", draft.objective, { textarea: true, attrs: 'maxlength="2000" rows="3" placeholder="What should this model do better? How will you measure it?"' })}</section>
       <section class="form-section"><div class="section-heading"><h3>The knowledge</h3>${button("Import dataset", "import-dataset", "upload", "small quiet")}</div>
