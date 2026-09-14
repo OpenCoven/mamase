@@ -1136,6 +1136,19 @@ history and artifact guards the browser uses, so lost responses recover with the
 recorded job ID and replays are `unchanged`. Receipts end at human handoff: an
 `evidence-ready` state is not deployment, identity replacement or a tool grant.
 
+### Agent skill
+
+[`skills/mamase/SKILL.md`](skills/mamase/SKILL.md) is the repository-owned,
+harness-neutral entry point for operating this lab from a coding agent. It routes
+to phase references (planning, PEFT lane, managed MLX lane, evaluation, human
+handoff, recovery) that only invoke the commands above — `npm run ops`, `npm run
+lab` and `training/*.py` — and never reconstruct workspace JSON, launch training
+on their own, write human decisions, or grant deployment or tools. Point your
+harness at the directory (or a symlink to it) instead of copying it;
+`tests/skill.test.js` fails if the skill names an operation, error code, schema or
+runtime state that the catalog and receipts do not have, and drives a synthetic
+plan-only → evidence → human-handoff scenario through the same operations.
+
 ## Development checks
 
 Application work is tracked in the [roadmap](https://github.com/OpenCoven/mamase/issues/1)
