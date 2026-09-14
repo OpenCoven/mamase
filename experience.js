@@ -63,6 +63,17 @@ export function compareEvaluations(first, second) {
   if (first.samples !== second.samples) reasons.push("Sample counts differ.");
   if (!first.notes.trim() || !second.notes.trim()) reasons.push("Both evaluations need explicit conditions and sample-set details.");
   else if (first.notes.trim() !== second.notes.trim()) reasons.push("Recorded conditions or sample-set details differ.");
+  if (first.comparison || second.comparison) {
+    if (!first.comparison || !second.comparison) reasons.push("Manual observations and paired reports use different scoring protocols.");
+    else {
+      const baseline = first.comparison;
+      const candidate = second.comparison;
+      if (baseline.suite.sha256 !== candidate.suite.sha256) reasons.push("Evaluation suite fingerprints differ.");
+      if (["doSample", "numBeams", "maxNewTokens", "seed"].some((key) => baseline.decoding[key] !== candidate.decoding[key])) reasons.push("Paired decoding settings differ.");
+      if (baseline.familiarId !== candidate.familiarId || baseline.instanceId !== candidate.instanceId) reasons.push("Familiar or Coven instance bindings differ.");
+      if (baseline.device !== candidate.device) reasons.push("Recorded evaluation devices differ.");
+    }
+  }
   return { compatible: reasons.length === 0, reasons, delta: reasons.length ? null : (second.score - first.score) / first.maximum * 100 };
 }
 
@@ -72,9 +83,11 @@ export function readRecipeDraft(storage, defaults) {
   const value = JSON.parse(source);
   assert(value?.version === 1 && value.draft && !Array.isArray(value.draft), "Unsupported recipe draft.");
   const keys = Object.keys(defaults);
-  assert(Object.keys(value.draft).length === keys.length && keys.every((key) =>
-    typeof value.draft[key] === "string" && value.draft[key].length <= 2000
+  const addedFields = new Set(["adapter", "familiarId", "instanceId"]);
+  assert(Object.keys(value.draft).every((key) => keys.includes(key)) && keys.every((key) =>
+    (!Object.hasOwn(value.draft, key) && addedFields.has(key)) ||
+    (typeof value.draft[key] === "string" && value.draft[key].length <= 2000)
   ), "Saved recipe draft has invalid fields.");
   assert(["lora", "distillation"].includes(value.draft.method), "Saved recipe draft has an invalid method.");
-  return Object.fromEntries(keys.map((key) => [key, value.draft[key]]));
+  return Object.fromEntries(keys.map((key) => [key, Object.hasOwn(value.draft, key) ? value.draft[key] : defaults[key]]));
 }

@@ -1,0 +1,54 @@
+name: Focused improvement
+description: Propose a bounded application improvement with measurable acceptance criteria.
+title: "[Improvement] "
+labels: ["enhancement"]
+body:
+  - type: textarea
+    id: outcome
+    attributes:
+      label: User problem and desired outcome
+      description: Who is blocked, what are they trying to do, and what observable result should change?
+    validations:
+      required: true
+  - type: textarea
+    id: evidence
+    attributes:
+      label: Evidence and current behavior
+      description: Cite relevant code paths, existing issues, or redacted user observations. Separate facts from hypotheses.
+    validations:
+      required: true
+  - type: textarea
+    id: scope
+    attributes:
+      label: Scope and non-goals
+      description: Describe the smallest independently useful change and what it explicitly does not include.
+    validations:
+      required: true
+  - type: textarea
+    id: acceptance
+    attributes:
+      label: Acceptance criteria
+      description: Use checkboxes with observable outcomes, including failure/recovery and compatibility behavior.
+    validations:
+      required: true
+  - type: textarea
+    id: verification
+    attributes:
+      label: Verification plan
+      description: Name the relevant existing test paths/commands or the concrete evidence needed before closure.
+    validations:
+      required: true
+  - type: textarea
+    id: dependencies
+    attributes:
+      label: Dependencies and decisions
+      description: Link blockers and the parent roadmap. Name any operator-owned design or approval decision; otherwise write None.
+    validations:
+      required: true
+  - type: textarea
+    id: boundaries
+    attributes:
+      label: Data, execution, and migration boundaries
+      description: Explain privacy, local-only behavior, compatibility/migration, and authority implications. Do not include private inputs.
+    validations:
+      required: true

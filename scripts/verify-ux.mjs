@@ -3,6 +3,7 @@ import { once } from "node:events";
 import { mkdir } from "node:fs/promises";
 import { join } from "node:path";
 import { chromium } from "playwright";
+import { createHash } from "node:crypto";
 import { createAppServer } from "../server.mjs";
 import { createWorkspace, createRun, recordProgress, STORAGE_KEY } from "../workspace.js";
 import { DRAFT_KEY } from "../experience.js";
@@ -73,6 +74,7 @@ function fixture() {
     const run = createRun({
       id: `run-${index}`, name: `Coven experiment ${String(index).padStart(2, "0")}`, createdAt,
       recipe: { method: "distillation", programId: "coven", datasetId: "teacher-data", student: "local/student",
+        familiarId: "cody", instanceId: "test-coven", adapter: "lora",
         teacher: "local/teacher", rank: 16, alpha: 32, learningRate: 0.0002, epochs: 3, batchSize: 1,
         accumulation: 4, maxSequence: 2048, outputPath: `./outputs/run-${index}`, objective: "Improve held-out reasoning." },
     }, workspace);
@@ -107,6 +109,15 @@ try {
   await go(page, "playground");
   await page.getByLabel("Run name", { exact: true }).fill("Recovered recipe");
   await page.getByLabel("Training objective", { exact: true }).fill("Keep my experiment intact.");
+  for (const label of ["Familiar ID", "Coven instance ID"]) {
+    const input = page.getByLabel(label, { exact: true });
+    await input.fill("invalid id");
+    assert.equal(await input.evaluate((element) => element.validity.patternMismatch), true);
+    await input.fill("valid-id_1");
+    assert.equal(await input.evaluate((element) => element.validity.valid), true);
+  }
+  await page.getByLabel("Familiar ID", { exact: true }).fill("cody");
+  await page.getByLabel("Coven instance ID", { exact: true }).fill("test-coven");
   await page.reload();
   assert.equal(await page.getByLabel("Run name", { exact: true }).inputValue(), "Recovered recipe");
   await page.getByRole("button", { name: /Response distillation/ }).click();
@@ -170,6 +181,82 @@ try {
   assert.equal(await page.evaluate((key) => sessionStorage.getItem(key), DRAFT_KEY), null);
   await fresh.close();
 
+  const pairedData = fixture();
+  pairedData.runs = [pairedData.runs[1]];
+  pairedData.artifacts = [];
+  pairedData.evaluations = [];
+  const pairedContext = await browser.newContext({ viewport: { width: 1440, height: 900 } });
+  await pairedContext.addInitScript((data) => {
+    if (!localStorage.getItem("mamase.coven-lab.v1")) localStorage.setItem("mamase.coven-lab.v1", JSON.stringify(data));
+  }, pairedData);
+  const pairedPage = await pairedContext.newPage();
+  watch(pairedPage);
+  await go(pairedPage, "sessions/run-1");
+  const importJson = async (data) => {
+    const modal = pairedPage.locator("#dialog");
+    await modal.getByLabel("JSON file", { exact: true }).setInputFiles({
+      name: "synthetic-report.json", mimeType: "application/json", buffer: Buffer.from(JSON.stringify(data)),
+    });
+    await modal.getByRole("button", { name: "Import", exact: true }).click();
+  };
+  const recordedAt = new Date().toISOString();
+  await pairedPage.getByRole("button", { name: "Import report", exact: true }).click();
+  await importJson({
+    schema: "mamase.run-report.v1", runId: "run-1",
+    updates: [
+      { status: "running", step: 0, totalSteps: 2, loss: null, evalLoss: 2, note: "Synthetic browser fixture", recordedAt },
+      { status: "completed", step: 2, totalSteps: 2, loss: 1, evalLoss: 1.5, note: "Synthetic browser fixture", recordedAt },
+    ],
+  });
+  await pairedPage.locator("#dialog").waitFor({ state: "hidden" });
+  const hash = (letter) => letter.repeat(64);
+  const trainingResult = {
+    schema: "mamase.training-result.v1", runId: "run-1", bundleSha256: hash("c"),
+    familiar: { familiarId: "cody", instanceId: "test-coven" },
+    baseModel: { label: "local/student", localPath: "/synthetic/model", files: { "model.safetensors": hash("d") } },
+    adapter: { path: "/synthetic/bundle/adapter", technique: "lora", files: { "adapter_model.safetensors": hash("f"), "adapter_config.json": hash("a") } },
+    datasetSha256: hash("a"), holdoutSha256: hash("d"), optimizerSteps: 2,
+    evaluation: { metric: "completion-token-weighted-negative-log-likelihood", samples: 10, baseLoss: 2, adapterLoss: 1.5, delta: -0.5 },
+    trainableParameters: 100, totalParameters: 1000, promotion: "not-authorized",
+  };
+  await pairedPage.getByRole("button", { name: "Import training result", exact: true }).click();
+  await importJson(trainingResult);
+  await pairedPage.waitForURL("**/#/checkpoints");
+  await pairedPage.getByText("/synthetic/bundle/adapter", { exact: true }).waitFor();
+  await pairedPage.getByText(/Holdout loss: 2.0000 base/).waitFor();
+  const pairedReport = {
+    schema: "mamase.evaluation-report.v1", runId: "run-1", createdAt: recordedAt,
+    resultSha256: createHash("sha256").update(JSON.stringify(trainingResult)).digest("hex"),
+    bundleSha256: hash("c"), datasetSha256: hash("a"), familiar: trainingResult.familiar,
+    adapterPath: trainingResult.adapter.path, suite: { name: "Synthetic browser regressions", version: "1", sha256: hash("f") },
+    decoding: { doSample: false, numBeams: 1, maxNewTokens: 16, seed: 42 }, device: "cpu", promotion: "not-authorized",
+    cases: ["task", "identity", "consent", "tool-boundary"].map((category, index) => ({
+      id: category, category, prompt: `private synthetic ${category} prompt`, checks: [{ type: "equals", value: "pass" }],
+      base: { response: index % 2 === 0 ? "pass" : "fail", passed: index % 2 === 0 },
+      adapter: { response: index === 1 || index === 2 ? "pass" : "fail", passed: index === 1 || index === 2 },
+    })),
+    summary: { samples: 4, basePassed: 2, adapterPassed: 2, regressions: 1 },
+  };
+  await go(pairedPage, "evaluations");
+  await pairedPage.getByRole("button", { name: "Import paired report", exact: true }).click();
+  const beforeInvalid = await stored(pairedPage);
+  await importJson({ ...pairedReport, summary: { ...pairedReport.summary, adapterPassed: 4 } });
+  await pairedPage.locator("#dialog .form-error").waitFor({ state: "visible" });
+  assert.deepEqual(await stored(pairedPage), beforeInvalid);
+  await importJson(pairedReport);
+  await pairedPage.locator("#dialog").waitFor({ state: "hidden" });
+  await pairedPage.getByText("2 → 2 / 4", { exact: true }).waitFor();
+  await pairedPage.getByText("1 regressed", { exact: true }).waitFor();
+  await pairedPage.locator('[data-action="evaluation-details"]').click();
+  await pairedPage.locator("#dialog").getByText("tool-boundary", { exact: true }).waitFor();
+  await pairedPage.locator("#dialog").getByText("Suite SHA-256", { exact: true }).waitFor();
+  await pairedPage.keyboard.press("Escape");
+  await go(pairedPage, "settings");
+  const pairedBackup = await downloaded(pairedPage, pairedPage.getByRole("button", { name: "Export workspace", exact: true }));
+  assert.ok(!pairedBackup.includes("private synthetic") && !pairedBackup.includes('"cases"') && !pairedBackup.includes('"response"'));
+  assert.equal(JSON.parse(pairedBackup).evaluations[0].comparison.regressions, 1);
+  await pairedContext.close();
+
   const populated = await browser.newContext({ viewport: { width: 1440, height: 900 }, colorScheme: "dark" });
   await populated.addInitScript((workspace) => {
     if (!localStorage.getItem("mamase.coven-lab.v1")) localStorage.setItem("mamase.coven-lab.v1", JSON.stringify(workspace));
@@ -190,7 +277,7 @@ try {
   await lab.getByRole("button", { name: "Duplicate recipe", exact: true }).click();
   await modal.getByRole("button", { name: "Replace draft", exact: true }).click();
   await lab.waitForURL("**/#/playground");
-  assert.equal(await lab.getByLabel("Local output directory", { exact: true }).inputValue(), "./outputs/run-1-copy");
+  assert.equal(await lab.getByLabel("External trainer output hint", { exact: true }).inputValue(), "./outputs/run-1-copy");
   await lab.getByRole("button", { name: "Save planned run", exact: true }).click();
   await lab.waitForURL(/sessions\/run-/);
   const copy = (await stored(lab)).runs.at(-1);
@@ -331,7 +418,7 @@ try {
   }
   assert.deepEqual(errors, []);
   assert.deepEqual(external, []);
-  console.log(`UX end-to-end passed: 11 enhancement journeys, ${layouts} responsive layouts, recoverable drafts, atomic imports, matching CSV exports, artifact lineage, guarded comparisons, loss accessibility and conflict recovery.`);
+  console.log(`UX end-to-end passed: ${layouts} responsive layouts, recoverable drafts, atomic imports, paired-report lineage and regression review, private-summary backups, matching CSV exports, guarded comparisons, loss accessibility and conflict recovery.`);
 } catch (error) {
   if (currentPage && !currentPage.isClosed()) await capture(currentPage, "failure");
   throw error;
