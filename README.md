@@ -17,6 +17,11 @@ Use `.venv` for PEFT commands and `.venv-training` for managed MLX. These are
 separate runtimes and artifact formats; installing the MLX requirements does
 not provide PyTorch/PEFT.
 
+The automation CPU gate uses **Python 3.14.7**, with the exact package versions
+in `training/requirements.txt`. Its Linux x86-64 wheels and the setup-python
+Ubuntu 24.04 interpreter release are available; other interpreter/hardware
+combinations are not implied by that gate.
+
 ```sh
 npm install
 npm start
@@ -25,6 +30,69 @@ npm start
 Open [http://127.0.0.1:4173](http://127.0.0.1:4173). The server binds only to
 loopback and serves an explicit list of public assets. Set `PORT` to use a
 different port.
+
+## Reproducible validation
+
+`npm test` remains the built-in Node runner. `npm run test:e2e` remains the
+existing Playwright runner, not another test framework. The shared CI/local
+entry point is `npm run validate -- node|cpu|browser|all`; use one mode, not the
+literal pipe-separated string.
+
+After a clean checkout, restore the locked Node dependencies with `npm ci`.
+The Node tests include browser-based auth/hosted fixtures, so both the Node
+and browser jobs need `npx --no-install playwright install --with-deps chromium`
+(`--with-deps` installs Linux system dependencies; omit it on macOS). Create a
+**separate** Python 3.14.7 environment if you do not already have one:
+
+```sh
+python3.14 -m venv .venv
+.venv/bin/python -m pip install --no-cache-dir -r training/requirements.txt
+MAMASE_TRAINING_PYTHON="$PWD/.venv/bin/python" npm run validate -- cpu
+```
+
+The CPU gate checks the Python patch version, all four exact requirement pins
+and actual imports before running `tests/lab.test.js`, `tests/evaluation.test.js`
+and `tests/preflight.test.js` with `MAMASE_REQUIRE_ML=1`. Missing Python,
+unimportable/wrong-version dependencies, test failures, empty runs and **any
+ML-job test skip** fail the gate. It creates real local synthetic LoRA, rsLoRA,
+DoRA and response-distillation adapters, reloads them, evaluates base/adapter
+outputs, and exercises readonly preflight. It never downloads model weights.
+CUDA/QLoRA, MPS, MLX and full-size models are **unexecuted**, not passing.
+These CPU fixtures establish pipeline behavior, not candidate quality.
+
+For the complete local alternative to hosted Actions, select both installed
+Node runtimes explicitly (absolute executable paths):
+
+```sh
+MAMASE_NODE_22=/absolute/path/to/node22 \
+MAMASE_NODE_24=/absolute/path/to/node24 \
+MAMASE_TRAINING_PYTHON=/absolute/path/to/peft-env/bin/python \
+npm run validate -- all
+```
+
+`all` runs both Node jobs, the required CPU job, and the existing UX and managed
+training **protocol-fixture** commands in order. Individual modes use the
+current Node 22/24 interpreter. Node-only jobs deliberately exclude the two
+optional ML cases, even if a local environment exists, and label that exclusion;
+only the separate required CPU job establishes ML coverage. The protocol
+fixture is not real MLX training. Normal `npm test` keeps its optional-ML behavior.
+
+Every invocation prints a new ignored `.validation/run-*/summary.json` path.
+It records the commit, dirty-tree flag, exact Node version, commands, exit
+codes, durations and available test counts. A failure stops later jobs and
+leaves them `not-run`; interruption may leave `running`, never `passed`.
+The emitter writes no raw test output into this evidence. Commands are bounded
+to 20 minutes each and 8 MiB of captured console output. No provider credentials,
+Node preload hooks, private output overrides or Python import paths are passed
+through the gate. Reuse existing environments without mutating them.
+
+This is **local execution evidence, not hosted approval**, Linux execution
+evidence when run on macOS, or a replacement branch-protection status. If
+GitHub refuses jobs because of billing/spending limits, the account owner must
+resolve that external blocker and then run the PR workflow. Do not fabricate
+statuses or claim the hosted acceptance is complete. See
+[contribution guidance](.github/CONTRIBUTING.md#automation-and-required-checks)
+for stable check names and the manual maintainer step.
 
 ## Hosted on Vercel
 

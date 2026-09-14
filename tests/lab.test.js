@@ -6,9 +6,10 @@ import { spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { prepareBundle, prepareData, sha256 } from "../lab.mjs";
 import { createWorkspace, createRun, exportRecipe, importEvaluationReport, importTrainingResult, parseDataset, recordProgress, validateWorkspace } from "../workspace.js";
+import { trainingTestMode } from "../scripts/training-test-mode.mjs";
 
 const root = fileURLToPath(new URL("../", import.meta.url));
-const python = process.env.MAMASE_TRAINING_PYTHON || join(root, ".venv/bin/python");
+const { python, skip } = trainingTestMode();
 const fixtureIdentity = { identity: "# IDENTITY.md - Cody\n- **Name:** Cody\n- **Role:** Code familiar.", soul: "# SOUL.md\nI am Cody. Preserve consent and never invent evidence." };
 const source = Buffer.from(Array.from({ length: 6 }, (_, index) => JSON.stringify({ prompt: `Task ${index}: record evidence`, response: `Cody records observed result ${index}.` })).join("\n") + "\n");
 
@@ -266,10 +267,7 @@ else:
 `]);
 });
 
-let trainingAvailable = true;
-try { await access(python); } catch (error) { if (error.code !== "ENOENT") throw error; trainingAvailable = false; }
-
-test("real local PEFT training saves reloadable adapters and importable observed reports", { skip: !trainingAvailable && "Install training/requirements.txt in .venv for the real training smoke." }, async (context) => {
+test("real local PEFT training saves reloadable adapters and importable observed reports", { skip }, async (context) => {
   const dir = await directory(context);
   const model = join(dir, "model");
   command(python, ["tests/training_fixture.py", "create", model]);
@@ -284,7 +282,7 @@ test("real local PEFT training saves reloadable adapters and importable observed
         assert.equal(preflight.ready, true);
         assert.equal(preflight.facts.bundle.familiarContext.sha256, options.contextSha256);
       }
-      command(python, ["training/train.py", "--bundle", options.outputDir, "--model", model]);
+      command(python, ["training/train.py", "--bundle", options.outputDir, "--model", model, "--device", "cpu"]);
       const report = JSON.parse(await readFile(join(options.outputDir, "run-report.json")));
       for (const update of report.updates) workspace.runs[0] = recordProgress(workspace.runs[0], update);
       assert.equal(workspace.runs[0].status, "completed");
@@ -309,7 +307,7 @@ test("real local PEFT training saves reloadable adapters and importable observed
           })),
         };
         await writeFile(suitePath, JSON.stringify(suite));
-        const args = (out) => ["training/evaluate.py", "--bundle", options.outputDir, "--suite", suitePath, "--out", out, "--max-new-tokens", "8"];
+        const args = (out) => ["training/evaluate.py", "--bundle", options.outputDir, "--suite", suitePath, "--out", out, "--max-new-tokens", "8", "--device", "cpu"];
         const firstOut = join(dir, "eval-first");
         command(python, ["tests/training_fixture.py", "evaluate-offline", model, ...args(firstOut).slice(1)]);
         const first = JSON.parse(await readFile(join(firstOut, "evaluation-report.json")));
