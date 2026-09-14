@@ -36,6 +36,46 @@ different port.
 6. **Evaluations:** record benchmark versions, scores, sample counts, and
    conditions for comparisons.
 
+### Moving between experiments
+
+Use **Search workspace** or **Cmd/Ctrl+K** to find programs, datasets, training
+runs, artifacts, and workspace views. Results stay local. Tab through results,
+press Enter to open one, and press Escape to close search.
+
+Dataset pages expose provenance and linked experiments. **Use in a recipe**
+preselects the dataset and its recorded teacher. A recipe can also import data
+without leaving the lab. **Duplicate recipe** copies a run's configuration, not
+its progress or results, and suggests a separate output path. Replacing an
+existing draft requires confirmation.
+
+The lab saves recipe drafts in this tab's `sessionStorage`, under
+`mamase.recipe-draft.v1`. Drafts survive reloads but are not cross-tab/cloud
+storage or part of workspace backups. Download a draft before closing the tab
+if you need a separate copy. Corrupt draft data is preserved for download or
+explicit discard; unavailable storage is reported rather than treated as a save.
+
+Training run filters, search terms, sort order, and pagination are encoded in
+the hash URL. These links refer to records in the current browser workspace;
+they do not share data with another device. Lists show 20 runs per page.
+**Export CSV** includes every matching run, across all pages, in the selected
+order. Clear filters returns to the full list.
+
+Artifact detail pages connect the local path, notes, source run, dataset
+fingerprint, and recorded evaluations. Evaluation actions preselect that
+artifact. Training charts show both training and validation loss, distinguish
+missing values from zero, and provide an expandable observations table.
+
+### Comparing evaluations
+
+Choose baseline and candidate records on the Evaluations page. A delta is shown
+only when both records have the same benchmark/version, score maximum, sample
+count, and identical nonempty conditions. Record the sample-set identity and
+scoring protocol in those conditions.
+
+The result is **candidate minus baseline in percentage points**, not an
+automatic winner. Matching metadata cannot prove identical evaluation execution,
+and higher scores are not necessarily better for every metric.
+
 ### Dataset formats
 
 One object per line; keep the format consistent throughout a file:
@@ -107,11 +147,23 @@ System is the default and follows device appearance changes immediately.
 Explicit choices persist across reloads under `mamase.appearance.v1`, separately
 from workspace backups and resets. The saved theme is applied before the first
 paint. All views, dialogs, charts, and the original distillation-vessel hero
-illustration use a purple/lavender palette and adapt to the selected theme without
-external image or font requests. The overview is bounded to the viewport and a
-maximum content width of 1800px, with explicit hero width/height limits. Compact
+illustration adapt to the selected theme without external image or font requests.
+The palette follows [OpenCoven UI's canonical tokens](https://github.com/OpenCoven/ui/blob/main/packages/ui/src/styles/globals.css):
+the dark canvas is `#050409`, panels are `#0f0d14`, and purple is reserved for
+presence, focus, and primary actions. Restrained glass surfaces use subtle
+reflections and translucent layers, with backdrop blur limited to the sidebar,
+mobile header, and dialogs. Solid surfaces remain available when blur is
+unsupported or reduced transparency / increased contrast is requested.
+
+Overview cards link to their corresponding workspace views, and the main action
+guides a new workspace to import data before planning training. The overview is
+bounded to the viewport and a maximum content width of 1800px, with explicit
+hero width/height limits. Compact
 screens show the latest two experiments and keep the full workflow available
 through the handbook link rather than stacking additional panels below the fold.
+On very short viewports (620px high or less), or while a persistent storage
+warning is present, the overview scrolls naturally instead of overlapping or
+clipping essential content. Opening navigation does not rebuild open forms.
 
 ### Workspace storage
 
@@ -120,7 +172,9 @@ Workspace metadata is saved in this browser's `localStorage`, under
 before clearing browser data or changing browsers/ports. Restoring a validated
 backup replaces existing metadata after confirmation. Corrupt data and failed
 saves surface an error instead of silently resetting the workspace. Concurrent
-edits from another tab require a reload to avoid overwriting changes.
+edits from another tab show a persistent warning and require a reload to avoid
+overwriting changes. The warning preserves open forms and offers an export of
+the currently open workspace before reloading newer saved data.
 
 There is no hosted training, inference endpoint, cloud sync, billing, account
 system, or fabricated training progress. Artifact paths are references: the
@@ -137,3 +191,19 @@ npm test
 Uses Node's built-in runner for dataset parsing, recipe validation, teacher
 provenance, run-state transitions, artifact/evaluation relationships, backup
 integrity, storage failure handling, exports, and the local asset server.
+
+The browser regression suite uses Playwright as a development-only dependency:
+
+```sh
+npm ci
+npx playwright install chromium
+npm run test:e2e
+```
+
+It starts its own loopback server on an available port and uses isolated browser
+contexts, leaving the development server and your workspace untouched. Set
+`MAMASE_SCREENSHOTS` to a directory to retain screenshots. Runtime dependencies
+and a build step are still unnecessary.
+
+See [the comprehensive UI/UX audit](UI-UX-AUDIT.md) for the findings, implemented
+enhancements, and review boundaries.

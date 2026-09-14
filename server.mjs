@@ -11,6 +11,7 @@ const files = new Map([
   ["/theme.js", ["theme.js", "text/javascript"]],
   ["/ui.js", ["ui.js", "text/javascript"]],
   ["/workspace.js", ["workspace.js", "text/javascript"]],
+  ["/experience.js", ["experience.js", "text/javascript"]],
   ["/favicon.svg", ["favicon.svg", "image/svg+xml"]],
 ]);
 

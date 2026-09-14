@@ -6,6 +6,10 @@
   "scripts": {
     "dev": "node server.mjs",
     "start": "node server.mjs",
-    "test": "node --test"
+    "test": "node --test",
+    "test:e2e": "node scripts/verify-ux.mjs"
+  },
+  "devDependencies": {
+    "playwright": "1.62.0"
   }
 }

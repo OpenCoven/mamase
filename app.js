@@ -4,7 +4,8 @@ import {
   validateDataset, splitCounts, createRun, recordProgress, validateArtifact,
   validateEvaluation, exportRecipe, escapeHtml as esc, runsCsv, estimatedSteps,
 } from "./workspace.js";
-import { icon, button, link, field, select, badge, empty, table, formatDate, formatBytes, progress, distillationArt } from "./ui.js";
+import { icon, button, link, field, select, badge, empty, table, formatDate, formatBytes, progress, lossChart, distillationArt } from "./ui.js";
+import { DRAFT_KEY, RUN_PAGE_SIZE, parseRoute, runUrl, selectRuns, searchWorkspace, compareEvaluations, readRecipeDraft } from "./experience.js";
 
 const app = document.querySelector("#app");
 const dialog = document.querySelector("#dialog");
@@ -26,7 +27,16 @@ const defaults = () => ({
   learningRate: "0.0002", epochs: "3", batchSize: "1", accumulation: "4",
   maxSequence: "2048", outputPath: "./outputs/coven-adapter", objective: "",
 });
-const ui = { menu: false, collapsed: false, draft: defaults(), query: "", status: "all", program: "all", modelKind: "all" };
+const ui = { menu: false, collapsed: false, draft: defaults(), query: "", status: "all", program: "all", sort: "updated", runPage: 1, modelKind: "all", conflict: false };
+let draftBlocked = false;
+let draftMessage = "Recipe changes are saved in this tab until you save a planned run.";
+try {
+  const recovered = readRecipeDraft(sessionStorage, defaults());
+  if (recovered) { ui.draft = recovered; draftMessage = "Recipe draft restored from this tab. Review it before saving."; }
+} catch (error) {
+  draftBlocked = true;
+  draftMessage = `Draft could not be restored: ${error.message} Download or discard it before saving another draft.`;
+}
 const nav = [
   ["home", "Overview", "home"], ["projects", "Programs", "projects"], ["datasets", "Datasets", "datasets"],
   ["sessions", "Training runs", "runs"], ["checkpoints", "Model library", "models"], ["playground", "Distillation lab", "lab"],
@@ -45,8 +55,39 @@ const datasetOptions = () => [["", "Select a dataset"], ...workspace.datasets.ma
 const runLink = (run) => `<a class="record-link" href="#/sessions/${run.id}">${esc(run.name)}</a>`;
 
 function route() {
-  const [page = "home", id] = location.hash.replace(/^#\/?/, "").split("/");
-  return { page: page || "home", id };
+  return parseRoute(location.hash);
+}
+
+function saveDraft() {
+  if (!draftBlocked) {
+    try {
+      sessionStorage.setItem(DRAFT_KEY, JSON.stringify({ version: 1, draft: ui.draft }));
+      draftMessage = "Draft saved in this tab. No training run has been created.";
+    } catch (error) {
+      draftMessage = `Draft is not saved: ${error.message} Keep this tab open or download the draft.`;
+    }
+  }
+  syncRecipe();
+}
+
+function clearDraft() {
+  sessionStorage.removeItem(DRAFT_KEY);
+  ui.draft = defaults();
+  draftBlocked = false;
+  draftMessage = "Recipe changes are saved in this tab until you save a planned run.";
+}
+
+function useDraft(draft) {
+  ui.draft = draft;
+  closeModal();
+  saveDraft();
+  if (location.hash === "#/playground") render(); else location.hash = "#/playground";
+}
+
+function requestDraft(draft) {
+  if (draftBlocked || JSON.stringify(ui.draft) !== JSON.stringify(defaults())) {
+    openModal("Replace the current recipe draft?", `<p>Your existing draft has not been saved as a planned run. Download it or keep editing before replacing it.</p><div class="actions">${button("Download draft", "download-draft", "download")}${button("Keep editing", "close-dialog", "", "quiet")}${button("Replace draft", "replace-draft", "", "primary")}</div>`, "", { draft });
+  } else useDraft(draft);
 }
 
 function sidebar(page) {
@@ -55,6 +96,7 @@ function sidebar(page) {
     <div class="brand-row"><a class="brand" href="#/home" aria-label="Mamase overview">mamase<span class="brand-dot">.</span></a>
       <button class="icon-button" type="button" data-action="toggle-sidebar" aria-label="${ui.collapsed ? "Expand" : "Collapse"} navigation">${icon("panel")}</button></div>
     <div class="workspace-label"><span class="tiny-mark">${icon("spark")}</span><span>${esc(workspace?.name || "The Coven")}</span><span class="workspace-tag">LOCAL</span></div>
+    ${workspace ? `<button type="button" class="workspace-search-button" data-action="search" aria-label="Search workspace">${icon("search")}<span>Search workspace</span><kbd>Ctrl K</kbd></button>` : ""}
     <nav>${links.map(([id, label, glyph], index) => `${index === 7 ? '<div class="nav-section">Workspace</div>' : ""}<a href="#/${id}" class="nav-link ${page === id ? "active" : ""}" ${page === id ? 'aria-current="page"' : ""} aria-label="${label}" title="${label}">${icon(glyph)}<span>${label}</span>${id === "sessions" && workspace?.runs.length ? `<span class="nav-count">${workspace.runs.length}</span>` : ""}</a>`).join("")}</nav>
     <div class="sidebar-bottom"><div class="sidebar-appearance"><span>Appearance</span>${themePicker("sidebar")}</div><div class="local-status"><span class="status-dot"></span><span>Local workspace</span></div>
       <p>Knowledge stays in the coven.</p>
@@ -83,29 +125,31 @@ function header(title, actions = "", subtitle = "") {
   return `<header class="page-header"><div><h1>${title}</h1>${subtitle ? `<p>${subtitle}</p>` : ""}</div><div class="actions">${actions}</div></header>`;
 }
 
-function metric(label, value, note, glyph) {
-  return `<article class="metric"><div class="metric-label">${label}${icon(glyph)}</div><strong>${value}</strong><p>${note}</p></article>`;
+function metric(label, value, note, glyph, href = "") {
+  const tag = href ? "a" : "article";
+  return `<${tag} class="metric${href ? " metric-link" : ""}"${href ? ` href="${esc(href)}"` : ""}><div class="metric-label">${label}${icon(glyph)}</div><strong>${value}</strong><p>${note}</p></${tag}>`;
 }
 
 function homePage() {
   const active = workspace.runs.filter((run) => ["running", "paused"].includes(run.status)).length;
   const completed = workspace.runs.filter((run) => run.status === "completed").length;
+  const hasDataset = workspace.datasets.length > 0;
   return `<div class="home-page">
     <div class="home-topline"><span>YOUR COVEN'S MODEL WORKSPACE</span><span>${icon("local")} Local-first. Yours to shape.</span></div>
     <section class="home-stage"><div class="home-copy"><p class="home-kicker">Less model. <strong>More of us.</strong></p>
       <h1>Distill knowledge.<br>Make it our own.</h1>
       <p class="home-intro">A home for the coven's next generation of local models. Distill from teachers, shape with LoRA, and follow every experiment from first example to final weights.</p>
-      <div class="actions">${link("Open the lab", "#/playground", "lab", "primary")}${link("The workflow", "#/resources", "arrow", "quiet")}</div>
+      <div class="actions">${link(hasDataset ? "Open the lab" : "Import a dataset", hasDataset ? "#/playground" : "#/datasets", hasDataset ? "lab" : "upload", "primary")}${link("The workflow", "#/resources", "arrow", "quiet")}</div>
       <div class="hero-caption"><span></span>Small models. Shared knowledge. Our own way.</div></div>
       <div class="hero-art">${distillationArt()}</div></section>
     <section class="metrics overview-metrics" aria-label="Workspace progress">
-      ${metric("Training runs", num(workspace.runs.length), `${active} active · ${completed} completed`, "runs")}
-      ${metric("Curated examples", num(workspace.datasets.reduce((sum, dataset) => sum + dataset.records, 0)), `Across ${workspace.datasets.length} datasets`, "datasets")}
-      ${metric("Model artifacts", num(workspace.artifacts.length), "Registered local paths", "models")}
-      ${metric("Evaluations", num(workspace.evaluations.length), "Recorded benchmark results", "evaluations")}
+      ${metric("Training runs", num(workspace.runs.length), `${active} active · ${completed} completed`, "runs", "#/sessions")}
+      ${metric("Curated examples", num(workspace.datasets.reduce((sum, dataset) => sum + dataset.records, 0)), `Across ${workspace.datasets.length} datasets`, "datasets", "#/datasets")}
+      ${metric("Model artifacts", num(workspace.artifacts.length), "Registered local paths", "models", "#/checkpoints")}
+      ${metric("Evaluations", num(workspace.evaluations.length), "Recorded benchmark results", "evaluations", "#/evaluations")}
     </section>
     <section class="home-grid"><article class="home-panel"><div class="section-heading"><h2>${icon("runs")} Recent experiments</h2><a href="#/sessions" class="subtle-link">View all ${icon("arrow")}</a></div>
-      ${workspace.runs.length ? `<div class="recent-list">${workspace.runs.slice(-2).reverse().map((run) => `<a class="recent-run" href="#/sessions/${run.id}"><span class="item-icon">${icon(run.recipe.method === "lora" ? "spark" : "lab")}</span><div><strong>${esc(run.name)}</strong><small>${METHODS[run.recipe.method]} · ${esc(run.recipe.student.split("/").at(-1))}</small></div>${badge(run.status)}</a>`).join("")}</div>` : empty("Every model starts with an experiment.", "Plan your first run. Your real progress will appear here.", link("Create a training recipe", "#/playground", "plus"), "runs", true)}
+      ${workspace.runs.length ? `<div class="recent-list">${workspace.runs.slice(-2).reverse().map((run) => `<a class="recent-run" href="#/sessions/${run.id}"><span class="item-icon">${icon(run.recipe.method === "lora" ? "spark" : "lab")}</span><div><strong>${esc(run.name)}</strong><small>${METHODS[run.recipe.method]} · ${esc(run.recipe.student.split("/").at(-1))}</small></div>${badge(run.status)}</a>`).join("")}</div>` : empty("Every model starts with an experiment.", hasDataset ? "Your dataset is ready. Give your first experiment a shape." : "Start with a dataset, then shape your first training recipe.", link(hasDataset ? "Create a training recipe" : "Add training examples", hasDataset ? "#/playground" : "#/datasets", "plus"), "runs", true)}
     </article><article class="home-panel"><div class="section-heading"><h2>${icon("lab")} From teacher to familiar</h2><span class="muted">The workflow</span></div>
       <ol class="workflow"><li><span>1</span><div><a href="#/datasets">Curate the knowledge</a><p>Bring your examples or a teacher's responses.</p></div></li>
       <li><span>2</span><div><a href="#/playground">Shape a smaller model</a><p>Set the student, LoRA adapter, and training recipe.</p></div></li>
@@ -119,7 +163,7 @@ function projectsPage() {
   const rows = workspace.programs.map((program) => {
     const runs = workspace.runs.filter((run) => run.recipe.programId === program.id);
     const artifacts = workspace.artifacts.filter((artifact) => runs.some((run) => run.id === artifact.runId));
-    return [`<strong>${esc(program.name)}</strong><small>${esc(program.description)}</small>`, `<code>${esc(program.id.slice(0, 18))}</code>`, num(runs.length), num(runs.filter((run) => run.status === "completed").length), num(artifacts.length), button("Manage", "edit-program", "", "small", `data-id="${program.id}"`)];
+    return [`<a class="record-link" href="${esc(runUrl({ ...parseRoute("#/sessions"), program: program.id }))}">${esc(program.name)}</a><small>${esc(program.description)}</small>`, `<code>${esc(program.id.slice(0, 18))}</code>`, num(runs.length), num(runs.filter((run) => run.status === "completed").length), num(artifacts.length), button("Manage", "edit-program", "", "small", `data-id="${program.id}"`)];
   });
   return `${header("Programs", button("New program", "new-program", "plus"), "Keep related distillation and LoRA experiments together.")}
     ${table(["Program", "Program ID", "Runs", "Completed", "Artifacts", ""], rows, "Training programs")}`;
@@ -129,7 +173,7 @@ function datasetsPage() {
   return `${header("Datasets", button("Import JSONL", "import-dataset", "plus", "primary"), "Know what goes into the model. Keep training and holdout examples separate.")}
     <div class="notice">${icon("local")} Imports stay on this device. Only metadata and a SHA-256 fingerprint are saved; example contents are not retained.</div>
     ${workspace.datasets.length ? table(["Dataset", "Source", "Examples", "Train / holdout", "Size", ""], workspace.datasets.map((dataset) => [
-      `<strong>${esc(dataset.name)}</strong><small>${esc(dataset.filename)}</small>`,
+      `<a class="record-link" href="#/datasets/${dataset.id}">${esc(dataset.name)}</a><small>${esc(dataset.filename)}</small>`,
       dataset.kind === "teacher" ? `<span class="tag">Teacher responses</span><small>${esc(dataset.teacher)}</small>` : '<span class="tag">Supervised examples</span>',
       num(dataset.records), `${num(splitCounts(dataset).train)} / ${num(splitCounts(dataset).holdout)}`, formatBytes(dataset.bytes),
       button("Details", "dataset-details", "", "small", `data-id="${dataset.id}"`),
@@ -139,47 +183,47 @@ function datasetsPage() {
 function runsPage() {
   return `${header("Training runs", link("New recipe", "#/playground", "plus", "primary"), "A record of actual experiments. No simulated progress.")}
     <div class="filters">
-      ${select("Program", "program-filter", ui.program, [["all", "All programs"], ...programOptions()])}
+      ${select("Program", "program-filter", ui.program, [["all", "All programs"], ...programOptions(), ...(ui.program !== "all" && !workspace.programs.some((program) => program.id === ui.program) ? [[ui.program, "Unavailable program"]] : [])])}
       ${select("Status", "status-filter", ui.status, [["all", "All statuses"], ...STATUSES.map((status) => [status, status[0].toUpperCase() + status.slice(1)])])}
+      ${select("Sort runs", "run-sort", ui.sort, [["updated", "Recently updated"], ["created", "Newest recipes"], ["name", "Name A–Z"], ["progress", "Most progress"]])}
       <div class="field search-field"><label for="run-search">Search runs</label><div>${icon("search")}<input id="run-search" type="search" placeholder="Search by name, model, or run ID..." value="${esc(ui.query)}"></div></div>
-      ${button("Export CSV", "export-runs", "download", "quiet")}
-    </div><div id="run-results">${runResults()}</div>`;
+      ${button("Clear filters", "clear-run-filters", "", "quiet")}${button("Export CSV", "export-runs", "download", "quiet")}
+    </div><p class="help" id="run-count" role="status"></p><p class="help">CSV exports all matching runs, in the selected order, across every page.</p><div id="run-results">${runResults()}</div>`;
 }
 
 function runResults() {
-  const filtered = workspace.runs.filter((run) =>
-    (ui.program === "all" || run.recipe.programId === ui.program) &&
-    (ui.status === "all" || run.status === ui.status) &&
-    `${run.name} ${run.id} ${run.recipe.student}`.toLowerCase().includes(ui.query.toLowerCase()));
-  if (!filtered.length) return empty(workspace.runs.length ? "No matching runs." : "Your next model begins here.", workspace.runs.length ? "Try another status, program, or search term." : "Save a recipe in the lab, execute it with your local trainer, and record the results here.", link("Open distillation lab", "#/playground", "arrow"), "runs");
-  return table(["Experiment", "Method", "Status", "Progress", "Last recorded"], filtered.slice().reverse().map((run) => [
+  const filtered = selectRuns(workspace.runs, ui);
+  if (!filtered.length) return empty(workspace.runs.length ? "No matching runs." : "Your next model begins here.", workspace.runs.length ? "Clear filters to see all your experiments." : "Save a recipe in the lab, execute it with your local trainer, and record the results here.", workspace.runs.length ? button("Show all runs", "clear-run-filters", "arrow") : link("Open distillation lab", "#/playground", "arrow"), "runs");
+  const pages = Math.ceil(filtered.length / RUN_PAGE_SIZE);
+  const page = Math.min(ui.runPage, pages);
+  return `<h2 class="sr-only" id="run-results-heading" tabindex="-1">Matching training runs</h2>${table(["Experiment", "Method", "Status", "Progress", "Last recorded"], filtered.slice((page - 1) * RUN_PAGE_SIZE, page * RUN_PAGE_SIZE).map((run) => [
     `${runLink(run)}<small>${esc(run.recipe.student)}</small>`, METHODS[run.recipe.method], badge(run.status), progress(run), formatDate(run.updatedAt),
-  ]), "Recorded training runs");
+  ]), "Recorded training runs")}${pages > 1 ? `<nav class="pagination" aria-label="Training run pages">${button("Previous", "run-page", "", "small", `data-page="${page - 1}" ${page === 1 ? "disabled" : ""}`)}<span>Page ${page} of ${pages}</span>${button("Next", "run-page", "", "small", `data-page="${page + 1}" ${page === pages ? "disabled" : ""}`)}</nav>` : ""}`;
 }
 
-function lossChart(run) {
-  const points = run.history.filter((event) => event.loss !== null);
-  if (!points.length) return empty("Waiting for recorded loss.", "Add a progress update or import a report from your trainer.", "", "evaluations", true);
-  const maxLoss = Math.max(...points.map((point) => point.loss), 0.01);
-  const x = (point) => 46 + point.step / run.totalSteps * 690;
-  const y = (point) => 190 - point.loss / maxLoss * 155;
-  return `<svg class="loss-chart" viewBox="0 0 780 232" role="img" aria-label="Recorded training loss over optimizer steps">
-    ${[0, 0.5, 1].map((tick) => `<line x1="46" y1="${190 - tick * 155}" x2="736" y2="${190 - tick * 155}"/><text x="4" y="${194 - tick * 155}">${(maxLoss * tick).toFixed(2)}</text>`).join("")}
-    <polyline points="${points.map((point) => `${x(point)},${y(point)}`).join(" ")}" fill="none" stroke-width="2.5"/>
-    ${points.map((point) => `<circle cx="${x(point)}" cy="${y(point)}" r="4"><title>Step ${point.step}: ${point.loss}</title></circle>`).join("")}
-    <text x="46" y="220">0</text><text x="640" y="220">${run.totalSteps} steps</text></svg>`;
+function updateRunResults(focus = false) {
+  history.replaceState(null, "", runUrl(ui));
+  document.querySelector("#run-results").innerHTML = runResults();
+  syncRunCount();
+  if (focus) document.querySelector("#run-results-heading")?.focus();
+}
+
+function syncRunCount() {
+  const count = document.querySelector("#run-count");
+  if (count) count.textContent = `${num(selectRuns(workspace.runs, ui).length)} of ${num(workspace.runs.length)} runs match.`;
 }
 
 function runDetail(id) {
   const run = byId(workspace.runs, id);
   const dataset = byId(workspace.datasets, run.recipe.datasetId);
   const latest = run.history.filter((event) => event.loss !== null).at(-1);
+  const validation = run.history.filter((event) => event.evalLoss !== null).at(-1);
   const closed = ["completed", "failed", "cancelled"].includes(run.status);
   return `<a class="breadcrumb" href="#/sessions">Training runs / <span>${esc(run.name)}</span></a>
-    ${header(esc(run.name), `${button("Export recipe", "export-recipe", "download", "", `data-id="${run.id}"`)}${closed ? "" : button("Record progress", "progress", "plus", "primary", `data-id="${run.id}"`)}`, `${esc(METHODS[run.recipe.method])} · ${esc(run.recipe.student)}`)}
+    ${header(esc(run.name), `${button("Duplicate recipe", "duplicate-run", "plus", "", `data-id="${run.id}"`)}${button("Export recipe", "export-recipe", "download", "", `data-id="${run.id}"`)}${closed ? "" : button("Record progress", "progress", "plus", "primary", `data-id="${run.id}"`)}`, `${esc(METHODS[run.recipe.method])} · ${esc(run.recipe.student)}`)}
     <div class="run-status-row">${badge(run.status)}<code>${run.id}</code><span class="muted">Last recorded ${formatDate(run.updatedAt)}</span></div>
-    <div class="metrics three">${metric("Optimizer steps", `${num(run.step)} / ${num(run.totalSteps)}`, "Reported by you or an imported report", "runs")}${metric("Training loss", latest ? String(latest.loss) : "—", "Latest recorded value", "evaluations")}${metric("Dataset", num(dataset.records), `${esc(dataset.name)} · ${dataset.holdout}% holdout`, "datasets")}</div>
-    <div class="detail-grid"><section class="card chart-card"><div class="section-heading"><h2>Training loss</h2><span class="muted">Recorded observations</span></div>${lossChart(run)}</section>
+    <div class="metrics three">${metric("Optimizer steps", `${num(run.step)} / ${num(run.totalSteps)}`, "Reported by you or an imported report", "runs")}${metric("Training loss", latest ? String(latest.loss) : "—", validation ? `Latest validation loss: ${validation.evalLoss}` : "No validation loss recorded", "evaluations")}${metric("Dataset", num(dataset.records), `${esc(dataset.name)} · ${dataset.holdout}% holdout`, "datasets", `#/datasets/${dataset.id}`)}</div>
+    <div class="detail-grid"><section class="card chart-card"><div class="section-heading"><h2>Training &amp; validation loss</h2><span class="muted">Recorded observations</span></div>${lossChart(run)}</section>
     <section class="card"><h2>Recipe</h2><dl class="facts"><dt>Method</dt><dd>${METHODS[run.recipe.method]}</dd>${run.recipe.teacher ? `<dt>Teacher</dt><dd>${esc(run.recipe.teacher)}</dd>` : ""}<dt>LoRA rank / alpha</dt><dd>${run.recipe.rank} / ${run.recipe.alpha}</dd><dt>Learning rate</dt><dd>${run.recipe.learningRate}</dd><dt>Epochs</dt><dd>${run.recipe.epochs}</dd><dt>Output</dt><dd><code>${esc(run.recipe.outputPath)}</code></dd></dl><p class="muted">${esc(run.recipe.objective)}</p></section></div>
     <section class="card"><div class="section-heading"><h2>Progress journal</h2><div class="actions">${button("Report template", "report-template", "code", "small", `data-id="${run.id}"`)}${closed ? "" : button("Import report", "import-report", "upload", "small", `data-id="${run.id}"`)}</div></div>
     ${run.history.length ? table(["Recorded", "Status", "Step", "Loss / validation", "Notes"], run.history.slice().reverse().map((event) => [formatDate(event.recordedAt), badge(event.status), `${event.step} / ${event.totalSteps}`, `${event.loss ?? "—"} / ${event.evalLoss ?? "—"}`, esc(event.note) || "—"]), "Run progress journal") : '<p class="muted">This recipe is planned, not running. Start your local trainer and record its first update here.</p>'}</section>
@@ -191,7 +235,8 @@ function labPage() {
   const draft = ui.draft;
   const distill = draft.method === "distillation";
   const dataset = workspace.datasets.find((item) => item.id === draft.datasetId);
-  return `${header("Distillation lab", button("View recipe", "preview-recipe", "code", "quiet"), "Design the experiment. Train locally. Keep the knowledge.")}
+  return `${header("Distillation lab", `${button("Discard draft", "discard-draft", "", "quiet")}${button("View recipe", "preview-recipe", "code", "quiet")}`, "Design the experiment. Train locally. Keep the knowledge.")}
+    <div class="draft-status"><p id="draft-status" class="help" role="status">${esc(draftMessage)}</p>${button("Download draft", "download-draft", "download", "small quiet")}</div>
     <form id="recipe-form" data-form="recipe" class="lab-layout"><div class="lab-main">
       <div class="lab-intro"><span class="eyebrow">${icon("lab")} A NEW EXPERIMENT</span><h2>What will we teach<br>our next model?</h2><p>Build a focused LoRA adapter or pass a teacher's responses to a smaller student.</p></div>
       <div class="method-picker" role="group" aria-label="Training method">
@@ -201,13 +246,13 @@ function labPage() {
         ${field("Run name", "name", draft.name, { attrs: 'maxlength="100" placeholder="e.g. Coven reasoning · v1"' })}
         ${select("Program", "programId", draft.programId, programOptions())}
         ${field("Training objective", "objective", draft.objective, { textarea: true, attrs: 'maxlength="2000" rows="3" placeholder="What should this model do better? How will you measure it?"' })}</section>
-      <section class="form-section"><div class="section-heading"><h3>The knowledge</h3><a href="#/datasets" class="subtle-link">Manage datasets ${icon("arrow")}</a></div>
+      <section class="form-section"><div class="section-heading"><h3>The knowledge</h3>${button("Import dataset", "import-dataset", "upload", "small quiet")}</div>
         ${select("Training dataset", "datasetId", draft.datasetId, datasetOptions(), "required")}
         <div id="dataset-summary" class="dataset-summary">${dataset ? datasetSummary(dataset) : "Import a JSONL dataset to begin. Examples stay on your machine."}</div>
         ${distill ? '<p class="notice inline">Response distillation uses pre-generated teacher examples with a supervised loss. This does not call a teacher API or perform logit matching.</p>' : ""}</section>
       <section class="form-section"><h3>The destination</h3>${field("Local output directory", "outputPath", draft.outputPath, { attrs: 'maxlength="500"', hint: "A path for your trainer, not a directory created by this browser." })}</section>
     </div><aside class="lab-settings" aria-label="Training configuration">
-      <div class="inspector-title">${icon("settings")} Model &amp; adapter</div>
+      <div class="inspector-title">${icon("settings")} Model &amp; adapter</div><div class="recipe-readiness" id="recipe-readiness" role="status"></div>
       <section>${field(distill ? "Student model" : "Base model", "student", draft.student, { attrs: 'maxlength="200" list="model-options"', hint: "Local path or model repository ID." })}
         <datalist id="model-options"><option value="Qwen/Qwen2.5-7B-Instruct"><option value="meta-llama/Llama-3.1-8B-Instruct"><option value="mistralai/Mistral-7B-Instruct-v0.3"></datalist>
         ${distill ? field("Teacher model", "teacher", draft.teacher, { attrs: 'maxlength="200"', hint: "Must match the dataset's recorded teacher." }) : ""}
@@ -228,12 +273,43 @@ function datasetSummary(dataset) {
   return `${num(dataset.records)} examples · ${num(splitCounts(dataset).train)} train / ${num(splitCounts(dataset).holdout)} holdout · ${dataset.kind === "teacher" ? "Teacher-generated" : "Supervised"}`;
 }
 
+function datasetFacts(dataset) {
+  return `<dl class="facts"><dt>File</dt><dd>${esc(dataset.filename)}</dd><dt>Format</dt><dd>${dataset.format}</dd><dt>Split</dt><dd>${datasetSummary(dataset)}</dd><dt>Teacher</dt><dd>${esc(dataset.teacher) || "Not applicable"}</dd><dt>Provenance</dt><dd class="prose-notes">${esc(dataset.provenance)}</dd><dt>SHA-256</dt><dd><code>${dataset.sha256}</code></dd></dl><p class="help">The actual examples remain in your source file. Your trainer must apply the split plan with seed 42.</p>`;
+}
+
+function datasetDetail(id) {
+  const dataset = byId(workspace.datasets, id);
+  const runs = workspace.runs.filter((run) => run.recipe.datasetId === id);
+  return `<a class="breadcrumb" href="#/datasets">Datasets / ${esc(dataset.name)}</a>${header(esc(dataset.name), button("Use in a recipe", "use-dataset", "lab", "primary", `data-id="${id}"`), "Provenance and training lineage")}
+    <section class="card"><h2>Dataset provenance</h2>${datasetFacts(dataset)}</section>
+    <section class="card"><h2>Experiments using this dataset</h2>${runs.length ? table(["Experiment", "Method", "Status"], runs.map((run) => [runLink(run), METHODS[run.recipe.method], badge(run.status)]), "Dataset experiments") : '<p>No experiments reference this dataset yet. Use it in a recipe to begin.</p>'}</section>`;
+}
+
+function syncRecipe() {
+  const form = document.querySelector("#recipe-form");
+  if (!form) return;
+  const dataset = workspace.datasets.find((item) => item.id === ui.draft.datasetId);
+  const datasetControl = form.elements.namedItem("datasetId");
+  const teacherControl = form.elements.namedItem("teacher");
+  const incompatible = ui.draft.method === "distillation" && dataset && dataset.kind !== "teacher";
+  datasetControl.setCustomValidity(incompatible ? "Response distillation requires a teacher-generated dataset." : "");
+  if (teacherControl) teacherControl.setCustomValidity(dataset?.kind === "teacher" && teacherControl.value.trim() !== dataset.teacher ? "The teacher model must match the dataset's recorded teacher." : "");
+  document.querySelector("#dataset-summary").textContent = dataset ? datasetSummary(dataset) : "Import and select a JSONL dataset to begin.";
+  document.querySelector("#step-estimate").textContent = stepEstimate();
+  document.querySelector("#draft-status").textContent = draftMessage;
+  const missing = [["name", "a run name"], ["objective", "an objective"], ["datasetId", "a dataset"], ["student", "a base/student model"]].filter(([key]) => !ui.draft[key].trim()).map(([, label]) => label);
+  const ready = !missing.length && [...form.querySelectorAll("input, select, textarea")].every((control) => control.validity.valid);
+  const message = incompatible ? "Choose a teacher-generated dataset for response distillation." : teacherControl?.validity.customError ? teacherControl.validationMessage : missing.length ? `Add ${missing.join(", ")}.` : ready ? "Ready to save a planned run. Training remains external." : "Review the dataset, teacher and configuration fields before saving.";
+  const readiness = document.querySelector("#recipe-readiness");
+  if (readiness.textContent !== message) readiness.textContent = message;
+}
+
 function stepEstimate() {
   const dataset = workspace.datasets.find((item) => item.id === ui.draft.datasetId);
   const recipe = numericRecipe(ui.draft);
   if (!dataset || recipe.batchSize < 1 || recipe.accumulation < 1 || recipe.epochs < 1) return "Select a dataset to estimate steps.";
   const steps = estimatedSteps(recipe, dataset);
-  return Number.isFinite(steps) ? `~${num(steps)} optimizer steps · single device` : "Enter valid parameters to estimate steps.";
+  return Number.isFinite(steps) ? `~${num(steps)} optimizer steps · effective batch ${num(recipe.batchSize * recipe.accumulation)} · single device` : "Enter valid parameters to estimate steps.";
 }
 
 function numericRecipe(draft) {
@@ -244,28 +320,60 @@ function numericRecipe(draft) {
 
 function artifactTable(artifacts) {
   return table(["Model / artifact", "Format", "Source run", "Local path", ""], artifacts.map((artifact) => [
-    `<strong>${esc(artifact.name)}</strong><small>Registered ${formatDate(artifact.createdAt)}</small>`,
+    `<a class="record-link" id="artifact-name-${artifact.id}" href="#/checkpoints/${artifact.id}">${esc(artifact.name)}</a><small>Registered ${formatDate(artifact.createdAt)}</small>`,
     `<span class="tag">${esc(artifact.kind.toUpperCase())}</span>`, runLink(byId(workspace.runs, artifact.runId)),
     `<code class="path">${esc(artifact.path)}</code>`,
-    button("Manifest", "artifact-manifest", "download", "small", `data-id="${artifact.id}"`),
+    button("Manifest", "artifact-manifest", "download", "small", `data-id="${artifact.id}" aria-describedby="artifact-name-${artifact.id}"`),
   ]), "Local model artifacts");
 }
 
 function modelsPage() {
   const artifacts = workspace.artifacts.filter((artifact) => ui.modelKind === "all" || artifact.kind === ui.modelKind);
-  return `${header("Model library", button("Register artifact", "new-artifact", "plus"), "The adapters, checkpoints, and local models we are making our own.")}
+  return `${header("Model library", workspace.runs.length ? button("Register artifact", "new-artifact", "plus") : link("Create a training recipe", "#/playground", "plus"), "The adapters, checkpoints, and local models we are making our own.")}
     <div class="notice">${icon("models")} This is an artifact registry. Paths are recorded references; files are not uploaded, converted, or verified by the browser.</div>
     <div class="filter-tabs" role="group" aria-label="Artifact format">${[["all", "All artifacts"], ["adapter", "LoRA adapters"], ["checkpoint", "Checkpoints"], ["merged", "Merged models"], ["gguf", "GGUF"]].map(([kind, label]) => `<button data-action="model-filter" data-kind="${kind}" class="${ui.modelKind === kind ? "active" : ""}" aria-pressed="${ui.modelKind === kind}">${label}</button>`).join("")}</div>
-    ${artifacts.length ? artifactTable(artifacts) : empty("A place for our own models.", workspace.artifacts.length ? "No artifacts match this format." : "Register the local output of a training run, then attach benchmark results to compare candidates.", workspace.runs.length ? button("Register a local artifact", "new-artifact", "plus") : link("Plan the first experiment", "#/playground", "arrow"), "models")}`;
+    ${artifacts.length ? artifactTable(artifacts) : empty("A place for our own models.", workspace.artifacts.length ? "No artifacts match this format." : "Register the local output of a training run, then attach benchmark results to compare candidates.", workspace.artifacts.length ? button("Show all artifacts", "model-filter", "", "", 'data-kind="all"') : workspace.runs.length ? button("Register a local artifact", "new-artifact", "plus") : link("Plan the first experiment", "#/playground", "arrow"), "models")}`;
+}
+
+function evaluationTable(evaluations) {
+  return table(["Model", "Benchmark / version", "Score", "Samples", "Recorded", "Notes"], evaluations.slice().reverse().map((evaluation) => {
+    const artifact = byId(workspace.artifacts, evaluation.artifactId);
+    return [`<a class="record-link" href="#/checkpoints/${artifact.id}">${esc(artifact.name)}</a>`, esc(evaluation.benchmark), `<strong>${evaluation.score} / ${evaluation.maximum}</strong><small>${(evaluation.score / evaluation.maximum * 100).toFixed(1)}%</small>`, num(evaluation.samples), formatDate(evaluation.createdAt), esc(evaluation.notes) || "Not recorded"];
+  }), "Recorded benchmark evaluations");
+}
+
+function artifactDetail(id) {
+  const artifact = byId(workspace.artifacts, id);
+  const run = byId(workspace.runs, artifact.runId);
+  const dataset = byId(workspace.datasets, run.recipe.datasetId);
+  const evaluations = workspace.evaluations.filter((item) => item.artifactId === id);
+  return `<a class="breadcrumb" href="#/checkpoints">Model library / ${esc(artifact.name)}</a>${header(esc(artifact.name), `${button("Manifest", "artifact-manifest", "download", "", `data-id="${id}"`)}${button("Record evaluation", "new-evaluation", "plus", "primary", `data-id="${id}"`)}`, `${artifact.kind.toUpperCase()} · registered ${formatDate(artifact.createdAt)}`)}
+    <section class="card"><h2>Artifact lineage</h2><dl class="facts"><dt>Local path</dt><dd><code>${esc(artifact.path)}</code></dd><dt>Source run</dt><dd>${runLink(run)}</dd><dt>Base model</dt><dd>${esc(run.recipe.student)}</dd><dt>Dataset</dt><dd><a class="record-link" href="#/datasets/${dataset.id}">${esc(dataset.name)}</a></dd><dt>Fingerprint</dt><dd><code>${dataset.sha256}</code></dd><dt>Notes</dt><dd class="prose-notes">${esc(artifact.notes) || "No artifact notes recorded."}</dd></dl><p class="help">Registered reference only. File existence, compatibility and model weights are not verified by this browser.</p></section>
+    <section class="card"><div class="section-heading"><h2>Recorded evaluations</h2>${link("Compare evaluations", "#/evaluations", "arrow", "small quiet")}</div>${evaluations.length ? evaluationTable(evaluations) : '<p>No evaluations have been recorded for this artifact yet.</p>'}</section>`;
+}
+
+function comparisonResult() {
+  const first = workspace.evaluations.find((item) => item.id === ui.baseline);
+  const second = workspace.evaluations.find((item) => item.id === ui.candidate);
+  const result = compareEvaluations(first, second);
+  if (!result.compatible) return `<p class="warning">Comparison unavailable: ${result.reasons.map(esc).join(" ")}</p>`;
+  return `<p><strong>${result.delta > 0 ? "+" : ""}${result.delta.toFixed(2)} percentage points</strong> · candidate minus baseline</p>
+    ${table(["Record", "Model", "Score", "Samples"], [[first, "Baseline"], [second, "Candidate"]].map(([evaluation, label]) => [label, esc(byId(workspace.artifacts, evaluation.artifactId).name), `${evaluation.score} / ${evaluation.maximum}`, num(evaluation.samples)]), "Evaluation comparison")}
+    <p class="help">Matching recorded metadata, not proof of identical execution. Positive or negative change is not a quality ranking; interpret it using the benchmark's scoring direction.</p><details><summary>Recorded comparison conditions</summary><p class="prose-notes">${esc(first.benchmark)}<br>${esc(first.notes)}</p></details>`;
+}
+
+function comparisonPanel() {
+  if (workspace.evaluations.length < 2) return '<p class="help">Record two evaluations with the same benchmark/version, score scale, sample count and explicit conditions to compare them.</p>';
+  if (!workspace.evaluations.some((item) => item.id === ui.baseline)) ui.baseline = workspace.evaluations.at(-2).id;
+  if (!workspace.evaluations.some((item) => item.id === ui.candidate)) ui.candidate = workspace.evaluations.at(-1).id;
+  const options = workspace.evaluations.map((item) => [item.id, `${byId(workspace.artifacts, item.artifactId).name} · ${item.benchmark} · ${formatDate(item.createdAt)} · ${item.id.slice(-6)}`]);
+  return `<section class="card"><h2>Compare recorded evaluations</h2><div class="form-grid">${select("Baseline evaluation", "baseline", ui.baseline, options)}${select("Candidate evaluation", "candidate", ui.candidate, options)}</div><div id="comparison-result" aria-live="polite">${comparisonResult()}</div></section>`;
 }
 
 function evaluationsPage() {
-  return `${header("Evaluations", button("Record evaluation", "new-evaluation", "plus", "primary"), "Small is only better when it still does the work.")}
+  return `${header("Evaluations", workspace.artifacts.length ? button("Record evaluation", "new-evaluation", "plus", "primary") : link("Register a model first", "#/checkpoints", "models", "primary"), "Small is only better when it still does the work.")}
     <div class="notice">${icon("evaluations")} Record results from your evaluation tools. Compare scores only on the same benchmark version, scoring protocol, and sample set.</div>
-    ${workspace.evaluations.length ? table(["Model", "Benchmark / version", "Score", "Samples", "Recorded", "Notes"], workspace.evaluations.slice().reverse().map((evaluation) => {
-      const artifact = byId(workspace.artifacts, evaluation.artifactId);
-      return [esc(artifact.name), esc(evaluation.benchmark), `<strong>${evaluation.score} / ${evaluation.maximum}</strong><small>${(evaluation.score / evaluation.maximum * 100).toFixed(1)}%</small>`, num(evaluation.samples), formatDate(evaluation.createdAt), esc(evaluation.notes) || "—"];
-    }), "Recorded benchmark evaluations") : empty("Better models need honest measurements.", "Register an artifact, run your benchmark locally, and record its score, sample count, and evaluation conditions.", workspace.artifacts.length ? button("Record the first evaluation", "new-evaluation", "plus") : link("Open model library", "#/checkpoints", "arrow"), "evaluations")}`;
+    ${comparisonPanel()}${workspace.evaluations.length ? evaluationTable(workspace.evaluations) : empty("Better models need honest measurements.", "Register an artifact, run your benchmark locally, and record its score, sample count, and evaluation conditions.", workspace.artifacts.length ? button("Record the first evaluation", "new-evaluation", "plus") : link("Open model library", "#/checkpoints", "arrow"), "evaluations")}`;
 }
 
 function resourcesPage() {
@@ -289,27 +397,66 @@ const pages = { home: homePage, projects: projectsPage, datasets: datasetsPage, 
 
 function render() {
   const { page, id } = route();
+  if (page === "sessions" && !id) {
+    const { query, status, program, sort, runPage } = route();
+    Object.assign(ui, { query, status, program, sort, runPage });
+  }
   let content;
   if (storageError) content = `${header("Workspace needs attention")}<div class="card"><p class="error-text">${esc(storageError)}</p><div class="actions">${button("Download stored data", "raw-backup", "download")}${button("Restore backup", "restore-workspace", "upload")}${button("Reset local workspace", "reset-workspace", "", "danger")}</div></div>`;
   else if (page === "sessions" && id) content = workspace.runs.some((run) => run.id === id) ? runDetail(id) : empty("Run not found.", "This run is not in the current workspace.", link("Back to training runs", "#/sessions"));
+  else if (page === "datasets" && id) content = workspace.datasets.some((item) => item.id === id) ? datasetDetail(id) : empty("Dataset not found.", "This dataset is not in the current workspace.", link("Back to datasets", "#/datasets"));
+  else if (page === "checkpoints" && id) content = workspace.artifacts.some((item) => item.id === id) ? artifactDetail(id) : empty("Artifact not found.", "This artifact is not in the current workspace.", link("Back to model library", "#/checkpoints"));
   else content = pages[page] ? pages[page]() : empty("Page not found.", "Choose a workspace view from the navigation.", link("Back to overview", "#/home"));
-  const pageTitle = nav.find(([key]) => key === page)?.[1] || (page === "settings" ? "Workspace settings" : page === "resources" ? "Training handbook" : "Mamase");
+  const collection = page === "sessions" ? workspace?.runs : page === "datasets" ? workspace?.datasets : page === "checkpoints" ? workspace?.artifacts : null;
+  const pageTitle = (id && collection?.find((item) => item.id === id)?.name) || nav.find(([key]) => key === page)?.[1] || (page === "settings" ? "Workspace settings" : page === "resources" ? "Training handbook" : "Mamase");
   document.title = `${pageTitle} · Mamase`;
   app.innerHTML = `<div class="shell ${ui.menu ? "menu-open" : ""} ${ui.collapsed ? "collapsed" : ""}">
     <a class="skip-link" href="#main">Skip to content</a>${sidebar(page)}
     <button class="menu-scrim" type="button" data-action="close-menu" aria-label="Close navigation" ${ui.menu ? "" : "hidden"}></button>
-    <div class="mobile-header"><button type="button" class="icon-button" data-action="toggle-menu" aria-controls="navigation" aria-expanded="${ui.menu}" aria-label="Open navigation">${icon("panel")}</button><a class="brand" href="#/home">mamase.</a><span class="workspace-tag">LOCAL LAB</span></div>
-    <main class="main ${page === "home" ? "main-home" : ""}" id="main" tabindex="-1">${content}</main></div>`;
+    <div class="mobile-header"><button type="button" class="icon-button" data-action="toggle-menu" aria-controls="navigation" aria-expanded="${ui.menu}" aria-label="Open navigation">${icon("panel")}</button><a class="brand" href="#/home">mamase.</a><span class="workspace-tag">LOCAL LAB</span>${workspace ? `<button type="button" class="icon-button mobile-search" data-action="search" aria-label="Search workspace">${icon("search")}</button>` : ""}</div>
+    <main class="main ${page === "home" && !storageError ? "main-home" : ""}" id="main" tabindex="-1"><section id="workspace-alert" class="notice workspace-alert" role="alert" hidden></section>${content}</main></div>`;
   updateSidebarAccess();
+  updateStorageNotice();
+  syncRunCount();
+  syncRecipe();
   syncThemeControls();
 }
 
 function updateSidebarAccess() {
-  document.querySelector(".sidebar").inert = matchMedia("(max-width: 760px)").matches && !ui.menu;
+  const mobile = matchMedia("(max-width: 760px)").matches;
+  const sidebar = document.querySelector(".sidebar");
+  const expanded = mobile && ui.menu;
+  const toggle = document.querySelector('[data-action="toggle-menu"]');
+  const focusWasInSidebar = sidebar.contains(document.activeElement);
+  if (!mobile) ui.menu = false;
+  document.querySelector(".shell").classList.toggle("menu-open", expanded);
+  document.querySelector(".shell").classList.toggle("collapsed", ui.collapsed);
+  sidebar.inert = mobile && !expanded;
+  sidebar.toggleAttribute("aria-modal", expanded);
+  if (expanded) { sidebar.setAttribute("role", "dialog"); sidebar.setAttribute("aria-modal", "true"); }
+  else sidebar.removeAttribute("role");
+  document.querySelector("#main").inert = expanded;
+  document.querySelector(".mobile-header").inert = expanded;
+  document.querySelector(".menu-scrim").hidden = !expanded;
+  toggle.setAttribute("aria-expanded", String(expanded));
+  const collapse = document.querySelector('[data-action="toggle-sidebar"]');
+  collapse.setAttribute("aria-label", mobile ? "Close navigation" : `${ui.collapsed ? "Expand" : "Collapse"} navigation`);
+  if (mobile && !expanded && focusWasInSidebar) toggle.focus();
+}
+
+function updateStorageNotice() {
+  const notice = document.querySelector("#workspace-alert");
+  notice.hidden = !ui.conflict;
+  document.querySelector("#main").classList.toggle("has-workspace-alert", ui.conflict);
+  if (ui.conflict && !notice.childElementCount) notice.innerHTML = `<div><strong>This workspace changed in another tab.</strong><p>Your open forms have been kept. Reload the latest data before saving to avoid overwriting changes.</p><div class="actions">${button("Export open workspace", "export-workspace", "download", "small")}${button("Reload workspace", "reload-workspace", "", "small")}</div></div>`;
 }
 
 function persist(next, expectedSource) {
-  assert(localStorage.getItem(STORAGE_KEY) === expectedSource, "This workspace changed while you were editing. Reload before saving to avoid overwriting those changes.");
+  if (localStorage.getItem(STORAGE_KEY) !== expectedSource) {
+    ui.conflict = true;
+    updateStorageNotice();
+    throw new Error("This workspace changed while you were editing. Reload before saving to avoid overwriting those changes.");
+  }
   workspace = saveWorkspace(localStorage, next);
   savedSource = localStorage.getItem(STORAGE_KEY);
   storageError = "";
@@ -318,6 +465,8 @@ function persist(next, expectedSource) {
 function notify(message, error = false) {
   toast.textContent = message;
   toast.classList.toggle("error", error);
+  toast.setAttribute("role", error ? "alert" : "status");
+  toast.setAttribute("aria-live", error ? "assertive" : "polite");
   toast.hidden = false;
   clearTimeout(notify.timer);
   notify.timer = setTimeout(() => { toast.hidden = true; }, error ? 10000 : 4500);
@@ -326,11 +475,19 @@ function notify(message, error = false) {
 let modalContext;
 let previousFocus;
 function openModal(title, body, form = "", context = {}) {
-  previousFocus = document.activeElement;
+  if (!dialog.open) previousFocus = document.activeElement;
   modalContext = context;
   dialog.innerHTML = `<div class="modal-header"><h2 id="dialog-title">${title}</h2><button type="button" class="icon-button" data-action="close-dialog" aria-label="Close dialog">${icon("close")}</button></div>
     ${form ? `<form data-form="${form}">` : "<div>"}${body}<p class="form-error" role="alert" hidden></p>${form ? "</form>" : "</div>"}`;
+  const ids = new Map();
+  for (const element of dialog.querySelectorAll("[id]:not(#dialog-title)")) {
+    ids.set(element.id, `dialog-${element.id}`);
+    element.id = `dialog-${element.id}`;
+  }
+  for (const label of dialog.querySelectorAll("label[for]")) label.htmlFor = ids.get(label.htmlFor) || label.htmlFor;
+  for (const element of dialog.querySelectorAll("[aria-describedby]")) element.setAttribute("aria-describedby", element.getAttribute("aria-describedby").split(" ").map((id) => ids.get(id) || id).join(" "));
   if (!dialog.open) dialog.showModal();
+  dialog.querySelector("input, select, textarea")?.focus();
 }
 
 function closeModal() {
@@ -355,17 +512,59 @@ function importDialog(title, form, description, context = {}) {
   openModal(title, `<p class="muted">${description}</p>${field("JSON file", "file", "", { type: "file", attrs: 'accept=".json,application/json"' })}${formFooter("Import")}`, form, context);
 }
 
+function searchResults(query) {
+  const term = query.trim().toLowerCase();
+  const destinations = [...nav, ["resources", "Training handbook", "docs"], ["settings", "Workspace settings", "settings"]]
+    .filter(([, label]) => label.toLowerCase().includes(term))
+    .map(([page, label]) => ({ label, kind: "Workspace view", detail: "", href: `#/${page}` }));
+  const results = [...destinations, ...searchWorkspace(workspace, query)];
+  return `<p class="help" role="status">${results.length} matches${results.length > 20 ? " · showing the first 20; refine your search" : ""}.</p>
+    <div class="search-results">${results.slice(0, 20).map((item) => `<a href="${esc(item.href)}"><span><strong>${esc(item.label)}</strong><small>${esc(item.kind)}${item.detail ? ` · ${esc(item.detail)}` : ""}</small></span>${icon("arrow")}</a>`).join("") || '<p>No matching records. Try a name, model ID or local path.</p>'}</div>`;
+}
+
 const actions = {
   theme: (element) => theme.setPreference(element.dataset.themeValue),
   "toggle-sidebar": () => {
     const mobile = matchMedia("(max-width: 760px)").matches;
     if (mobile) ui.menu = false; else ui.collapsed = !ui.collapsed;
-    render();
+    updateSidebarAccess();
     document.querySelector(mobile ? '[data-action="toggle-menu"]' : '[data-action="toggle-sidebar"]').focus();
   },
-  "toggle-menu": () => { ui.menu = !ui.menu; render(); if (ui.menu) document.querySelector(".sidebar .icon-button").focus(); },
-  "close-menu": () => { ui.menu = false; render(); document.querySelector('[data-action="toggle-menu"]').focus(); },
+  "toggle-menu": () => { ui.menu = !ui.menu; updateSidebarAccess(); if (ui.menu) document.querySelector(".sidebar .icon-button").focus(); },
+  "close-menu": () => { ui.menu = false; updateSidebarAccess(); document.querySelector('[data-action="toggle-menu"]').focus(); },
   "close-dialog": closeModal,
+  search: () => {
+    assert(workspace, "Open or restore a workspace before searching.");
+    if (ui.menu) actions["close-menu"]();
+    openModal("Search workspace", `<div role="search">${field("Search records and views", "workspaceSearch", "", { required: false, type: "search", attrs: 'autocomplete="off" placeholder="Run, dataset, model or local path..."' })}<div id="search-results">${searchResults("")}</div></div><p class="help">Tab through results. Enter opens a result. Escape closes search. Shortcut: ⌘/Ctrl+K.</p>`);
+  },
+  "download-draft": () => {
+    if (draftBlocked) {
+      const source = sessionStorage.getItem(DRAFT_KEY);
+      assert(source !== null, "No stored draft is available.");
+      download("coven-recipe-draft-recovery.json", source);
+    } else downloadJson("coven-recipe-draft.json", { version: 1, draft: ui.draft });
+  },
+  "discard-draft": () => openModal("Discard the recipe draft?", `<p>This removes only the draft in this tab. Saved training runs are unchanged.</p><div class="actions">${button("Keep editing", "close-dialog", "", "quiet")}${button("Discard draft", "confirm-discard-draft", "", "danger")}</div>`),
+  "confirm-discard-draft": () => { clearDraft(); closeModal(); render(); document.querySelector("#field-name")?.focus(); },
+  "replace-draft": () => { draftBlocked = false; useDraft(modalContext.draft); },
+  "duplicate-run": (element) => {
+    const run = byId(workspace.runs, element.dataset.id);
+    requestDraft({ ...Object.fromEntries(Object.entries(run.recipe).map(([key, value]) => [key, String(value)])), name: `${run.name.slice(0, 90)} · copy`, outputPath: run.recipe.outputPath.length <= 495 ? `${run.recipe.outputPath}-copy` : "" });
+  },
+  "use-dataset": (element) => {
+    const dataset = byId(workspace.datasets, element.dataset.id);
+    requestDraft({ ...defaults(), datasetId: dataset.id, method: dataset.kind === "teacher" ? "distillation" : "lora", teacher: dataset.teacher });
+  },
+  "clear-run-filters": () => {
+    Object.assign(ui, { query: "", status: "all", program: "all", sort: "updated", runPage: 1 });
+    history.replaceState(null, "", runUrl(ui));
+    render();
+    document.querySelector("#run-search").focus();
+  },
+  "run-page": (element) => { ui.runPage = Number(element.dataset.page); updateRunResults(true); },
+  "reload-workspace": () => openModal("Reload the latest workspace?", `<p>Unsubmitted settings and dialog edits will be lost. Recipe drafts remain in this tab. Export the open workspace first if you need its older saved records.</p><div class="actions">${button("Cancel", "close-dialog", "", "quiet")}${button("Reload latest data", "confirm-reload", "", "primary")}</div>`),
+  "confirm-reload": () => location.reload(),
   "new-program": () => programModal(),
   "edit-program": (element) => programModal(byId(workspace.programs, element.dataset.id)),
   "import-dataset": () => openModal("Import a dataset", `
@@ -376,12 +575,19 @@ const actions = {
     ${field("Teacher model ID (required for teacher responses)", "teacher", "", { required: false, attrs: 'maxlength="200"' })}
     ${field("Provenance & permission", "provenance", "", { textarea: true, attrs: 'rows="2" maxlength="1000" placeholder="Source, license or consent, generation process..."' })}
     ${field("Holdout percentage", "holdout", 10, { type: "number", attrs: 'min="1" max="50" step="1"', hint: "Split plan only. Apply it in your local trainer before training." })}
-    ${formFooter("Import dataset")}`, "dataset"),
+    ${formFooter("Import dataset")}`, "dataset", { fromLab: route().page === "playground" }),
   "dataset-details": (element) => {
     const dataset = byId(workspace.datasets, element.dataset.id);
-    openModal(esc(dataset.name), `<dl class="facts"><dt>File</dt><dd>${esc(dataset.filename)}</dd><dt>Format</dt><dd>${dataset.format}</dd><dt>Split</dt><dd>${datasetSummary(dataset)}</dd><dt>Teacher</dt><dd>${esc(dataset.teacher) || "Not applicable"}</dd><dt>Provenance</dt><dd>${esc(dataset.provenance)}</dd><dt>SHA-256</dt><dd><code>${dataset.sha256}</code></dd></dl><p class="help">The actual examples remain in your source file. The fingerprint identifies the exact imported content.</p>`);
+    openModal(esc(dataset.name), `${datasetFacts(dataset)}<div class="actions">${button("Use in a recipe", "use-dataset", "lab", "primary", `data-id="${dataset.id}"`)}${link("Open dataset page", `#/datasets/${dataset.id}`, "arrow", "quiet")}</div>`);
   },
-  method: (element) => { ui.draft.method = element.dataset.method; render(); },
+  method: (element) => {
+    ui.draft.method = element.dataset.method;
+    const dataset = workspace.datasets.find((item) => item.id === ui.draft.datasetId);
+    if (ui.draft.method === "distillation" && dataset?.kind === "teacher") ui.draft.teacher = dataset.teacher;
+    saveDraft();
+    render();
+    document.querySelector(`[data-method="${ui.draft.method}"]`).focus({ preventScroll: true });
+  },
   "preview-recipe": () => {
     const form = document.querySelector("#recipe-form");
     if (!form.reportValidity()) return;
@@ -411,24 +617,24 @@ const actions = {
       ${select("Source run", "runId", run.id, workspace.runs.map((item) => [item.id, item.name]))}
       ${select("Artifact format", "kind", "adapter", [["adapter", "LoRA adapter"], ["checkpoint", "Training checkpoint"], ["merged", "Merged model"], ["gguf", "GGUF"]])}
       ${field("Local file or directory path", "path", run.recipe.outputPath, { attrs: 'maxlength="1000"' })}
-      ${field("Notes (precision, quantization, checkpoint step)", "notes", "", { textarea: true, required: false, attrs: 'rows="2" maxlength="2000"' })}${formFooter("Register artifact")}`, "artifact");
+      ${field("Notes (precision, quantization, checkpoint step)", "notes", "", { textarea: true, required: false, attrs: 'rows="2" maxlength="2000"' })}${formFooter("Register artifact")}`, "artifact", { suggestedPath: run.recipe.outputPath });
   },
   "artifact-manifest": (element) => {
     const artifact = byId(workspace.artifacts, element.dataset.id);
     const run = byId(workspace.runs, artifact.runId);
     downloadJson(`${artifact.id}-manifest.json`, { schema: "mamase.model-manifest.v1", artifact, training: exportRecipe(run, workspace), evaluations: workspace.evaluations.filter((evaluation) => evaluation.artifactId === artifact.id), note: "Metadata only. Model weights remain at the recorded local path; file existence and compatibility are not verified by Mamase." });
   },
-  "model-filter": (element) => { ui.modelKind = element.dataset.kind; render(); },
-  "new-evaluation": () => {
+  "model-filter": (element) => { ui.modelKind = element.dataset.kind; render(); document.querySelector(`[data-kind="${ui.modelKind}"]`).focus({ preventScroll: true }); },
+  "new-evaluation": (element) => {
     assert(workspace.artifacts.length, "Register a model artifact before recording its evaluation.");
     openModal("Record evaluation", `<p class="muted">Use results from your local benchmark tool. Include the benchmark version and evaluation conditions for meaningful comparisons.</p>
-      ${select("Model artifact", "artifactId", workspace.artifacts.at(-1).id, workspace.artifacts.map((artifact) => [artifact.id, artifact.name]))}
+      ${select("Model artifact", "artifactId", element.dataset.id || workspace.artifacts.at(-1).id, workspace.artifacts.map((artifact) => [artifact.id, artifact.name]))}
       ${field("Benchmark & version", "benchmark", "", { attrs: 'maxlength="200" placeholder="e.g. coven-reasoning-v1 · accuracy"' })}
       <div class="form-grid">${field("Score", "score", "", { type: "number", attrs: 'min="0" step="any"' })}${field("Maximum score", "maximum", 100, { type: "number", attrs: 'min="0.000001" step="any"' })}</div>
       ${field("Number of evaluated samples", "samples", "", { type: "number", attrs: 'min="1" step="1"' })}
-      ${field("Conditions & notes", "notes", "", { textarea: true, required: false, attrs: 'rows="2" maxlength="2000" placeholder="Split, seed, prompt, decoding settings, hardware..."' })}${formFooter("Save evaluation")}`, "evaluation");
+      ${field("Conditions & notes", "notes", "", { textarea: true, required: false, attrs: 'rows="2" maxlength="2000" placeholder="Split, seed, prompt, decoding settings, hardware..."', hint: "Needed for comparisons: identify the sample set, scoring protocol, prompt, seed and decoding settings." })}${formFooter("Save evaluation")}`, "evaluation");
   },
-  "export-runs": () => download("coven-training-runs.csv", runsCsv(workspace.runs), "text/csv"),
+  "export-runs": () => download("coven-training-runs.csv", runsCsv(selectRuns(workspace.runs, ui)), "text/csv"),
   "export-workspace": () => downloadJson("coven-workspace.json", workspace),
   "restore-workspace": () => openModal("Restore a workspace backup", `<p class="warning">This replaces the current workspace. Export your current data first. Datasets and model files on disk are not affected.</p>${field("Workspace JSON backup", "file", "", { type: "file", attrs: 'accept=".json,application/json"' })}<label class="check-label"><input name="confirm" type="checkbox" required> I understand this replaces the browser's saved workspace.</label>${formFooter("Restore workspace")}`, "restore"),
   "reset-workspace": () => openModal("Reset local workspace", `<p class="warning">All recorded programs, dataset metadata, runs, artifacts, and evaluations in this browser will be removed. Export a backup first.</p>${field("Type RESET to confirm", "confirmation")}${formFooter("Reset workspace")}`, "reset"),
@@ -515,10 +721,24 @@ async function submitForm(form) {
   }
   assert(form.isConnected && (form.closest("dialog") === null || dialog.open), "The form was closed before saving. No changes were made.");
   persist(next, expectedSource);
-  if (type === "recipe" || type === "reset" || type === "restore") ui.draft = defaults();
+  if (type === "recipe" || type === "reset" || type === "restore") {
+    try { clearDraft(); } catch (error) {
+      ui.draft = defaults();
+      draftBlocked = true;
+      draftMessage = `Workspace saved, but the old draft could not be cleared: ${error.message}`;
+      message += ` ${draftMessage}`;
+    }
+  }
+  if (type === "dataset" && context.fromLab) {
+    const dataset = workspace.datasets.at(-1);
+    ui.draft.datasetId = dataset.id;
+    if (ui.draft.method === "distillation" && dataset.kind === "teacher") ui.draft.teacher = dataset.teacher;
+    saveDraft();
+  }
   if (type === "reset" || type === "restore") { ui.program = "all"; ui.status = "all"; ui.query = ""; }
   closeModal();
   if (destination && location.hash !== destination) location.hash = destination; else render();
+  if (type === "dataset" && context.fromLab) document.querySelector("#field-datasetId")?.focus();
   notify(message);
 }
 
@@ -541,44 +761,85 @@ document.addEventListener("submit", async (event) => {
   const errorBox = form.querySelector(".form-error");
   errorBox.hidden = true;
   const submit = form.querySelector('[type="submit"]');
+  const label = submit.innerHTML;
   submit.disabled = true;
+  submit.textContent = form.querySelector('input[type="file"]') ? "Importing…" : "Saving…";
+  form.setAttribute("aria-busy", "true");
   try {
     await submitForm(form);
   } catch (error) {
     errorBox.textContent = error.name === "QuotaExceededError" ? "Browser storage is full. Export a backup and free space before saving." : error.message;
     errorBox.hidden = false;
-    if (form.isConnected && (form.closest("dialog") === null || dialog.open)) errorBox.scrollIntoView({ block: "nearest" });
+    if (form.isConnected && (form.closest("dialog") === null || dialog.open)) {
+      errorBox.tabIndex = -1;
+      errorBox.focus();
+      errorBox.scrollIntoView({ block: "nearest" });
+    }
     else notify(errorBox.textContent, true);
   } finally {
     submit.disabled = false;
+    submit.innerHTML = label;
+    form.removeAttribute("aria-busy");
   }
 });
 
 document.addEventListener("input", (event) => {
   const element = event.target;
+  element.removeAttribute("aria-invalid");
   if (element.closest("#recipe-form") && element.name) {
     ui.draft[element.name] = element.value;
-    const dataset = workspace.datasets.find((item) => item.id === ui.draft.datasetId);
-    document.querySelector("#dataset-summary").textContent = dataset ? datasetSummary(dataset) : "Import and select a JSONL dataset to begin.";
-    document.querySelector("#step-estimate").textContent = stepEstimate();
+    if (element.name === "datasetId" && ui.draft.method === "distillation") {
+      const dataset = workspace.datasets.find((item) => item.id === element.value);
+      if (dataset?.kind === "teacher") {
+        ui.draft.teacher = dataset.teacher;
+        document.querySelector("#field-teacher").value = dataset.teacher;
+      }
+    }
+    saveDraft();
   }
   if (element.id === "run-search") {
     ui.query = element.value;
-    document.querySelector("#run-results").innerHTML = runResults();
+    ui.runPage = 1;
+    updateRunResults();
   }
+  if (element.name === "workspaceSearch") dialog.querySelector("#dialog-search-results").innerHTML = searchResults(element.value);
 });
+
+document.addEventListener("invalid", (event) => event.target.setAttribute("aria-invalid", "true"), true);
 
 document.addEventListener("change", (event) => {
   if (event.target.name === "program-filter") ui.program = event.target.value;
   else if (event.target.name === "status-filter") ui.status = event.target.value;
+  else if (event.target.name === "run-sort") ui.sort = event.target.value;
+  else if (["baseline", "candidate"].includes(event.target.name)) {
+    ui[event.target.name] = event.target.value;
+    document.querySelector("#comparison-result").innerHTML = comparisonResult();
+    return;
+  } else if (event.target.name === "kind" && event.target.closest('[data-form="dataset"]')) {
+    const teacher = event.target.form.elements.namedItem("teacher");
+    teacher.required = event.target.value === "teacher";
+    teacher.closest(".field").querySelector(".field-requirement").textContent = teacher.required ? "Required" : "Optional";
+    return;
+  } else if (event.target.name === "runId" && event.target.closest('[data-form="artifact"]')) {
+    const path = event.target.form.elements.namedItem("path");
+    const run = byId(workspace.runs, event.target.value);
+    if (path.value === modalContext.suggestedPath) path.value = run.recipe.outputPath;
+    modalContext.suggestedPath = run.recipe.outputPath;
+    return;
+  }
   else return;
-  document.querySelector("#run-results").innerHTML = runResults();
+  ui.runPage = 1;
+  updateRunResults();
 });
 
 document.addEventListener("keydown", (event) => {
+  if ((event.metaKey || event.ctrlKey) && !event.altKey && event.key.toLowerCase() === "k" && workspace) {
+    event.preventDefault();
+    if (!dialog.open) actions.search();
+  }
   if (event.key === "Escape" && ui.menu && !dialog.open) actions["close-menu"]();
   if (ui.menu && !dialog.open && event.key === "Tab") {
-    const targets = [...document.querySelectorAll(".sidebar a, .sidebar button")];
+    const targets = [...document.querySelectorAll(".sidebar a, .sidebar button")].filter((element) => element.getClientRects().length && !element.disabled);
     if (event.shiftKey && document.activeElement === targets[0]) { event.preventDefault(); targets.at(-1).focus(); }
     else if (!event.shiftKey && document.activeElement === targets.at(-1)) { event.preventDefault(); targets[0].focus(); }
   }
@@ -586,9 +847,13 @@ document.addEventListener("keydown", (event) => {
 
 document.addEventListener("click", (event) => {
   if (event.target.closest(".skip-link")) { event.preventDefault(); document.querySelector("#main").focus(); }
+  const destination = event.target.closest("dialog a[href^='#/']");
+  if (destination?.getAttribute("href") === location.hash) { closeModal(); document.querySelector("#main").focus(); }
 });
 window.addEventListener("hashchange", () => { ui.menu = false; closeModal(); render(); window.scrollTo(0, 0); document.querySelector("#main").focus({ preventScroll: true }); });
 window.addEventListener("resize", updateSidebarAccess);
-window.addEventListener("storage", (event) => { if (event.key === STORAGE_KEY) notify("This workspace changed in another tab. Reload before saving.", true); });
+window.addEventListener("storage", (event) => {
+  if (event.key === STORAGE_KEY || event.key === null) { ui.conflict = true; updateStorageNotice(); }
+});
 document.addEventListener("mamase:themechange", syncThemeControls);
 render();

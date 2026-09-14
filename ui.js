@@ -42,10 +42,11 @@ export function link(label, href, iconName = "", className = "") {
 
 export function field(label, name, value = "", options = {}) {
   const { type = "text", hint = "", required = true, attrs = "", textarea = false } = options;
+  const description = hint ? `aria-describedby="hint-${name}"` : "";
   const control = textarea
-    ? `<textarea id="field-${name}" name="${name}" ${required ? "required" : ""} ${attrs}>${esc(value)}</textarea>`
-    : `<input id="field-${name}" name="${name}" type="${type}" value="${esc(value)}" ${required ? "required" : ""} ${attrs}>`;
-  return `<div class="field"><label for="field-${name}">${label}</label>${control}${hint ? `<small>${hint}</small>` : ""}</div>`;
+    ? `<textarea id="field-${name}" name="${name}" ${required ? "required" : ""} ${description} ${attrs}>${esc(value)}</textarea>`
+    : `<input id="field-${name}" name="${name}" type="${type}" value="${esc(value)}" ${required ? "required" : ""} ${description} ${attrs}>`;
+  return `<div class="field"><div class="field-label"><label for="field-${name}">${label}</label><span class="field-requirement" aria-hidden="true">${required ? "Required" : "Optional"}</span></div>${control}${hint ? `<small id="hint-${name}">${hint}</small>` : ""}</div>`;
 }
 
 export function select(label, name, value, options, attrs = "") {
@@ -61,7 +62,7 @@ export function empty(title, description, action = "", iconName = "spark", compa
 }
 
 export function table(headers, rows, label) {
-  return `<div class="table-scroll" role="region" aria-label="${esc(label)}" tabindex="0"><table><thead><tr>${headers.map((heading) => `<th scope="col">${heading}</th>`).join("")}</tr></thead><tbody>${rows.map((row) => `<tr>${row.map((cell) => `<td>${cell}</td>`).join("")}</tr>`).join("")}</tbody></table></div>`;
+  return `<div class="table-scroll" role="region" aria-label="${esc(label)}" tabindex="0"><table><thead><tr>${headers.map((heading) => `<th scope="col">${heading || '<span class="sr-only">Actions</span>'}</th>`).join("")}</tr></thead><tbody>${rows.map((row) => `<tr>${row.map((cell) => `<td>${cell}</td>`).join("")}</tr>`).join("")}</tbody></table></div>`;
 }
 
 export function formatDate(source) {
@@ -77,10 +78,37 @@ export function progress(run) {
   return `<div class="progress-cell"><progress max="${run.totalSteps}" value="${run.step}" aria-label="${esc(run.name)} progress"></progress><span>${percent}%</span></div>`;
 }
 
+export function lossChart(run) {
+  const observations = run.history.filter((event) => event.loss !== null || event.evalLoss !== null);
+  if (!observations.length) return empty("Waiting for recorded loss.", "Add a progress update or import a report from your trainer.", "", "evaluations", true);
+  const maximum = Math.max(0.01, ...observations.flatMap((event) => [event.loss ?? 0, event.evalLoss ?? 0]));
+  const x = (event) => 46 + event.step / run.totalSteps * 690;
+  const y = (value) => 190 - value / maximum * 155;
+  const series = [["loss", "Training", ""], ["evalLoss", "Validation", "validation-loss"]];
+  return `<div class="chart-legend"><span>Training: ${observations.some((event) => event.loss !== null) ? "solid line" : "not recorded"}</span><span class="validation-label">Validation: ${observations.some((event) => event.evalLoss !== null) ? "dashed line" : "not recorded"}</span></div>
+    <svg class="loss-chart" viewBox="0 0 780 232" role="img" aria-label="Recorded training and validation loss over optimizer steps. Exact values follow in the loss observations table.">
+    ${[0, 0.5, 1].map((tick) => `<line x1="46" y1="${190 - tick * 155}" x2="736" y2="${190 - tick * 155}"/><text x="4" y="${194 - tick * 155}">${(maximum * tick).toFixed(2)}</text>`).join("")}
+    ${series.map(([key, label, className]) => {
+      const points = observations.filter((event) => event[key] !== null);
+      return `<polyline class="${className}" points="${points.map((event) => `${x(event)},${y(event[key])}`).join(" ")}" fill="none" stroke-width="2.5"/>${points.map((event) => `<circle class="${className}" cx="${x(event)}" cy="${y(event[key])}" r="4"><title>${label}, step ${event.step}: ${event[key]}</title></circle>`).join("")}`;
+    }).join("")}
+    <text x="46" y="220">0</text><text x="640" y="220">${run.totalSteps} steps</text></svg>
+    <p class="help">${observations.length} recorded ${observations.length === 1 ? "observation" : "observations"}. Lines connect recorded values; missing values are not treated as zero. Lower loss alone does not prove a better model.</p>
+    <details class="loss-data"><summary>View loss observations</summary>${table(["Step", "Training loss", "Validation loss", "Recorded"], observations.map((event) => [event.step, event.loss ?? "Not recorded", event.evalLoss ?? "Not recorded", formatDate(event.recordedAt)]), "Loss observations")}</details>`;
+}
+
 export function distillationArt() {
   return `<svg class="distillation-art" viewBox="0 0 590 460" role="img" aria-labelledby="distillation-art-title distillation-art-description">
     <title id="distillation-art-title">Knowledge, distilled for the coven</title>
     <desc id="distillation-art-description">An alchemical glass flask holds a constellation of knowledge. A curved condenser carries it into a smaller, lavender-colored vessel containing a bright local-model familiar.</desc>
+    <defs>
+      <linearGradient id="coven-glass-fill" x1="0" y1="0" x2="1" y2="1">
+        <stop class="art-glass-top" offset="0"/><stop class="art-glass-bottom" offset="0.65"/><stop class="art-glass-top" offset="1"/>
+      </linearGradient>
+      <linearGradient id="coven-liquid-fill" x1="0" y1="0" x2="0" y2="1">
+        <stop class="art-liquid-top" offset="0"/><stop class="art-liquid-bottom" offset="1"/>
+      </linearGradient>
+    </defs>
     <circle class="art-halo" cx="295" cy="229" r="181"/>
     <circle class="art-orbit" cx="295" cy="229" r="203" stroke-dasharray="2 9"/>
     <path class="art-orbit" d="M75 367C177 423 402 430 520 354M96 118C189 47 388 39 495 133"/>
@@ -92,6 +120,7 @@ export function distillationArt() {
     <path class="art-liquid" d="M139 250c26-22 49 16 77 2 23-12 44-17 60-8 8 47-24 86-67 86-40 0-74-36-70-80Z"/>
     <path class="art-liquid-line" d="M139 250c26-22 49 16 77 2 23-12 44-17 60-8"/>
     <path class="art-glass-shine" d="M192 119v58c-30 20-53 41-54 72"/>
+    <path class="art-refraction" d="M146 266c4 29 23 53 49 60M230 191c15 10 30 28 34 43"/>
     <rect class="art-rim" x="173" y="87" width="72" height="15" rx="7.5"/>
     <g class="art-constellation"><path d="m166 224 38-34 43 27-43 18-38-11m38-34v45l28 42"/>
       <circle cx="166" cy="224" r="5"/><circle cx="204" cy="190" r="6"/><circle cx="247" cy="217" r="4"/><circle cx="204" cy="235" r="4"/><circle cx="232" cy="277" r="4"/>
@@ -101,6 +130,7 @@ export function distillationArt() {
     <path class="art-spark" d="m210 356 7 11-7 12-7-12Z"/>
     <path class="art-glass" d="M394 299h44v16c14 10 24 24 24 41 0 26-20 45-46 45s-46-19-46-45c0-17 10-31 24-41Z"/>
     <path class="art-student" d="M381 352c15-10 20 5 36 0 13-5 26-6 34-1 4 24-10 38-35 38-23 0-38-13-35-37Z"/>
+    <path class="art-refraction" d="M383 359c1 12 8 21 16 25"/>
     <rect class="art-rim" x="386" y="291" width="60" height="12" rx="6"/>
     <path class="art-drop" d="M416 267c-4 6-8 10-8 14a8 8 0 0 0 16 0c0-4-4-8-8-14Z"/>
     <path class="art-familiar" d="m416 325 7 20 17 7-17 7-7 21-7-21-17-7 17-7Z"/>
