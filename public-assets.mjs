@@ -18,5 +18,7 @@ export const publicAssets = new Map([
   ["/training-state.js", ["training-state.js", "text/javascript"]],
   ["/training-guide.js", ["training-guide.js", "text/javascript"]],
   ["/training-client.js", ["training-client.js", "text/javascript"]],
+  ["/playground-client.js", ["playground-client.js", "text/javascript"]],
+  ["/playground.js", ["playground.js", "text/javascript"]],
   ["/favicon.svg", ["favicon.svg", "image/svg+xml"]],
 ]);

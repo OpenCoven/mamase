@@ -6,6 +6,7 @@ import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { chromium } from "playwright";
 import { LocalTrainer } from "../local-training.mjs";
+import { LocalInference } from "../local-inference.mjs";
 import { createAppServer } from "../server.mjs";
 import { createAuthApi } from "../auth-api.mjs";
 import { STORAGE_KEY, validateWorkspace } from "../workspace.js";
@@ -24,6 +25,13 @@ try {
     const modelPath = join(root, "model");
     const datasetPath = join(root, "examples.jsonl");
     await mkdir(modelPath);
+    for (const [name, contents] of Object.entries({
+      "config.json": JSON.stringify({ model_type: "llama", max_position_embeddings: 256 }),
+      "tokenizer_config.json": JSON.stringify({ chat_template: "Protocol fixture only" }),
+      "tokenizer.json": "{}",
+      "model.safetensors": "Protocol fixture, not model weights",
+      "fixture.json": JSON.stringify({ mode: "success" }),
+    })) await writeFile(join(modelPath, name), contents);
     await writeFile(datasetPath, Array.from({ length: 8 }, (_, index) => JSON.stringify({ prompt: `Example ${index}`, response: `Answer ${index}` })).join("\n"));
     fixture = { modelPath, datasetPath };
   } else {
@@ -36,7 +44,8 @@ try {
     root: join(root, "jobs"), python,
     ...(protocol ? { runner: resolve("tests/fixtures/training-worker.py"), probeArgs: ["-c", "print('Protocol fixture ready')"] } : {}),
   });
-  server = createAppServer({ training: trainer, auth: createAuthApi({ env: {} }) });
+  const inference = new LocalInference(trainer, protocol ? { runner: resolve("tests/fixtures/inference-worker.py") } : {});
+  server = createAppServer({ training: trainer, inference, auth: createAuthApi({ env: {} }) });
   server.listen(0, "127.0.0.1");
   await once(server, "listening");
   const base = `http://127.0.0.1:${server.address().port}`;
@@ -168,6 +177,45 @@ try {
   await page.getByRole("link", { name: "Review adapter", exact: true }).click();
   await page.getByRole("heading", { name: "Saved does not mean evaluated.", exact: true }).waitFor();
   await page.getByText(/not the complete model/).waitFor();
+  await page.getByRole("link", { name: "Test in playground", exact: true }).click();
+  await page.waitForURL(`**/#/testing/${job.artifact.id}`);
+  await page.waitForFunction(() => {
+    const button = document.querySelector('#pg-composer button[type="submit"]');
+    return button && !button.disabled;
+  }, null, { timeout: 45000 });
+  assert.equal(await page.getByLabel("Local trained model", { exact: true }).inputValue(), job.id);
+  const savedBeforeInference = await page.evaluate((key) => localStorage.getItem(key), STORAGE_KEY);
+  const generationEvidence = [];
+  for (const variant of ["adapter", "base"]) {
+    if (variant === "base") {
+      await page.getByRole("button", { name: "New conversation", exact: true }).click();
+      await page.getByRole("button", { name: "Clear & start new", exact: true }).click();
+      await page.getByRole("button", { name: "Base model", exact: true }).click();
+    }
+    await page.getByLabel("Max new tokens", { exact: true }).fill("16");
+    await page.getByLabel("Temperature", { exact: true }).fill("0");
+    await page.getByLabel("Message to the model", { exact: true }).fill("Hi");
+    await page.getByRole("button", { name: "Send message", exact: true }).click();
+    await page.waitForFunction(() => document.querySelector(".pg-reply-meta") && !document.querySelector('[data-pg-action="stop"]'), null, { timeout: 120000 });
+    assert.match(await page.locator("#pg-status").innerText(), /Reply complete/, await page.locator("#main").innerText());
+    assert.ok((await page.locator('[data-pg-reply="0"]').innerText()).length > 0, "The local model must produce actual text");
+    const pendingDownload = page.waitForEvent("download");
+    await page.getByRole("button", { name: "Export transcript", exact: true }).click();
+    const download = await pendingDownload;
+    const transcript = JSON.parse(await readFile(await download.path(), "utf8"));
+    assert.equal(transcript.model.jobId, job.id);
+    assert.equal(transcript.model.artifactId, job.artifact.id);
+    assert.equal(transcript.turns[0].state, "complete");
+    const result = transcript.turns[0].completion;
+    assert.equal(result.jobId, job.id);
+    assert.equal(result.variant, variant);
+    assert.ok(result.promptTokens > 0 && result.generatedTokens > 0 && result.generatedTokens <= 16);
+    generationEvidence.push({ variant, completion: result, reply: transcript.turns[0].reply });
+    assert.equal(inference.operations.size, 0);
+    assert.equal(trainer.busy, false);
+    if (process.env.MAMASE_SCREENSHOTS) await page.screenshot({ path: join(process.env.MAMASE_SCREENSHOTS, `playground-${protocol ? "protocol" : "real-mlx"}-${variant}.png`), fullPage: true, animations: "disabled" });
+  }
+  assert.equal(await page.evaluate((key) => localStorage.getItem(key), STORAGE_KEY), savedBeforeInference, "Inference must not mutate training records");
   await page.goto(runUrl);
   if (protocol) {
     await page.getByRole("button", { name: "Duplicate recipe", exact: true }).click();
@@ -219,17 +267,17 @@ try {
     const evidence = {
       diagnostic: true, backend: protocol ? "protocol-fixture-not-training" : "mlx-lm",
       runId, jobId: job.id, modelPath: job.modelPath, outputPath: job.outputPath,
-      optimizerSteps: job.run.step, observations: job.run.history, reload,
+      optimizerSteps: job.run.step, observations: job.run.history, reload, playground: generationEvidence,
     };
     await writeFile(join(root, "evidence.json"), JSON.stringify(evidence, null, 2), { flag: "wx", mode: 0o600 });
     await writeFile(join(root, "workspace.json"), JSON.stringify(workspace, null, 2), { flag: "wx", mode: 0o600 });
   }
   assert.deepEqual(errors, []);
-  console.log(`${protocol ? "Protocol-fixture" : "Real MLX-LM"} training passed: saved recipe -> local process -> streamed observations -> browser reconnect -> completed run -> one registered adapter${reload ? " -> MLX-LM reload" : ""}. ${workspace.runs[0].step} optimizer steps; ${weights.length} adapter bytes.${keepOutput ? ` Output retained in ${root}` : ""}`);
+  console.log(`${protocol ? "Protocol-fixture" : "Real MLX-LM"} training passed: saved recipe -> local process -> streamed observations -> browser reconnect -> completed run -> one registered adapter${reload ? " -> MLX-LM reload" : ""} -> playground adapter/base replies. ${workspace.runs[0].step} optimizer steps; ${weights.length} adapter bytes.${keepOutput ? ` Output retained in ${root}` : ""}`);
 } finally {
   if (browser) await browser.close();
-  if (server) server.closeTrainingConnections();
-  if (trainer) await trainer.close();
+  if (server) await server.closeLocalRuntime();
+  else if (trainer) await trainer.close();
   if (server) await new Promise((resolve) => server.close(resolve));
   if (!keepOutput) await rm(root, { recursive: true, force: true });
 }

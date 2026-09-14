@@ -60,6 +60,7 @@ test("desktop views prioritize useful records over oversized headers and cards",
     }
     assert.equal(await page.locator(".workspace-label [data-action='search']").count(), 1);
     assert.equal(await page.locator(".sidebar > .workspace-search-button").count(), 0);
+    assert.equal(await page.locator(".workspace-label [data-action='search']").innerText(), "");
     await page.getByRole("button", { name: "Collapse navigation", exact: true }).click();
     await page.getByRole("button", { name: "Search workspace", exact: true }).click();
     await page.getByRole("dialog").waitFor();
@@ -74,8 +75,16 @@ test("desktop views prioritize useful records over oversized headers and cards",
       mobileHero: document.querySelector(".home-stage").getBoundingClientRect().height,
       mobileAction: document.querySelector(".home-copy .primary").getBoundingClientRect().height,
       mobileRecentRows: [...document.querySelectorAll(".recent-run")].filter((item) => item.getClientRects().length).length,
+      metadataFits: [...document.querySelectorAll(".recent-run")].filter((item) => item.getClientRects().length).every((item) => item.querySelector("small").getBoundingClientRect().bottom < item.getBoundingClientRect().bottom),
     })));
     if (process.env.MAMASE_SCREENSHOTS) await touch.screenshot({ path: join(process.env.MAMASE_SCREENSHOTS, `${mode}-touch-home.png`), fullPage: true, animations: "disabled" });
+    await touch.getByRole("button", { name: "Open navigation", exact: true }).click();
+    const search = touch.locator(".workspace-label [data-action='search']");
+    assert.ok((await search.boundingBox()).width >= 44);
+    await search.click();
+    await touch.getByRole("dialog").waitFor();
+    await touch.keyboard.press("Escape");
+    assert.equal(await touch.getByRole("dialog").isVisible(), false);
     measurements.push(result);
     await touch.close();
     await page.close();
@@ -89,6 +98,7 @@ test("desktop views prioritize useful records over oversized headers and cards",
     assert.ok(value.mobileHero <= 250, JSON.stringify(value));
     assert.ok(value.mobileAction >= 44, JSON.stringify(value));
     assert.equal(value.mobileRecentRows, 4);
+    assert.equal(value.metadataFits, true);
     assert.equal(value.headingAlignment, "center");
     assert.ok(value.metricHeight <= 80, JSON.stringify(value));
     assert.match(value.ambient, /radial-gradient/);

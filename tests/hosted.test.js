@@ -104,7 +104,7 @@ test("prebuilt releases isolate four account functions from browser and training
     const config = JSON.parse(await readFile(join(isolated, ".vc-config.json"), "utf8"));
     assert.equal(config.launcherType, "Nodejs");
     assert.equal(config.handler, "api/auth/session.js");
-    for (const name of ["app.js", "server.mjs", "local-training.mjs", "training", ".mamase", ".env"]) {
+    for (const name of ["app.js", "playground.js", "server.mjs", "local-training.mjs", "local-inference.mjs", "training", ".mamase", ".env"]) {
       assert.equal(existsSync(join(isolated, name)), false, name);
     }
     const result = execFileSync(process.execPath, ["--input-type=module", "-e", `
@@ -162,7 +162,7 @@ test("the built hosted interface boots, explains the handoff and never calls job
       await page.emulateMedia({ colorScheme: theme });
       for (const width of [1440, 768, 390, 320]) {
         await page.setViewportSize({ width, height: 900 });
-        for (const path of ["sessions/recipe", "sessions/saved-job", "playground", "settings"]) {
+        for (const path of ["sessions/recipe", "sessions/saved-job", "playground", "testing", "settings"]) {
           await page.goto(`${base}/#/${path}`);
           await page.locator("#main h1").waitFor();
           if (path.startsWith("sessions/")) {
@@ -170,6 +170,9 @@ test("the built hosted interface boots, explains the handoff and never calls job
             assert.equal(await page.getByRole("button", { name: "Review & start training", exact: true }).count(), 0);
             assert.equal(await page.getByRole("button", { name: "Export workspace", exact: true }).count(), 1);
             assert.equal(await page.locator("#local-training-panel .run-warning").count(), 0);
+          } else if (path === "testing") {
+            await page.getByText("Model testing runs on your Mac.", { exact: true }).waitFor();
+            assert.equal(await page.getByRole("button", { name: "Send message", exact: true }).isDisabled(), true);
           } else await page.locator(path === "playground" ? "#recipe-form" : "#workspace-size").waitFor();
           assert.equal(await page.evaluate(() => document.documentElement.scrollWidth), width, `${theme} ${width} ${path}`);
           if (process.env.MAMASE_SCREENSHOTS && [1440, 390].includes(width)) {
@@ -182,7 +185,7 @@ test("the built hosted interface boots, explains the handoff and never calls job
     assert.ok(apiCalls.length);
     assert.ok(apiCalls.every((path) => ["/api/training/capabilities", "/api/auth/session"].includes(path)), JSON.stringify(apiCalls));
     assert.deepEqual(errors, []);
-    for (const path of ["/server.mjs", "/.mamase/training/owner.json", "/.env", "/training/mlx_runner.py"]) {
+    for (const path of ["/server.mjs", "/local-inference.mjs", "/.mamase/training/owner.json", "/.env", "/training/mlx_runner.py", "/training/mlx_infer.py"]) {
       assert.equal((await fetch(`${base}${path}`)).status, 404);
     }
   } finally {

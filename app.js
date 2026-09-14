@@ -16,6 +16,7 @@ import { syntheticSuiteTemplate, suiteAssessment } from "./evaluation-suites.js"
 import { readReviewFile, prepareReview, recordHumanDecision } from "./human-review.js";
 import { suiteFacts, decisionHistory, reviewBody, reviewAnnotations } from "./review-view.js";
 import { familiarContextLabel } from "./context-summary.js";
+import { ModelPlayground } from "./playground.js";
 
 const app = document.querySelector("#app");
 const dialog = document.querySelector("#dialog");
@@ -28,6 +29,7 @@ const trainingSyncErrors = new Map();
 let submissionCount = 0;
 let trainingFlushTimer;
 const training = new TrainingClient({ onJob: receiveTrainingJob, onStatus: updateTrainingPanel });
+const modelPlayground = new ModelPlayground({ hosted, notify: (...args) => notify(...args), download: (...args) => downloadJson(...args) });
 let workspace;
 let savedSource;
 let storageError = "";
@@ -57,7 +59,7 @@ try {
 }
 const nav = [
   ["home", "Overview", "home"], ["projects", "Programs", "projects"], ["datasets", "Datasets", "datasets"],
-  ["sessions", "Training runs", "runs"], ["checkpoints", "Model library", "models"], ["playground", "Distillation lab", "lab"],
+  ["sessions", "Training runs", "runs"], ["checkpoints", "Model library", "models"], ["testing", "Playground", "chat"], ["playground", "Distillation lab", "lab"],
   ["evaluations", "Evaluations", "evaluations"],
 ];
 const now = () => new Date().toISOString();
@@ -111,11 +113,11 @@ function requestDraft(draft) {
 function sidebar(page) {
   const links = [...nav, ["resources", "Training handbook", "docs"], ["settings", "Workspace settings", "settings"]];
   return `<aside class="sidebar" id="navigation" aria-label="Workspace navigation">
-    <div class="brand-row"><a class="brand" href="#/home" aria-label="Mamase overview">mamase<span class="brand-dot">.</span></a>
+    <div class="brand-row"><a class="brand" href="#/home" aria-label="Mamasé overview">mamasé<span class="brand-dot">.</span></a>
       <button class="icon-button" type="button" data-action="toggle-sidebar" aria-label="${ui.collapsed ? "Expand" : "Collapse"} navigation">${icon("panel")}</button></div>
     <div class="workspace-label"><span class="tiny-mark">${icon("spark")}</span><span class="workspace-identity"><small class="workspace-tag">${hosted ? "HOSTED" : "LOCAL"}</small><span class="workspace-name" title="${esc(workspace?.name || "The Coven")}">${esc(workspace?.name || "The Coven")}</span></span>
       ${workspace ? `<button type="button" class="icon-button workspace-search-button" data-action="search" aria-label="Search workspace" title="Search workspace (Ctrl K)">${icon("search")}</button>` : ""}</div>
-    <nav>${links.map(([id, label, glyph], index) => `${[0, 2, 7].includes(index) ? `<div class="nav-section">${index === 0 ? "Workspace" : index === 2 ? "Model development" : "Resources"}</div>` : ""}<a href="#/${id}" class="nav-link ${page === id ? "active" : ""}" ${page === id ? 'aria-current="page"' : ""} aria-label="${label}" title="${label}">${icon(glyph)}<span>${label}</span>${id === "sessions" && workspace?.runs.length ? `<span class="nav-count">${workspace.runs.length}</span>` : ""}</a>`).join("")}</nav>
+    <nav>${links.map(([id, label, glyph], index) => `${[0, 2, nav.length].includes(index) ? `<div class="nav-section">${index === 0 ? "Workspace" : index === 2 ? "Model development" : "Resources"}</div>` : ""}<a href="#/${id}" class="nav-link ${page === id ? "active" : ""}" ${page === id ? 'aria-current="page"' : ""} aria-label="${label}" title="${label}">${icon(glyph)}<span>${label}</span>${id === "sessions" && workspace?.runs.length ? `<span class="nav-count">${workspace.runs.length}</span>` : ""}</a>`).join("")}</nav>
     <div class="sidebar-bottom"><div class="local-status"><span class="status-dot"></span><span>${hosted ? "Saved in this browser" : "Local workspace"}</span></div>
       <p>Knowledge stays in the coven.</p>
       <a class="profile" id="account-profile" href="#/settings" aria-label="Account settings">${accountProfile()}</a></div>
@@ -585,7 +587,7 @@ function artifactTable(artifacts) {
     `<a class="record-link" id="artifact-name-${artifact.id}" href="#/checkpoints/${artifact.id}">${esc(artifact.name)}</a><small>${artifact.lineage ? `${esc(artifact.lineage.instanceId)} / ${esc(artifact.lineage.familiarId)} · CLI training report` : artifact.id === `artifact-${byId(workspace.runs, artifact.runId).localJobId}` ? "Managed trainer output" : "Manual file reference"}</small>${artifact.lineage ? `<small>Holdout loss: ${artifact.lineage.baseLoss.toFixed(4)} base → ${artifact.lineage.adapterLoss.toFixed(4)} adapter · not a final benchmark</small>` : ""}`,
     `<span class="tag">${esc(artifact.kind.toUpperCase())}</span><small>${esc(familiarContextLabel(artifact.lineage))}</small>`, runLink(byId(workspace.runs, artifact.runId)),
     `<code class="path">${esc(artifact.path)}</code>`,
-    button("Manifest", "artifact-manifest", "download", "small", `data-id="${artifact.id}" aria-describedby="artifact-name-${artifact.id}"`),
+    `<div class="actions">${artifact.id === `artifact-${byId(workspace.runs, artifact.runId).localJobId}` && artifact.kind === "adapter" ? `<a class="button small" href="#/testing/${artifact.id}" aria-describedby="artifact-name-${artifact.id}">${icon("chat")} Test model</a>` : ""}${button("Manifest", "artifact-manifest", "download", "small", `data-id="${artifact.id}" aria-describedby="artifact-name-${artifact.id}"`)}</div>`,
   ]), "Local model artifacts");
 }
 
@@ -614,9 +616,9 @@ function artifactDetail(id) {
   const dataset = byId(workspace.datasets, run.recipe.datasetId);
   const evaluations = workspace.evaluations.filter((item) => item.artifactId === id);
   const managed = artifact.id === `artifact-${run.localJobId}` && run.status === "completed";
-  return `<a class="breadcrumb" href="#/checkpoints">Model library / ${esc(artifact.name)}</a>${header(esc(artifact.name), `${button("Manifest", "artifact-manifest", "download", "", `data-id="${id}"`)}${button("Record evaluation", "new-evaluation", "plus", "primary", `data-id="${id}"`)}`, `${artifact.kind.toUpperCase()} · registered ${formatDate(artifact.createdAt)}`)}
+  return `<a class="breadcrumb" href="#/checkpoints">Model library / ${esc(artifact.name)}</a>${header(esc(artifact.name), `${managed && artifact.kind === "adapter" ? link("Test in playground", `#/testing/${id}`, "chat", "primary") : ""}${button("Manifest", "artifact-manifest", "download", "", `data-id="${id}"`)}${button("Record evaluation", "new-evaluation", "plus", managed ? "" : "primary", `data-id="${id}"`)}`, `${artifact.kind.toUpperCase()} · registered ${formatDate(artifact.createdAt)}`)}
     <section class="card"><span class="eyebrow">REVIEW BEFORE USE</span><h2>${evaluations.length ? "Results are recorded. Review the evidence." : "Saved does not mean evaluated."}</h2><p>${artifact.kind === "adapter" ? "This adapter contains learned changes, not the complete model. Load it alongside the same compatible base model in your local runner." : "Check this output's format and requirements in a compatible local runner before using it."}</p>
-      <ol class="next-steps"><li><strong>Try fresh examples.</strong> Use examples excluded from training and holdout. Mamase does not run inference on this page.</li><li><strong>Compare fairly.</strong> Give the base model and adapted model the same prompts and settings. Read the answers, not just a score.</li><li><strong>Record what happened.</strong> Save the benchmark version, sample count and conditions. Training alone does not approve a model or change the coven's runtime.</li></ol></section>
+      <ol class="next-steps"><li><strong>Try fresh examples.</strong> Use examples excluded from training and holdout. ${managed ? "Open the playground to test this adapter with its original base model on the training Mac." : "External formats need a compatible local runner; the playground supports managed MLX adapters."}</li><li><strong>Compare fairly.</strong> Give the base model and adapted model the same prompts and settings. Read the answers, not just a score.</li><li><strong>Record what happened.</strong> Save the benchmark version, sample count and conditions. Training alone does not approve a model or change the coven's runtime.</li></ol></section>
     <section class="card"><h2>Files and source experiment</h2><dl class="facts"><dt>${artifact.kind === "adapter" ? "Adapter folder" : "Local path"}</dt><dd><code>${esc(artifact.path)}</code></dd><dt>Base model</dt><dd><code>${esc(run.recipe.student)}</code></dd><dt>Source run</dt><dd>${runLink(run)}</dd><dt>Dataset</dt><dd><a class="record-link" href="#/datasets/${dataset.id}">${esc(dataset.name)}</a></dd><dt>Registration</dt><dd>${managed ? "The local trainer finalized its files before automatic registration." : artifact.lineage ? "Imported from a CLI training result, with recorded fingerprints." : "Manually recorded file reference; contents were not checked."}</dd><dt>Notes</dt><dd class="prose-notes">${esc(artifact.notes) || "No artifact notes recorded."}</dd></dl><p class="help">The browser does not recheck these files now. Keep model files separately: workspace backups and the downloadable manifest contain references, not model weights.</p><details class="disclosure"><summary>Dataset fingerprint</summary><code>${dataset.sha256}</code></details></section>
     <section class="card"><h2>Familiar context</h2><p class="prose-notes">${esc(familiarContextLabel(managed ? undefined : artifact.lineage))}</p><p class="help">Selected-source fingerprints bind declared configuration, not authenticated membership, full runtime parity or permission to adopt. Legacy identity-files-only results do not include role/skill sources. Managed and manually registered outputs remain unbound unless the identity-bound CLI evidence is imported.</p></section>
     <section class="card"><div class="section-heading"><h2>Recorded evaluations</h2>${link("Compare evaluations", "#/evaluations", "arrow", "small quiet")}</div>${evaluations.length ? evaluationTable(evaluations) : '<p>No evaluations have been recorded for this artifact yet.</p>'}</section>`;
@@ -669,14 +671,15 @@ function settingsPage() {
     <div class="settings-grid">${accountSettings()}${appearanceSettings()}
     <section class="card"><h2>Workspace identity</h2><form data-form="workspace">${field("Workspace name", "workspaceName", workspace.name, { attrs: 'maxlength="80"' })}<button class="button primary" type="submit">Save name</button><p class="form-error" role="alert" hidden></p></form></section>
     <section class="card"><h2>Backups &amp; portability</h2><p>Recipes, dataset fingerprints, recorded results, and artifact references are saved in this browser, not in a cloud account.</p><div class="actions">${button("Export workspace", "export-workspace", "download")}${button("Restore backup", "restore-workspace", "upload")}</div><p class="help">Exports use a versioned backup envelope. Restore previews the source format and collection counts before replacement; legacy v1 backups remain supported. Appearance settings, dataset contents and model weights are not included.</p></section>
-    <section class="card"><h2>Execution boundary</h2><dl class="facts"><dt>Trainer</dt><dd>${hosted ? "Not available on this hosted site" : "Local MLX-LM or explicit PEFT CLI"}</dd><dt>Inference</dt><dd>No runtime endpoint connected</dd><dt>Storage</dt><dd>Workspace in this browser; model files stay on local disk</dd><dt>Workspace size</dt><dd id="workspace-size">${formatBytes(new TextEncoder().encode(JSON.stringify(workspace)).length)} / 4 MB</dd></dl><p>${hosted ? "This site supports workspace planning and account sign-in, not training. Export a backup and restore it in local Mamase to move your recipes; the two addresses do not share browser storage." : "Managed jobs keep their input, splits, logs and adapters separately. Check the trainer connection from a saved run."}</p></section>
+    <section class="card"><h2>Execution boundary</h2><dl class="facts"><dt>Trainer</dt><dd>${hosted ? "Not available on this hosted site" : "Local MLX-LM or explicit PEFT CLI"}</dd><dt>Inference</dt><dd>${hosted ? "Not available on this hosted site" : "Local MLX playground for completed managed models"}</dd><dt>Storage</dt><dd>Workspace in this browser; model files stay on local disk</dd><dt>Workspace size</dt><dd id="workspace-size">${formatBytes(new TextEncoder().encode(JSON.stringify(workspace)).length)} / 4 MB</dd></dl><p>${hosted ? "This site supports workspace planning and account sign-in, not training or inference. Export a backup and restore it in local Mamasé to move your recipes; the two addresses do not share browser storage." : "Managed jobs keep their input, splits, logs and adapters separately. Test their output in the playground. Training and generation share one local runtime slot."}</p></section>
     <section class="card"><h2>Reset workspace</h2><p>Remove this browser's saved metadata and start fresh. Your datasets and local model files are not touched.</p>${button("Reset local workspace", "reset-workspace", "", "danger")}</section></div>`;
 }
 
-const pages = { home: homePage, projects: projectsPage, datasets: datasetsPage, sessions: runsPage, checkpoints: modelsPage, playground: labPage, evaluations: evaluationsPage, resources: resourcesPage, settings: settingsPage };
+const pages = { home: homePage, projects: projectsPage, datasets: datasetsPage, sessions: runsPage, checkpoints: modelsPage, playground: labPage, testing: () => '<div id="model-playground"></div>', evaluations: evaluationsPage, resources: resourcesPage, settings: settingsPage };
 
 function render() {
   const { page, id } = route();
+  if (page !== "testing" || storageError) modelPlayground.deactivate();
   const viewKey = `${page}/${id || ""}`;
   const expanded = app.dataset.viewKey === viewKey ? [...app.querySelectorAll("details[id][open]")].map((element) => element.id) : [];
   app.dataset.viewKey = viewKey;
@@ -691,12 +694,12 @@ function render() {
   else if (page === "checkpoints" && id) content = workspace.artifacts.some((item) => item.id === id) ? artifactDetail(id) : empty("Artifact not found.", "This artifact is not in the current workspace.", link("Back to model library", "#/checkpoints"));
   else content = pages[page] ? pages[page]() : empty("Page not found.", "Choose a workspace view from the navigation.", link("Back to overview", "#/home"));
   const collection = page === "sessions" ? workspace?.runs : page === "datasets" ? workspace?.datasets : page === "checkpoints" ? workspace?.artifacts : null;
-  const pageTitle = (id && collection?.find((item) => item.id === id)?.name) || nav.find(([key]) => key === page)?.[1] || (page === "settings" ? "Workspace settings" : page === "resources" ? "Training handbook" : "Mamase");
-  document.title = `${pageTitle} · Mamase`;
+  const pageTitle = (id && collection?.find((item) => item.id === id)?.name) || nav.find(([key]) => key === page)?.[1] || (page === "settings" ? "Workspace settings" : page === "resources" ? "Training handbook" : "Mamasé");
+  document.title = `${pageTitle} · Mamasé`;
   app.innerHTML = `<div class="shell ${ui.menu ? "menu-open" : ""} ${ui.collapsed ? "collapsed" : ""}">
     <a class="skip-link" href="#main">Skip to content</a>${sidebar(page)}
     <button class="menu-scrim" type="button" data-action="close-menu" aria-label="Close navigation" ${ui.menu ? "" : "hidden"}></button>
-    <div class="mobile-header"><button type="button" class="icon-button" data-action="toggle-menu" aria-controls="navigation" aria-expanded="${ui.menu}" aria-label="Open navigation">${icon("panel")}</button><a class="brand" href="#/home">mamase.</a><span class="workspace-tag">${hosted ? "HOSTED" : "LOCAL LAB"}</span>${workspace ? `<button type="button" class="icon-button mobile-search" data-action="search" aria-label="Search workspace">${icon("search")}</button>` : ""}<a class="icon-button" href="#/settings" aria-label="Account settings">${icon("settings")}</a></div>
+    <div class="mobile-header"><button type="button" class="icon-button" data-action="toggle-menu" aria-controls="navigation" aria-expanded="${ui.menu}" aria-label="Open navigation">${icon("panel")}</button><a class="brand" href="#/home">mamasé.</a><span class="workspace-tag">${hosted ? "HOSTED" : "LOCAL LAB"}</span>${workspace ? `<button type="button" class="icon-button mobile-search" data-action="search" aria-label="Search workspace">${icon("search")}</button>` : ""}<a class="icon-button" href="#/settings" aria-label="Account settings">${icon("settings")}</a></div>
     <main class="main ${page === "home" && !storageError ? "main-home" : ""}" id="main" tabindex="-1"><section id="workspace-alert" class="notice workspace-alert" role="alert" hidden></section>${content}</main></div>`;
   for (const id of expanded) { const details = document.getElementById(id); if (details instanceof HTMLDetailsElement) details.open = true; }
   updateSidebarAccess();
@@ -704,6 +707,7 @@ function render() {
   syncRunCount();
   syncRecipe();
   syncThemeControls();
+  if (page === "testing" && !storageError) modelPlayground.mount(document.querySelector("#model-playground"), { artifactId: id, workspace });
   void training.watch(page === "sessions" && id && !storageError ? workspace.runs.find((run) => run.id === id) : null);
 }
 
