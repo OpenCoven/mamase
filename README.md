@@ -1096,6 +1096,8 @@ npm run ops -- add-dataset --workspace ... --expected-revision <sha256> \
 npm run ops -- create-recipe --workspace ... --expected-revision <sha256> --input plan.json   # { id?, name, recipe }
 npm run ops -- export-recipe --workspace ... --run run-1 --out recipe.json
 npm run ops -- import-progress|import-result|import-evaluation --workspace ... --expected-revision <sha256> --file report.json
+npm run ops -- receipt --workspace ... --run run-1 [--bundle .lab/experiment] [--server http://127.0.0.1:3000] [--out receipt.json]
+npm run ops -- import-job --workspace ... --expected-revision <sha256> --file job.json   # { job } from GET /api/training/runs/<runId>
 npm run ops -- export-backup --workspace ... --out backup.json        # import in Settings
 npm run ops -- import-backup --workspace ... --expected-revision <sha256> --file backup.json
 ```
@@ -1112,6 +1114,27 @@ the same bytes under a different explicit `--id`, are `blocked` conflicts.
 Progress imports reuse the browser's preview: duplicates are counted, conflicts
 block, and existing evidence is never rewritten. Errors carry a stable `code` and a
 content-free message. Nothing here starts training or grants authorization.
+
+#### Workflow receipts
+
+`receipt` derives a `mamase.workflow-receipt.v1` for one run from durable state:
+the detected **lane** (`peft` for bound or terminal recipes, `managed-mlx` for
+Train on this Mac, `unselected` otherwise), input/output fingerprints, executed
+steps with their evidence, typed blockers, and the single `nextAction` with its
+`requiresApproval` flag. It launches nothing. With `--bundle`, the PEFT lane checks
+the prepared `bundle.json` against the saved recipe and dataset fingerprint and
+reports `source-changed`, `recipe-changed` or `bundle-changed` instead of guessing;
+`familiarContext` distinguishes `identity-files-only` from reviewed
+`selected-sources`. With `--server`, the managed lane performs loopback GET lookups
+of capabilities and the run's job; the response is classified as `available`,
+`busy`, `unavailable`, `disabled`, `unsupported` (hosted) or `unreachable`, the
+command token is dropped, and capabilities are never treated as proof of model or
+memory readiness. A recorded job that the server cannot answer for becomes a
+"look up by run ID" step, never a relaunch; failed or cancelled managed jobs stay
+failed. `import-job` reconciles a finished job record through the same identity,
+history and artifact guards the browser uses, so lost responses recover with the
+recorded job ID and replays are `unchanged`. Receipts end at human handoff: an
+`evidence-ready` state is not deployment, identity replacement or a tool grant.
 
 ## Development checks
 
