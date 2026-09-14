@@ -58,8 +58,9 @@ async function issuer(context) {
     cookiePassword: "synthetic-cookie-password-for-tests-only",
     origin: "https://mamase.example", redirectUri: "https://mamase.example/api/auth/callback",
   };
+  // Match production; parallel test workers can delay loopback crypto beyond one second.
   const sdk = new WorkOS(config.apiKey, {
-    clientId: config.clientId, apiHostname: "127.0.0.1", https: false, port: server.address().port, maxRetries: 0, timeout: 1000,
+    clientId: config.clientId, apiHostname: "127.0.0.1", https: false, port: server.address().port, maxRetries: 0, timeout: 10000,
   });
   return { config, state, provider: createWorkOSProvider(config, sdk) };
 }
