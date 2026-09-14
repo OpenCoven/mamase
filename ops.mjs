@@ -9,6 +9,8 @@ import {
 } from "./workspace.js";
 import { exportWorkspaceBackup, parseWorkspaceBackup, MAX_BACKUP_BYTES } from "./backups.js";
 import { boundedRead, sha256 } from "./familiar-context.mjs";
+import { mergeTrainingJob } from "./training-state.js";
+import { workflowReceipt, WORKFLOW_RECEIPT_SCHEMA } from "./workflow-receipt.mjs";
 
 export const CATALOG_SCHEMA = "mamase.operation-catalog.v1";
 export const RECEIPT_SCHEMA = "mamase.operation-receipt.v1";
@@ -38,6 +40,8 @@ export const OPERATIONS = Object.freeze({
   "import-result": { mutates: true, workspace: "write", input: { file: "training result.json path", id: "optional stable artifact ID" }, output: RECEIPT_SCHEMA, description: "Import a CLI training result as an adapter artifact with lineage." },
   "import-evaluation": { mutates: true, workspace: "write", input: { file: "evaluation report.json path", id: "optional stable evaluation ID" }, output: RECEIPT_SCHEMA, description: "Import a paired evaluation report bound to an imported result." },
   "export-backup": { mutates: false, workspace: "read", input: { out: "backup file path (exclusive create)" }, output: "mamase.workspace-backup.v1", description: "Write the browser-compatible backup envelope for import into the UI." },
+  receipt: { mutates: false, workspace: "read", input: { run: "run ID", bundle: "optional prepared PEFT bundle directory", server: "optional loopback Mamase URL such as http://127.0.0.1:3000 for managed capability/job lookup", out: "optional receipt path (exclusive create)" }, output: WORKFLOW_RECEIPT_SCHEMA, description: "Derive lane, fingerprints, executed steps, blockers and the next permitted action for a run. Launches nothing." },
+  "import-job": { mutates: true, workspace: "write", input: { file: "JSON path holding { job } from GET /api/training/runs/<runId> or /api/training/jobs/<jobId>" }, output: RECEIPT_SCHEMA, description: "Reconcile a managed MLX job record into the run using the existing identity, history and artifact guards. Never relaunches." },
   "import-backup": { mutates: true, workspace: "write", input: { file: "mamase.workspace-backup.v1 or legacy workspace JSON path" }, output: RECEIPT_SCHEMA, description: "Replace the file workspace with an explicitly selected backup. Requires the expected revision." },
 });
 
@@ -47,6 +51,7 @@ export function catalog() {
     workspaceFileSchema: WORKSPACE_FILE_SCHEMA,
     backupSchema: "mamase.workspace-backup.v1",
     recipeSchema: "mamase.training-recipe.v1",
+    workflowReceiptSchema: WORKFLOW_RECEIPT_SCHEMA,
     outcomes: OUTCOMES,
     exitCodes: { changed: 0, unchanged: 0, blocked: 2, failed: 1 },
     revision: "SHA-256 of the workspace file bytes; every mutating operation requires --expected-revision.",
@@ -142,6 +147,30 @@ async function readInputJson(path, label, limit = MAX_INPUT_BYTES) {
 async function exclusiveWrite(path, content) {
   assert(typeof path === "string" && path.trim(), "--out must name a new file.");
   await writeFile(resolve(path), content, { flag: "wx", mode: 0o600 });
+}
+
+// Loopback-only GET lookups. The capability token in the response is dropped before anything is returned or written.
+async function lookupManaged(server, runId) {
+  let url;
+  try { url = new URL(server); } catch { throw new OperationError("invalid-server", "--server must be a loopback URL such as http://127.0.0.1:3000."); }
+  assert(url.protocol === "http:" && ["127.0.0.1", "localhost"].includes(url.hostname) && url.pathname === "/" && !url.search, "--server must be a loopback URL such as http://127.0.0.1:3000.");
+  const get = async (pathname) => {
+    let response;
+    try {
+      response = await fetch(new URL(pathname, url), { cache: "no-store", signal: AbortSignal.timeout(35000) });
+    } catch { return null; }
+    const body = await response.text();
+    assert(body.length <= MAX_INPUT_BYTES, "The local server response is too large.");
+    if (!response.headers.get("content-type")?.includes("application/json")) return null;
+    const value = parseJson(Buffer.from(body), "Local server response");
+    if (!response.ok) throw new OperationError("server-error", typeof value?.error === "string" ? value.error.slice(0, 500) : `Local server request failed (${response.status}).`);
+    return value;
+  };
+  const capability = await get("/api/training/capabilities");
+  if (capability === null) return { capability: null, job: null };
+  const { token, ...safe } = capability;
+  const lookup = await get(`/api/training/runs/${runId}`);
+  return { capability: safe, job: lookup?.job ?? null };
 }
 
 export async function runOperation(name, options = {}) {
@@ -255,6 +284,37 @@ export async function runOperation(name, options = {}) {
     return commit(next, { [collection.slice(0, -1)]: metadata.id, sha256: digest });
   }
 
+  if (name === "receipt") {
+    const run = workspace.runs.find((item) => item.id === options.run);
+    if (!run) throw blocked("record-missing", "No run with that ID exists in this workspace.");
+    const context = { revision };
+    if (options.bundle !== undefined) {
+      assert(typeof options.bundle === "string" && options.bundle.trim(), "--bundle must name the prepared bundle directory.");
+      try {
+        const bytes = await boundedRead(resolve(options.bundle, "bundle.json"), MAX_INPUT_BYTES);
+        context.bundle = { ...parseJson(bytes, "bundle.json"), sha256: sha256(bytes) };
+      } catch (error) {
+        if (error.code !== "ENOENT" && error.code !== "ENOTDIR") throw error;
+        context.bundle = null;
+      }
+    }
+    if (options.server !== undefined) Object.assign(context, await lookupManaged(options.server, run.id));
+    const result = workflowReceipt(workspace, run, context);
+    if (options.out) await exclusiveWrite(options.out, `${JSON.stringify(result, null, 2)}\n`);
+    return result;
+  }
+
+  if (name === "import-job") {
+    const { value } = await readInputJson(options.file, "job record", 4 * 1024 * 1024);
+    const job = value?.job ?? value;
+    assert(job && typeof job === "object" && typeof job.id === "string" && job.run && typeof job.run === "object", "Expected a managed job record with id and run.");
+    assert(!["starting", "running", "cancelling"].includes(job.status), "The job is still active. Reconcile after it finishes; nothing is cancelled or relaunched here.");
+    const next = mergeTrainingJob(workspace, job);
+    const details = { run: job.run.id, job: job.id, status: job.status, ...(job.artifact ? { artifact: `artifact-${job.id}` } : {}) };
+    if (same(next, workspace)) return unchanged({ ...details, duplicate: "the job record is already reflected in this workspace" });
+    return commit(next, details);
+  }
+
   if (name === "import-backup") {
     assert(typeof options.file === "string" && options.file.trim(), "--file must name the backup to restore.");
     const bytes = await boundedRead(resolve(options.file), MAX_BACKUP_BYTES);
@@ -279,6 +339,7 @@ export async function main(argv) {
         workspace: { type: "string" }, "expected-revision": { type: "string" }, file: { type: "string" }, input: { type: "string" },
         out: { type: "string" }, run: { type: "string" }, record: { type: "string" }, id: { type: "string" }, name: { type: "string" },
         kind: { type: "string" }, holdout: { type: "string" }, provenance: { type: "string" }, teacher: { type: "string" }, help: { type: "boolean" },
+      bundle: { type: "string" }, server: { type: "string" },
       },
     }));
   } catch (error) {
