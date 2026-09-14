@@ -500,12 +500,37 @@ clipping essential content. Opening navigation does not rebuild open forms.
 
 Workspace metadata is saved in this browser's `localStorage`, under
 `mamase.coven-lab.v1` (4 MB maximum). **Export a workspace backup from Settings**
-before clearing browser data or changing browsers/ports. Restoring a validated
-backup replaces existing metadata after confirmation. Corrupt data and failed
-saves surface an error instead of silently resetting the workspace. Concurrent
+before clearing browser data or changing browsers/ports. New exports are compact
+JSON envelopes with `schema: "mamase.workspace-backup.v1"`, an `exportedAt`
+timestamp, and the validated version-1 `workspace` payload. Internal localStorage
+remains workspace v1; this does not introduce a new database or sync format.
+
+| Backup source | Restore behavior |
+| --- | --- |
+| `mamase.workspace-backup.v1` envelope | Validate the envelope and workspace, retaining recorded lineage and comparisons. |
+| Legacy raw workspace with `version: 1` | Explicit legacy-v1 migration: validate history and relationships, apply the existing defaults for older recipe fields, and retain workspace v1. The next export uses an envelope. |
+| Future/unknown schema, extra envelope fields, or unsupported workspace version | Reject without downgrading, resetting, or replacing data. Keep the original file for a compatible version. |
+
+**Preview backup** shows the source file/format, export timestamp when available,
+workspace names, and current/replacement collection counts. No replacement occurs
+until the separate confirmation checkbox and **Restore workspace** action.
+The serialized workspace must still fit 4 MiB; the backup file allows an extra
+1 KiB for envelope metadata. Compact exports round-trip even at the workspace
+limit. Export timestamps describe the file, not independently verified provenance.
+
+Corrupt data and failed saves surface an error instead of silently resetting the workspace. Concurrent
 edits from another tab show a persistent warning and require a reload to avoid
-overwriting changes. The warning preserves open forms and offers an export of
-the currently open workspace before reloading newer saved data.
+overwriting changes. Restore confirmation is bound to its preview's workspace
+snapshot. Quota failures retain that preview for retry; backup and reload actions
+remain available. Cancelled or interrupted reads leave the original data intact.
+If the current workspace is corrupt, **Download stored data** preserves its exact
+bytes before restoring a valid backup.
+
+Backups include only the validated workspace metadata, including optional adapter
+lineage, paired-comparison summaries, and managed job IDs. They exclude appearance
+preferences, recipe drafts, original dataset contents, identity snapshots, model
+weights, and per-case report prompts/responses. Restoring does not cancel or delete
+managed jobs or files on disk, and does not change the selected appearance mode.
 
 There is no hosted training, inference endpoint, cloud sync, billing, account
 system, or fabricated training progress. Managed training runs locally through

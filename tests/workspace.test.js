@@ -6,6 +6,7 @@ import {
   exportRecipe, runsCsv, escapeHtml,
 } from "../workspace.js";
 import * as reports from "../workspace.js";
+import { BACKUP_SCHEMA, MAX_BACKUP_BYTES, exportWorkspaceBackup, parseWorkspaceBackup } from "../backups.js";
 
 const timestamp = "2026-09-13T15:00:00.000Z";
 const dataset = {
@@ -278,6 +279,69 @@ test("backup validation detects duplicate IDs, broken links, and inconsistent hi
   assert.throws(() => validateWorkspace({ ...workspace, datasets: [dataset, dataset] }), /Duplicate/);
   assert.throws(() => validateWorkspace({ ...workspace, runs: [{ ...workspace.runs[0], step: 50 }] }), /history/);
   assert.throws(() => validateWorkspace({ ...workspace, datasets: [] }), /dataset/);
+});
+
+test("versioned backups and the explicit legacy migration preserve workspace v1", () => {
+  const workspace = fixture();
+  workspace.runs[0] = recordProgress(workspace.runs[0], event());
+  const before = JSON.stringify(workspace);
+  const source = exportWorkspaceBackup(workspace, timestamp);
+  assert.deepEqual(Object.keys(JSON.parse(source)), ["schema", "exportedAt", "workspace"]);
+  const restored = parseWorkspaceBackup(source);
+  assert.equal(restored.format, BACKUP_SCHEMA);
+  assert.equal(restored.exportedAt, timestamp);
+  assert.equal(restored.migration, null);
+  assert.deepEqual(restored.workspace, workspace);
+  const legacy = structuredClone(workspace);
+  for (const key of ["adapter", "familiarId", "instanceId"]) delete legacy.runs[0].recipe[key];
+  const migrated = parseWorkspaceBackup(JSON.stringify(legacy));
+  assert.equal(migrated.format, "legacy-workspace-v1");
+  assert.equal(migrated.exportedAt, null);
+  assert.equal(migrated.migration, "legacy-workspace-v1-to-backup-v1");
+  assert.deepEqual(migrated.workspace, workspace);
+  assert.equal(JSON.stringify(workspace), before);
+});
+
+test("future backup schemas and corrupt histories are rejected without mutation", () => {
+  const workspace = fixture();
+  const before = JSON.stringify(workspace);
+  const envelope = JSON.parse(exportWorkspaceBackup(workspace, timestamp));
+  for (const input of [
+    { ...workspace, version: 2 },
+    { ...workspace, schema: "mamase.workspace-backup.v2" },
+    { ...envelope, schema: "mamase.workspace-backup.v2" },
+    { ...envelope, workspace: { ...workspace, version: 2 } },
+    { ...envelope, futureField: "not silently discarded" },
+    { ...envelope, exportedAt: "not a date" },
+    { ...envelope, exportedAt: " ".repeat(90) + "September 13, 2026" },
+    { ...workspace, runs: [{ ...workspace.runs[0], step: 1 }] },
+    null, [],
+  ]) {
+    assert.throws(() => parseWorkspaceBackup(JSON.stringify(input)));
+    assert.equal(JSON.stringify(workspace), before);
+  }
+  assert.throws(() => parseWorkspaceBackup("broken JSON"), SyntaxError);
+  assert.throws(() => parseWorkspaceBackup(" ".repeat(MAX_BACKUP_BYTES + 1)), /size limit/);
+});
+
+test("compact envelopes round-trip a full-size workspace without bypassing storage limits", () => {
+  const workspace = createWorkspace();
+  workspace.programs = Array.from({ length: 5000 }, (_, index) => ({ id: `p-${index}`, name: "Synthetic", description: "" }));
+  const limit = 4 * 1024 * 1024;
+  let remaining = limit - new TextEncoder().encode(JSON.stringify(workspace)).length;
+  for (const program of workspace.programs) {
+    const bytes = Math.min(1000, remaining);
+    program.description = "x".repeat(bytes);
+    remaining -= bytes;
+  }
+  assert.equal(remaining, 0);
+  const source = exportWorkspaceBackup(workspace, timestamp);
+  assert.ok(new TextEncoder().encode(source).length > limit);
+  assert.ok(new TextEncoder().encode(source).length <= MAX_BACKUP_BYTES);
+  assert.deepEqual(parseWorkspaceBackup(source).workspace, workspace);
+  workspace.programs.at(-1).description += "x";
+  assert.throws(() => exportWorkspaceBackup(workspace, timestamp), /4 MB storage limit/);
+  assert.throws(() => parseWorkspaceBackup(JSON.stringify(workspace)), /4 MB storage limit/);
 });
 
 test("exported recipe describes an external plan, split policy, and recorded dataset", () => {

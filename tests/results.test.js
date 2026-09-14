@@ -4,6 +4,7 @@ import {
   createWorkspace, createRun, recordProgress, importTrainingResult, importEvaluationReport,
   validateWorkspace, saveWorkspace, loadWorkspace,
 } from "../workspace.js";
+import { exportWorkspaceBackup, parseWorkspaceBackup } from "../backups.js";
 
 const timestamp = "2026-09-13T18:00:00.000Z";
 const hash = (letter) => letter.repeat(64);
@@ -115,6 +116,10 @@ test("paired reports retain comparisons and category regressions without private
   const storage = { setItem: (_key, value) => { stored = value; }, getItem: () => stored };
   saveWorkspace(storage, imported);
   assert.deepEqual(loadWorkspace(storage), imported);
+  const backup = exportWorkspaceBackup(imported, timestamp);
+  assert.ok(!backup.includes('"cases"') && !backup.includes('"response"') && !backup.includes('"checks"'));
+  assert.deepEqual(parseWorkspaceBackup(backup).workspace, imported);
+  assert.deepEqual(parseWorkspaceBackup(saved).workspace, imported);
   assert.throws(() => importEvaluationReport(imported, report, { ...evalMetadata, id: "another" }), /already imported/);
 });
 
