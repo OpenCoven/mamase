@@ -2,10 +2,9 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
-import { join } from "node:path";
 
 const root = fileURLToPath(new URL("../", import.meta.url));
-const python = process.env.MAMASE_TRAINING_PYTHON || join(root, ".venv/bin/python");
+const python = process.env.MAMASE_TRAINING_PYTHON || "python3";
 
 test("independent evaluation validates bounded suites, leakage, rules, and generation budgets", () => {
   const result = spawnSync(python, ["-c", `
