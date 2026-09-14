@@ -7,14 +7,10 @@ familiar identity or proof of improvement.
 
 ## Run locally
 
-<<<<<<< Updated upstream
 The browser workspace requires Node.js 20 or later, with no runtime dependencies
-or build step. Optional local training uses Python 3.10+ and the pinned packages
-in `training/requirements.txt`.
-=======
-Requires Node.js 20 or later. The planning interface needs no runtime
-dependencies or build step. Managed training adds an optional Python/MLX runtime.
->>>>>>> Stashed changes
+or build step. Optional identity-bound PEFT training uses Python 3.10+ and
+`training/requirements.txt`. Managed Apple Silicon training uses a separate
+Python 3.12 environment with `training/requirements-mlx.txt`.
 
 ```sh
 npm start
@@ -37,10 +33,10 @@ different port.
    configure the student/base model, rank, alpha, learning rate, epochs,
    micro-batch size, gradient accumulation, sequence length, and output path.
    Saving creates a **planned run**, not a training process.
-<<<<<<< Updated upstream
 4. **Training runs:** export a recipe and execute the explicit local preparation
-   and training commands below, then import its progress report. Actual observations
-   drive status, optimizer-step progress, loss charts, and the progress journal.
+   and training commands below, then import its progress report. Alternatively,
+   launch a managed local MLX-LM job. Actual observations drive status,
+   optimizer-step progress, loss charts, and the progress journal.
 5. **Model library:** import a completed training `result.json` to register its
    actual adapter path, familiar binding, source fingerprints, and paired
    holdout loss. Other adapters, checkpoints, merged weights, and GGUF paths
@@ -48,16 +44,6 @@ different port.
 6. **Evaluations:** run an independent, versioned suite locally, then import its
    paired report to compare base/adapter rule passes and category regressions.
    Manual benchmark observations remain available and clearly labeled.
-=======
-4. **Training runs:** launch a managed local MLX-LM job, or export a recipe to an
-   external trainer and record/import its progress. Real observations drive
-   status, optimizer-step progress, loss charts, and the progress journal.
-5. **Model library:** register local adapters, checkpoints, merged weights, or
-   GGUF paths. Download a manifest with the recipe, dataset fingerprint, and
-   recorded evaluations.
-6. **Evaluations:** record benchmark versions, scores, sample counts, and
-   conditions for comparisons.
->>>>>>> Stashed changes
 
 ### Managed local training on Apple Silicon
 
@@ -65,7 +51,7 @@ Install the isolated optional runtime with Python 3.12:
 
 ```sh
 python3.12 -m venv .venv-training
-.venv-training/bin/python -m pip install -r training/requirements.txt
+.venv-training/bin/python -m pip install -r training/requirements-mlx.txt
 npm run dev
 ```
 
@@ -191,8 +177,7 @@ Or:
 {"messages":[{"role":"user","content":"A question"},{"role":"assistant","content":"A reviewed answer"}]}
 ```
 
-<<<<<<< Updated upstream
-At least two examples are required. Preparation orders unique prompts by
+At least two examples are required. The identity-bound preparation CLI orders unique prompts by
 SHA-256 of seed 42 and the prompt fingerprint, reserves the holdout count, and
 writes disjoint split files. Duplicate prompts (even with different responses)
 are rejected instead of leaking between splits. Conversations must alternate
@@ -200,13 +185,10 @@ user/assistant turns and end with an assistant response. Remove dataset system
 messages: the selected familiar's canonical identity supplies the system prompt.
 The browser itself stores no examples. The handbook includes a tiny sample;
 it is not a serious training corpus.
-=======
-At least two examples are required. Mamase records a deterministic split plan:
-shuffle with seed 42, reserve the holdout count, and train on the remainder.
-Managed MLX jobs write and apply this split. **External trainers must apply it
-themselves**; the browser-only metadata import does not write split files.
-The Training handbook includes a small downloadable example dataset.
->>>>>>> Stashed changes
+
+The separate managed MLX worker shuffles source indices with seed 42 and
+reserves the holdout count. It writes and applies that split itself; browser-only
+metadata imports do not write split files.
 
 ### Response distillation
 
@@ -495,20 +477,13 @@ overwriting changes. The warning preserves open forms and offers an export of
 the currently open workspace before reloading newer saved data.
 
 There is no hosted training, inference endpoint, cloud sync, billing, account
-<<<<<<< Updated upstream
 system, or fabricated progress. The browser's artifact paths remain references;
 the explicit Python runner does save actual local adapters and fingerprints.
-It does not merge adapters or export GGUF. `.lab/`, `outputs/`, `.venv/`, and
-cache directories are ignored by Git. Bundles contain identity and training
-data: keep them private and do not commit or publish them. Fonts and artwork
-are local; browser documentation links open only when clicked.
-=======
-system, or fabricated training progress. Managed training runs locally through
-MLX-LM; its output files are checked at finalization. Other artifact paths remain
-unverified references. The browser does not merge adapters, quantize weights,
-or export model binaries. Fonts and artwork are local; the app makes no external service
-requests. External documentation links open only when clicked.
->>>>>>> Stashed changes
+Managed MLX training checks its output files at finalization. Neither path
+merges adapters or exports GGUF. `.lab/`, `.mamase/`, `outputs/`, `.venv/`,
+`.venv-training/`, and cache directories are ignored by Git. Bundles and managed
+jobs contain private training data: do not commit or publish them. Fonts and
+artwork are local; browser documentation links open only when clicked.
 
 ## Development checks
 

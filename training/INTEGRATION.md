@@ -10,12 +10,13 @@ From the repository root:
 
 ```sh
 uv venv --python /opt/homebrew/bin/python3.12 .venv-training
-uv pip install --python .venv-training/bin/python -r training/requirements.txt
+uv pip install --python .venv-training/bin/python -r training/requirements-mlx.txt
 ```
 
 Do not recreate an environment while a worker is running. The installed interpreter
 is Python 3.12.11. All 34 dependencies, including transitives, are pinned in
-`requirements.txt`. The main pins are MLX/MLX-Metal 0.32.2, MLX-LM 0.31.3,
+`requirements-mlx.txt`. The separate `requirements.txt` is for the PEFT CLI,
+not this managed worker. The main MLX pins are MLX/MLX-Metal 0.32.2, MLX-LM 0.31.3,
 Transformers 5.17.0, Tokenizers 0.23.2, NumPy 2.5.3, Safetensors 0.8.0,
 SentencePiece 0.2.2, Protobuf 7.36.1, PyYAML 6.0.3, Jinja2 3.1.6 and
 Hugging Face Hub 1.31.0. No PyTorch or Hugging Face datasets dependency is used.
