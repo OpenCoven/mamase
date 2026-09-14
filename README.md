@@ -1,4 +1,4 @@
-# mamase
+# mamasé
 
 **The Coven's distillation lab.** A local-first workspace for identity-bound
 familiar experiments, executable adapter training, response distillation, and
@@ -209,7 +209,10 @@ workspace backups.
    actual adapter path, familiar binding, source fingerprints, and paired
    holdout loss. Other adapters, checkpoints, merged weights, and GGUF paths
    can still be registered manually.
-6. **Evaluations:** run an independent, versioned suite locally, then import its
+6. **Playground:** open a completed managed MLX adapter, send fresh prompts,
+   and compare against its original base model in a separate conversation.
+   Replies stream from the local Mac; they are not evaluation scores.
+7. **Evaluations:** run an independent, versioned suite locally, then import its
    paired report to compare base/adapter rule passes and category regressions.
    Manual benchmark observations remain available and clearly labeled.
 
@@ -311,6 +314,59 @@ running Mamase instances or move it while jobs are registered. The API is
 loopback-only, rejects cross-origin/invalid-host requests, requires a per-server
 capability token for launch/cancel, and invokes a fixed Python worker without a
 shell. It is a personal local application, not a multi-user authenticated service.
+
+### Testing a trained model
+
+Open **Playground** in the navigation, or **Test in playground** on a managed
+adapter's Model library page. The testing route is `#/testing`; the existing
+`#/playground` recipe-lab bookmarks still work.
+
+The model picker reads completed jobs from the local server, not browser
+metadata. Models remain discoverable after a browser-workspace reset. Missing
+files are shown as unavailable, with restoration guidance. Only finalized
+managed MLX **LoRA** outputs are supported; manually registered files,
+PEFT adapters, GGUF and remote inference endpoints are not.
+
+Choose **Trained adapter** to load the original base plus its learned LoRA
+weights, or **Base model** to omit the adapter. Both modes require the saved
+managed job and its original files. Configure an optional system prompt,
+temperature, reply-token budget and seed, then send a message. The runtime uses
+the tokenizer's existing chat template; it never invents a missing template or
+silently truncates context. No familiar identity, tools, web access or remote
+model code are injected.
+
+Replies stream as plain text. The footer reports actual prompt/generated-token
+counts, elapsed time and whether the model stopped or reached its output limit.
+**Stop generation**, navigating away or closing the tab terminates the worker.
+Partial/failed replies stay visibly incomplete and are excluded from later
+conversation context. Model, variant and system instructions stay locked for
+the conversation; **New conversation** requires confirmation before clearing.
+Opening another model also asks before discarding replies.
+
+Generation and training share one runtime slot. Each reply loads its model in
+a separate worker and releases memory afterward; large models may load slowly.
+The server bounds requests to 32 messages, 32,000 text characters, 8,192 input
+tokens and 1–2,048 new tokens, with a five-minute generation deadline. The
+model's own context limit can be lower. Temperature is 0–2; the seed is a
+32-bit unsigned integer. A seed aids comparison but does not promise identical
+results across hardware. The protected generation API uses the same loopback,
+Origin and per-server command-token checks as training.
+
+Conversations stay in memory in this tab, **not** browser storage or workspace
+backups. Reloading clears them. **Export transcript** explicitly downloads the
+messages, original model/job identity, settings and measured completion data.
+Prompts and replies are not logged by the server; worker diagnostics are
+bounded and their text withheld for privacy. Model testing changes neither
+adapter weights nor training/evaluation records, and does not approve deployment.
+
+The hosted site explains this local handoff and never requests model discovery
+or generation. WorkOS sign-in does not add hosted compute or transfer weights.
+Run `npm run dev` on the Apple Silicon Mac holding the models to generate.
+
+`npm run test:training` exercises real offline training, reloads the learned
+weights, opens the registered adapter in the browser, and generates replies in
+both adapter and base mode. Its `--protocol-fixture` option covers the same UI
+plumbing without doing ML; diagnostic outputs are not evidence of model quality.
 
 ### Moving between experiments
 
@@ -949,19 +1005,25 @@ controls are intentionally absent from the sidebar.
 System is the default and follows device appearance changes immediately.
 Explicit choices persist across reloads under `mamase.appearance.v1`, separately
 from workspace backups and resets. The saved theme is applied before the first
-paint. All views, dialogs, charts, and the original distillation-vessel hero
-illustration adapt to the selected theme without external image or font requests.
-The workspace uses neutral, opaque surfaces with muted lavender OpenCoven accents.
-Dark mode pairs a charcoal `#1b1c20` canvas with `#24252a` panels; light mode uses
+paint. All views, dialogs, charts, and the orbital welcome frame adapt to the
+selected theme without external image or font requests.
+The interface follows the Coven Cave's instrument-panel style: neutral surfaces,
+fine lavender frames, softly shaded edges, and compact monospaced metadata.
+Dark mode pairs a charcoal `#121214` canvas with `#1c1c1f` panels; light mode uses
 soft grey `#e9e9ee` and off-white `#f3f3f6`, rather than pure-white surfaces.
-Lavender identifies primary actions, selection, and keyboard focus. Status colors
-remain distinct, and holdout loss uses a dashed, muted teal line. Compact headers,
-8px panel corners, denser tables, and a smaller illustration prioritize records
-over decoration. Touch controls retain 44px targets and readable input sizes.
+Primary actions are outlined rather than solid lavender blocks. Subtle lighting
+and orbital guides stay decorative; increased contrast or reduced transparency
+preferences remove those effects. Status labels and activity-row edge markers
+remain distinct, and holdout loss uses a dashed, muted teal line. Touch controls
+retain 44px targets and readable input sizes.
+
+The workspace search icon sits directly to the right of the workspace name,
+not in a separate row. It remains available in collapsed navigation; Ctrl/Cmd+K
+still opens search.
 
 Overview cards link to their corresponding workspace views, and the main action
 guides a new workspace to import data before planning training. The overview is
-bounded to the viewport and a maximum content width of 1800px, with explicit
+bounded to the viewport and a maximum content width of 1160px, with explicit
 hero width/height limits. Desktop layouts show up to six recent experiments; phones
 show two or four, depending on available space, and keep the full workflow available
 through the handbook link rather than stacking additional panels below the fold.

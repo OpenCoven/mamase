@@ -29,8 +29,28 @@ export class LocalTrainer extends EventEmitter {
   }
 
   async initialize() {
+    if (this.closed) throw problem("The local training server is stopping.", 503);
     if (!this.initializing) this.initializing = this.load();
     return this.initializing;
+  }
+
+  get busy() {
+    return this.launching || Boolean(this.inferenceLease) || this.processes.size > 0 || [...this.jobs.values()].some(active);
+  }
+
+  async acquireInference(cancel) {
+    await this.initialize();
+    if (this.closed) throw problem("The local training server is stopping.", 503);
+    if (this.busy) throw problem("The local runtime is busy training or generating. Wait or cancel the active operation.", 409);
+    if (typeof cancel !== "function") throw new TypeError("Inference reservations require a cancellation callback.");
+    const lease = { cancel };
+    lease.done = new Promise((resolveDone) => { lease.resolveDone = resolveDone; });
+    this.inferenceLease = lease;
+    return () => {
+      if (this.inferenceLease !== lease) return;
+      this.inferenceLease = null;
+      lease.resolveDone();
+    };
   }
 
   async load() {
@@ -79,26 +99,39 @@ export class LocalTrainer extends EventEmitter {
 
   async availability() {
     await this.initialize();
+    if (this.closed) throw problem("The local training server is stopping.", 503);
     if (!this.probing) this.probing = new Promise((resolveProbe) => {
       const child = spawn(this.python, this.probeArgs, { cwd: this.cwd, env: environment(), stdio: ["ignore", "pipe", "pipe"], shell: false });
       this.probeChild = child;
+      const context = { child, exited: false, failure: null };
+      context.closed = new Promise((resolveClosed) => { context.resolveClosed = resolveClosed; });
+      this.probeContext = context;
       let output = "";
       const collect = (chunk) => { output = (output + chunk.toString()).slice(-4000); };
       child.stdout.on("data", collect);
       child.stderr.on("data", collect);
       const timer = setTimeout(() => child.kill("SIGKILL"), 30000);
       child.on("error", (error) => {
-        clearTimeout(timer);
-        resolveProbe({ available: false, message: `Local Python runtime unavailable: ${error.message}`, python: this.python });
+        context.failure = error.message;
       });
       child.on("close", (code) => {
+        context.exited = true;
         clearTimeout(timer);
-        resolveProbe({ available: code === 0, message: code === 0 ? output.trim() : `Install the training requirements for ${this.python}. ${output.trim()}`, python: this.python });
+        clearTimeout(context.killTimer);
+        context.resolveClosed();
+        resolveProbe({ available: code === 0 && !context.failure, message: context.failure ? `Local Python runtime unavailable: ${context.failure}` : code === 0 ? output.trim() : `Install the training requirements for ${this.python}. ${output.trim()}`, python: this.python });
       });
     });
-    const result = await this.probing;
-    if (!result.available) this.probing = null;
-    return { ...result, enabled: true, backend: "mlx-lm", outputRoot: this.root, busy: this.launching || [...this.jobs.values()].some(active) };
+    const probing = this.probing;
+    const result = await probing;
+    if (!result.available && this.probing === probing) this.probing = null;
+    return { ...result, enabled: true, backend: "mlx-lm", outputRoot: this.root, busy: this.busy };
+  }
+
+  stopProbe(graceMs = 5000) {
+    if (!this.probeContext || this.probeContext.exited) return Promise.resolve();
+    this.terminate(this.probeContext, graceMs);
+    return this.probeContext.closed;
   }
 
   async findRun(runId) {
@@ -123,8 +156,9 @@ export class LocalTrainer extends EventEmitter {
   async launch(input) {
     await this.initialize();
     if (this.closed) throw problem("The local training server is stopping.", 503);
-    if (this.launching || [...this.jobs.values()].some(active)) throw problem("A local job is already running. Wait or cancel it before launching another.", 409);
+    if (this.busy) throw problem("A local job is already running or inference is active. Wait or cancel it before launching another.", 409);
     this.launching = true;
+    this.launchDone = new Promise((resolveDone) => { this.resolveLaunchDone = resolveDone; });
     try {
       const capability = await this.availability();
       if (!capability.available) throw problem(capability.message, 503);
@@ -164,6 +198,7 @@ export class LocalTrainer extends EventEmitter {
         await writeFile(join(staging, "original.jsonl"), source, { mode: 0o600 });
         await writeFile(join(staging, "job.json"), JSON.stringify({ version: 1, jobId: id, run, dataset, sourcePath, modelPath, outputPath }), { mode: 0o600 });
         await writeFile(join(staging, "state.json"), JSON.stringify(job), { mode: 0o600 });
+        if (this.closed) throw problem("The local training server is stopping.", 503);
         await rename(staging, directory);
       } catch (error) {
         await rm(staging, { recursive: true, force: true });
@@ -174,6 +209,7 @@ export class LocalTrainer extends EventEmitter {
       return job;
     } finally {
       this.launching = false;
+      this.resolveLaunchDone();
     }
   }
 
@@ -230,10 +266,10 @@ export class LocalTrainer extends EventEmitter {
     });
   }
 
-  terminate(context) {
+  terminate(context, graceMs = 5000) {
     if (context.exited) return;
     context.child.kill("SIGTERM");
-    if (!context.killTimer) context.killTimer = setTimeout(() => { if (!context.exited) context.child.kill("SIGKILL"); }, 5000);
+    if (!context.killTimer) context.killTimer = setTimeout(() => { if (!context.exited) context.child.kill("SIGKILL"); }, graceMs);
   }
 
   async log(job, context, source) {
@@ -286,15 +322,25 @@ export class LocalTrainer extends EventEmitter {
     return job;
   }
 
-  async close() {
+  close() {
+    if (!this.closing) this.closing = this.shutdown();
+    return this.closing;
+  }
+
+  async shutdown() {
     this.closed = true;
+    const lease = this.inferenceLease;
+    lease?.cancel();
+    const probeClosed = this.stopProbe();
     if (this.initializing) {
       try { await this.initializing; } catch (error) {
         console.error(`Closing local training after initialization failure: ${error.message}`);
         if (!this.ownsLock) return;
       }
     }
-    if (this.probeChild && this.probeChild.exitCode === null) this.probeChild.kill("SIGTERM");
+    if (lease) await lease.done;
+    await probeClosed;
+    if (this.launchDone) await this.launchDone;
     for (const [id, context] of this.processes) {
       context.cancel = true;
       this.terminate(context);

@@ -810,7 +810,7 @@ try {
     await lab.emulateMedia({ colorScheme: theme });
     for (const [width, height] of [[1440, 900], [1024, 768], [768, 1024], [760, 800], [390, 844], [390, 800], [320, 900], [320, 640], [320, 568], [844, 390]]) {
       await lab.setViewportSize({ width, height });
-      for (const path of ["home", "projects", "datasets/teacher-data", "sessions", "sessions/run-0", "checkpoints/artifact-0", "playground", "evaluations", "resources", "settings"]) {
+      for (const path of ["home", "projects", "datasets/teacher-data", "sessions", "sessions/run-0", "checkpoints/artifact-0", "playground", "testing", "evaluations", "resources", "settings"]) {
         await go(lab, path);
         await bounds(lab, path === "home");
         if (path === "sessions") {
@@ -900,7 +900,7 @@ try {
     await context.addInitScript((data) => localStorage.setItem("mamase.coven-lab.v1", JSON.stringify(data)), longContent);
     const page = await context.newPage();
     watch(page);
-    for (const path of ["home", "projects", "datasets/teacher-data", "sessions", "sessions/run-0", "checkpoints/artifact-0", "playground", "evaluations", "resources", "settings"]) {
+    for (const path of ["home", "projects", "datasets/teacher-data", "sessions", "sessions/run-0", "checkpoints/artifact-0", "playground", "testing", "evaluations", "resources", "settings"]) {
       await go(page, path);
       await bounds(page, path === "home");
     }

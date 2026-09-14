@@ -1,30 +1,33 @@
 import { randomBytes, timingSafeEqual } from "node:crypto";
+import { LocalInference } from "./local-inference.mjs";
 
 const MAX_BODY = 30 * 1024 * 1024;
 const json = (response, status, value) => response.writeHead(status, { "Content-Type": "application/json; charset=utf-8", "Cache-Control": "no-store", "X-Content-Type-Options": "nosniff" }).end(JSON.stringify(value));
 const fail = (message, status) => Object.assign(new Error(message), { status });
 
-async function readJson(request) {
+async function readJson(request, maximum = MAX_BODY) {
   if (request.headers["content-type"]?.split(";")[0] !== "application/json") throw fail("Use application/json.", 415);
   let bytes = 0;
   const chunks = [];
   for await (const chunk of request) {
     bytes += chunk.length;
-    if (bytes <= MAX_BODY) chunks.push(chunk);
+    if (bytes <= maximum) chunks.push(chunk);
   }
-  if (bytes > MAX_BODY) throw fail("Training request exceeds 30 MB.", 413);
-  try { return JSON.parse(Buffer.concat(chunks).toString("utf8")); } catch (error) {
-    if (!(error instanceof SyntaxError)) throw error;
-    throw fail("Invalid training request JSON.", 400);
+  if (bytes > maximum) throw fail(maximum === MAX_BODY ? "Training request exceeds 30 MB." : "Generation request exceeds 128 KiB.", 413);
+  try { return JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(Buffer.concat(chunks))); } catch (error) {
+    if (!(error instanceof SyntaxError || error instanceof TypeError)) throw error;
+    throw fail("Invalid training request JSON or UTF-8.", 400);
   }
 }
 
-export function createTrainingApi(trainer = null) {
+export function createTrainingApi(trainer = null, inference = trainer ? new LocalInference(trainer) : null) {
   const token = randomBytes(32).toString("hex");
   const clients = new Set();
+  let closed = false;
   const handler = async (request, response, pathname) => {
     if (!pathname.startsWith("/api/training/")) return false;
     try {
+      if (closed) throw fail("Local training API is stopping.", 503);
       const host = request.headers.host;
       const port = request.socket.localPort;
       if (![ `127.0.0.1:${port}`, `localhost:${port}`, ...(port === 80 ? ["127.0.0.1", "localhost"] : []) ].includes(host)) throw fail("Local training requires a loopback host.", 403);
@@ -40,6 +43,11 @@ export function createTrainingApi(trainer = null) {
       if (pathname === "/api/training/capabilities" && request.method === "GET") {
         const capability = trainer ? await trainer.availability() : { enabled: false, available: false, backend: "mlx-lm", message: "Local training is disabled for this server. Start Mamase with npm run dev." };
         json(response, 200, { ...capability, token });
+      } else if (pathname === "/api/training/models" && request.method === "GET") {
+        json(response, 200, trainer && inference ? await inference.models() : { models: [], busy: false });
+      } else if (pathname === "/api/training/generate" && request.method === "POST") {
+        if (!trainer || !inference) throw fail("Local inference is disabled.", 503);
+        await inference.generate(await readJson(request, 128 * 1024), response);
       } else if (/^\/api\/training\/runs\/[a-zA-Z0-9_-]{1,80}$/.test(pathname) && request.method === "GET") {
         json(response, 200, { job: trainer ? await trainer.findRun(pathname.split("/").at(-1)) : null });
       } else if (pathname === "/api/training/jobs" && request.method === "POST") {
@@ -75,11 +83,16 @@ export function createTrainingApi(trainer = null) {
         else throw fail("Local job endpoint not found.", 404);
       }
     } catch (error) {
+      if (response.destroyed) return true;
       if (!response.headersSent) json(response, error.status || (error.code ? 500 : 400), { error: error.message });
       else response.destroy(error);
     }
     return true;
   };
-  handler.close = () => { for (const response of clients) response.end(); };
+  handler.close = () => {
+    closed = true;
+    for (const response of clients) response.end();
+    return inference?.close() || Promise.resolve();
+  };
   return handler;
 }

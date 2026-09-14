@@ -7,8 +7,8 @@ import { LocalTrainer } from "./local-training.mjs";
 import { publicAssets as files } from "./public-assets.mjs";
 import { createAuthApi } from "./auth-api.mjs";
 
-export function createAppServer({ training = null, auth = createAuthApi() } = {}) {
-  const trainingApi = createTrainingApi(training);
+export function createAppServer({ training = null, inference, auth = createAuthApi() } = {}) {
+  const trainingApi = createTrainingApi(training, inference);
   const server = createServer(async (request, response) => {
     let pathname;
     try {
@@ -46,6 +46,11 @@ export function createAppServer({ training = null, auth = createAuthApi() } = {}
     }
   });
   server.closeTrainingConnections = trainingApi.close;
+  server.closeLocalRuntime = async () => {
+    await trainingApi.close();
+    await training?.close();
+  };
+  server.on("close", () => { void trainingApi.close(); });
   return server;
 }
 
@@ -58,9 +63,9 @@ if (process.argv[1] === fileURLToPath(import.meta.url)) {
   const shutdown = async () => {
     if (stopping) return;
     stopping = true;
-    server.closeTrainingConnections();
+    const closing = server.closeLocalRuntime();
     server.close();
-    try { await training.close(); } catch (error) { console.error(`Unable to close local training cleanly: ${error.message}`); process.exitCode = 1; }
+    try { await closing; } catch (error) { console.error(`Unable to close local training cleanly: ${error.message}`); process.exitCode = 1; }
   };
   process.on("SIGINT", shutdown);
   process.on("SIGTERM", shutdown);
