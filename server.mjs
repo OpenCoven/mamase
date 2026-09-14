@@ -2,6 +2,8 @@ import { createReadStream } from "node:fs";
 import { createServer } from "node:http";
 import { pipeline } from "node:stream/promises";
 import { fileURLToPath } from "node:url";
+import { createTrainingApi } from "./training-api.mjs";
+import { LocalTrainer } from "./local-training.mjs";
 
 const files = new Map([
   ["/", ["index.html", "text/html"]],
@@ -12,23 +14,30 @@ const files = new Map([
   ["/ui.js", ["ui.js", "text/javascript"]],
   ["/workspace.js", ["workspace.js", "text/javascript"]],
   ["/experience.js", ["experience.js", "text/javascript"]],
+<<<<<<< Updated upstream
   ["/validation.js", ["validation.js", "text/javascript"]],
   ["/results.js", ["results.js", "text/javascript"]],
+=======
+  ["/training-state.js", ["training-state.js", "text/javascript"]],
+  ["/training-client.js", ["training-client.js", "text/javascript"]],
+>>>>>>> Stashed changes
   ["/favicon.svg", ["favicon.svg", "image/svg+xml"]],
 ]);
 
-export function createAppServer() {
-  return createServer(async (request, response) => {
-    if (!["GET", "HEAD"].includes(request.method)) {
-      response.writeHead(405, { Allow: "GET, HEAD" }).end("Method not allowed");
-      return;
-    }
+export function createAppServer({ training = null } = {}) {
+  const trainingApi = createTrainingApi(training);
+  const server = createServer(async (request, response) => {
     let pathname;
     try {
       pathname = decodeURIComponent(new URL(request.url, "http://localhost").pathname);
     } catch (error) {
       if (!(error instanceof URIError || error instanceof TypeError)) throw error;
       response.writeHead(400).end("Invalid URL");
+      return;
+    }
+    if (await trainingApi(request, response, pathname)) return;
+    if (!["GET", "HEAD"].includes(request.method)) {
+      response.writeHead(405, { Allow: "GET, HEAD" }).end("Method not allowed");
       return;
     }
     const file = files.get(pathname);
@@ -52,12 +61,25 @@ export function createAppServer() {
       response.destroy();
     }
   });
+  server.closeTrainingConnections = trainingApi.close;
+  return server;
 }
 
 if (process.argv[1] === fileURLToPath(import.meta.url)) {
   const port = Number(process.env.PORT || 4173);
   if (!Number.isInteger(port) || port < 1 || port > 65535) throw new Error("PORT must be an integer between 1 and 65535.");
-  const server = createAppServer();
+  const training = new LocalTrainer({ ...(process.env.MAMASE_TRAINING_DIR ? { root: process.env.MAMASE_TRAINING_DIR } : {}) });
+  const server = createAppServer({ training });
+  let stopping = false;
+  const shutdown = async () => {
+    if (stopping) return;
+    stopping = true;
+    server.closeTrainingConnections();
+    server.close();
+    try { await training.close(); } catch (error) { console.error(`Unable to close local training cleanly: ${error.message}`); process.exitCode = 1; }
+  };
+  process.on("SIGINT", shutdown);
+  process.on("SIGTERM", shutdown);
   server.on("error", (error) => {
     console.error(`Unable to start Mamase: ${error.message}`);
     process.exitCode = 1;

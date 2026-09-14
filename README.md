@@ -7,9 +7,14 @@ familiar identity or proof of improvement.
 
 ## Run locally
 
+<<<<<<< Updated upstream
 The browser workspace requires Node.js 20 or later, with no runtime dependencies
 or build step. Optional local training uses Python 3.10+ and the pinned packages
 in `training/requirements.txt`.
+=======
+Requires Node.js 20 or later. The planning interface needs no runtime
+dependencies or build step. Managed training adds an optional Python/MLX runtime.
+>>>>>>> Stashed changes
 
 ```sh
 npm start
@@ -32,6 +37,7 @@ different port.
    configure the student/base model, rank, alpha, learning rate, epochs,
    micro-batch size, gradient accumulation, sequence length, and output path.
    Saving creates a **planned run**, not a training process.
+<<<<<<< Updated upstream
 4. **Training runs:** export a recipe and execute the explicit local preparation
    and training commands below, then import its progress report. Actual observations
    drive status, optimizer-step progress, loss charts, and the progress journal.
@@ -42,6 +48,94 @@ different port.
 6. **Evaluations:** run an independent, versioned suite locally, then import its
    paired report to compare base/adapter rule passes and category regressions.
    Manual benchmark observations remain available and clearly labeled.
+=======
+4. **Training runs:** launch a managed local MLX-LM job, or export a recipe to an
+   external trainer and record/import its progress. Real observations drive
+   status, optimizer-step progress, loss charts, and the progress journal.
+5. **Model library:** register local adapters, checkpoints, merged weights, or
+   GGUF paths. Download a manifest with the recipe, dataset fingerprint, and
+   recorded evaluations.
+6. **Evaluations:** record benchmark versions, scores, sample counts, and
+   conditions for comparisons.
+>>>>>>> Stashed changes
+
+### Managed local training on Apple Silicon
+
+Install the isolated optional runtime with Python 3.12:
+
+```sh
+python3.12 -m venv .venv-training
+.venv-training/bin/python -m pip install -r training/requirements.txt
+npm run dev
+```
+
+In the lab, set the **Base model / Student model** to an existing local
+MLX-compatible model directory containing the model weights, configuration and
+tokenizer. Prepare or download that model separately with MLX-LM tooling.
+Managed training is offline: it does not download weights, call a teacher API,
+or enable remote model code.
+
+Save the recipe, then choose **Launch local training** from its run page.
+Select the exact original JSONL file and confirm local execution. Mamase checks
+the file's bytes, SHA-256, example count and format against the imported
+metadata before starting the worker. The worker creates the actual seed-42
+training and holdout files and reports real optimizer-step and loss observations.
+Rank, alpha, learning rate, epochs, micro-batch size, gradient accumulation and
+sequence length come from the saved recipe.
+
+Only one managed job runs at a time. Each job gets a new private directory:
+
+```text
+.mamase/training/job-<id>/
+  job.json
+  state.json
+  original.jsonl
+  train.jsonl
+  valid.jsonl
+  trainer.log
+  adapter/
+    adapters.safetensors
+    adapter_config.json
+```
+
+**Managed output is isolated from the external recipe's output path.** Existing
+model files and requested external output directories are not overwritten.
+Original dataset copies, splits, logs and adapters persist on local disk, not
+just in browser storage. These directories and the virtual environment are
+ignored by Git and are not served as static web assets.
+
+The run view streams logs and observations through server-sent events. After
+the worker reports completion, exits successfully, and produces its adapter
+files, Mamase registers the output directory in Model library automatically.
+The deterministic artifact ID prevents duplicate registration on reconnect.
+Managed jobs own their progress history; manual progress/report imports remain
+available for external runs only.
+
+Closing or reloading the browser does not stop the process. Reopening the run
+reconciles the server's journal and completed artifact with the browser workspace.
+**Cancel local training** terminates the owned worker; partial files are kept
+but are not registered as a successful adapter. Keep the Mamase server running.
+Graceful server shutdown stops its worker, and the worker also monitors the
+parent pipe so it cannot intentionally continue after the server dies.
+Interrupted jobs are marked failed on restart rather than silently resumed.
+Duplicate a recipe for another attempt; optimizer/checkpoint resume is not
+implemented.
+
+Use one editing tab while training. Existing cross-tab conflict protection is
+preserved, and automatic workspace writes wait while a dialog or submission is
+active. If browser storage is full or a workspace history diverges, server-side
+observations and output files remain available; the run view exposes the sync
+error and a downloadable progress report instead of overwriting records.
+Resetting/restoring browser metadata does not cancel or delete server-side jobs.
+Keep a workspace backup to retain the run IDs needed to reconnect.
+
+Set `MAMASE_PYTHON` to a different compatible Python executable or
+`MAMASE_TRAINING_DIR` to a dedicated private job directory before starting the
+server. A training directory has one server owner; do not share it between
+running Mamase instances or move it while jobs are registered. The API is
+loopback-only, rejects cross-origin/invalid-host requests, requires a per-server
+capability token for launch/cancel, and invokes a fixed Python worker without a
+shell. It is a personal local application, not a multi-user authenticated service.
 
 ### Moving between experiments
 
@@ -97,6 +191,7 @@ Or:
 {"messages":[{"role":"user","content":"A question"},{"role":"assistant","content":"A reviewed answer"}]}
 ```
 
+<<<<<<< Updated upstream
 At least two examples are required. Preparation orders unique prompts by
 SHA-256 of seed 42 and the prompt fingerprint, reserves the holdout count, and
 writes disjoint split files. Duplicate prompts (even with different responses)
@@ -105,6 +200,13 @@ user/assistant turns and end with an assistant response. Remove dataset system
 messages: the selected familiar's canonical identity supplies the system prompt.
 The browser itself stores no examples. The handbook includes a tiny sample;
 it is not a serious training corpus.
+=======
+At least two examples are required. Mamase records a deterministic split plan:
+shuffle with seed 42, reserve the holdout count, and train on the remainder.
+Managed MLX jobs write and apply this split. **External trainers must apply it
+themselves**; the browser-only metadata import does not write split files.
+The Training handbook includes a small downloadable example dataset.
+>>>>>>> Stashed changes
 
 ### Response distillation
 
@@ -350,13 +452,15 @@ Updates are applied atomically. Timestamps must be chronological and steps
 cannot go backwards. Planned runs can become running or cancelled; running or
 paused runs can become completed, failed, or cancelled. Completion requires all
 steps to be recorded. Closed runs are immutable; create another recipe for a new
-attempt. Status updates never start, stop, or pause a real training process.
+attempt. Manual status updates never control a training process. Managed local
+jobs use their separate, explicit launch/cancel controls.
 
 ## Local data and boundaries
 
 ### Appearance
 
-Choose **System**, **Light**, or **Dark** in the sidebar or Workspace settings.
+Choose **System**, **Light**, or **Dark** in Workspace settings. Appearance
+controls are intentionally absent from the sidebar.
 System is the default and follows device appearance changes immediately.
 Explicit choices persist across reloads under `mamase.appearance.v1`, separately
 from workspace backups and resets. The saved theme is applied before the first
@@ -391,12 +495,20 @@ overwriting changes. The warning preserves open forms and offers an export of
 the currently open workspace before reloading newer saved data.
 
 There is no hosted training, inference endpoint, cloud sync, billing, account
+<<<<<<< Updated upstream
 system, or fabricated progress. The browser's artifact paths remain references;
 the explicit Python runner does save actual local adapters and fingerprints.
 It does not merge adapters or export GGUF. `.lab/`, `outputs/`, `.venv/`, and
 cache directories are ignored by Git. Bundles contain identity and training
 data: keep them private and do not commit or publish them. Fonts and artwork
 are local; browser documentation links open only when clicked.
+=======
+system, or fabricated training progress. Managed training runs locally through
+MLX-LM; its output files are checked at finalization. Other artifact paths remain
+unverified references. The browser does not merge adapters, quantize weights,
+or export model binaries. Fonts and artwork are local; the app makes no external service
+requests. External documentation links open only when clicked.
+>>>>>>> Stashed changes
 
 ## Development checks
 
@@ -411,6 +523,8 @@ npm test
 Uses Node's built-in runner for dataset parsing, recipe validation, teacher
 provenance, run-state transitions, artifact/evaluation relationships, backup
 integrity, storage failure handling, exports, and the local asset server.
+Local-job lifecycle tests also use Python 3's standard library, without MLX.
+Set `MAMASE_TEST_PYTHON` if that interpreter is not named `python3`.
 
 It also covers CLI preparation, deterministic splits, identity/source
 integrity, and real CPU training of tiny **synthetic** LoRA/rsLoRA/DoRA fixtures,
@@ -430,7 +544,22 @@ npm run test:e2e
 It starts its own loopback server on an available port and uses isolated browser
 contexts, leaving the development server and your workspace untouched. Set
 `MAMASE_SCREENSHOTS` to a directory to retain screenshots. Runtime dependencies
-and a build step are still unnecessary.
+and a build step are still unnecessary for the planning interface.
+
+With the MLX runtime installed, run the actual offline training integration:
+
+```sh
+npm run test:training
+```
+
+This creates a tiny randomly initialized diagnostic model and original synthetic
+examples, saves a recipe through the UI, launches the real worker, reconnects
+the browser, and checks live observations, changed adapter tensors and automatic
+registration. It makes no model downloads and is not a production model or a
+model-quality benchmark. Its temporary model/job directories are cleaned up.
+The fast process/API lifecycle fixture can be run separately with
+`node scripts/verify-training.mjs --protocol-fixture`; it is deliberately not
+evidence of real model training.
 
 See [the comprehensive UI/UX audit](UI-UX-AUDIT.md) for the findings, implemented
 enhancements, and review boundaries.

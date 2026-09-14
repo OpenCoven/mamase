@@ -7,11 +7,18 @@ import {
 } from "./workspace.js";
 import { icon, button, link, field, select, badge, empty, table, formatDate, formatBytes, progress, lossChart, distillationArt } from "./ui.js";
 import { DRAFT_KEY, RUN_PAGE_SIZE, parseRoute, runUrl, selectRuns, searchWorkspace, compareEvaluations, readRecipeDraft } from "./experience.js";
+import { TrainingClient, encodeDataset, localJobActive } from "./training-client.js";
+import { mergeTrainingJob, trainingIdentity } from "./training-state.js";
 
 const app = document.querySelector("#app");
 const dialog = document.querySelector("#dialog");
 const toast = document.querySelector("#toast");
 const theme = window.mamaseTheme;
+const pendingTraining = new Map();
+const trainingSyncErrors = new Map();
+let submissionCount = 0;
+let trainingFlushTimer;
+const training = new TrainingClient({ onJob: receiveTrainingJob, onStatus: updateTrainingPanel });
 let workspace;
 let savedSource;
 let storageError = "";
@@ -100,14 +107,14 @@ function sidebar(page) {
     <div class="workspace-label"><span class="tiny-mark">${icon("spark")}</span><span>${esc(workspace?.name || "The Coven")}</span><span class="workspace-tag">LOCAL</span></div>
     ${workspace ? `<button type="button" class="workspace-search-button" data-action="search" aria-label="Search workspace">${icon("search")}<span>Search workspace</span><kbd>Ctrl K</kbd></button>` : ""}
     <nav>${links.map(([id, label, glyph], index) => `${index === 7 ? '<div class="nav-section">Workspace</div>' : ""}<a href="#/${id}" class="nav-link ${page === id ? "active" : ""}" ${page === id ? 'aria-current="page"' : ""} aria-label="${label}" title="${label}">${icon(glyph)}<span>${label}</span>${id === "sessions" && workspace?.runs.length ? `<span class="nav-count">${workspace.runs.length}</span>` : ""}</a>`).join("")}</nav>
-    <div class="sidebar-bottom"><div class="sidebar-appearance"><span>Appearance</span>${themePicker("sidebar")}</div><div class="local-status"><span class="status-dot"></span><span>Local workspace</span></div>
+    <div class="sidebar-bottom"><div class="local-status"><span class="status-dot"></span><span>Local workspace</span></div>
       <p>Knowledge stays in the coven.</p>
       <a class="profile" href="#/settings"><span class="avatar">C</span><span><strong>${esc(workspace?.name || "The Coven")}</strong><small>On this browser</small></span>${icon("settings")}</a></div>
   </aside>`;
 }
 
-function themePicker(location) {
-  return `<div class="theme-picker" role="group" aria-label="${location === "sidebar" ? "Quick appearance" : "Appearance mode"}">${[
+function themePicker() {
+  return `<div class="theme-picker" role="group" aria-label="Appearance mode">${[
     ["system", "System", "local"], ["light", "Light", "light"], ["dark", "Dark", "dark"],
   ].map(([value, label, glyph]) => `<button type="button" data-action="theme" data-theme-value="${value}" aria-pressed="${theme.preference === value}" title="${label} theme">${icon(glyph)}<span>${label}</span></button>`).join("")}</div>`;
 }
@@ -157,7 +164,7 @@ function homePage() {
       <li><span>2</span><div><a href="#/playground">Shape a smaller model</a><p>Set the student, LoRA adapter, and training recipe.</p></div></li>
       <li><span>3</span><div><a href="#/evaluations">Measure what matters</a><p>Record results, compare artifacts, and keep the best.</p></div></li></ol>
     </article></section>
-    <div class="local-note">${icon("local")} This is a training workspace, not a hosted trainer. Run jobs with your local tools, then record or import their results.</div>
+    <div class="local-note">${icon("local")} Launch local MLX jobs from saved runs, or record results from external trainers. Only real observations are tracked.</div>
   </div>`;
 }
 
@@ -223,9 +230,10 @@ function runDetail(id) {
   const closed = ["completed", "failed", "cancelled"].includes(run.status);
   return `<a class="breadcrumb" href="#/sessions">Training runs / <span>${esc(run.name)}</span></a>
     ${header(esc(run.name), `${button("Duplicate recipe", "duplicate-run", "plus", "", `data-id="${run.id}"`)}${button("Export recipe", "export-recipe", "download", "", `data-id="${run.id}"`)}${closed ? "" : button("Record progress", "progress", "plus", "primary", `data-id="${run.id}"`)}`, `${esc(METHODS[run.recipe.method])} · ${esc(run.recipe.student)}`)}
-    <div class="run-status-row">${badge(run.status)}<code>${run.id}</code><span class="muted">Last recorded ${formatDate(run.updatedAt)}</span></div>
-    <div class="metrics three">${metric("Optimizer steps", `${num(run.step)} / ${num(run.totalSteps)}`, "Reported by you or an imported report", "runs")}${metric("Training loss", latest ? String(latest.loss) : "—", validation ? `Latest validation loss: ${validation.evalLoss}` : "No validation loss recorded", "evaluations")}${metric("Dataset", num(dataset.records), `${esc(dataset.name)} · ${dataset.holdout}% holdout`, "datasets", `#/datasets/${dataset.id}`)}</div>
-    <div class="detail-grid"><section class="card chart-card"><div class="section-heading"><h2>Training &amp; validation loss</h2><span class="muted">Recorded observations</span></div>${lossChart(run)}</section>
+    <div class="run-status-row" id="run-status-line">${badge(run.status)}<code>${run.id}</code><span class="muted">Last recorded ${formatDate(run.updatedAt)}</span></div>
+    <section class="card local-training-panel" id="local-training-panel" data-run-id="${run.id}" aria-label="Local training"><h2>Local MLX-LM training</h2><p class="help">Checking the local trainer…</p></section>
+    <div class="metrics three">${metric("Optimizer steps", `<span id="run-step-value">${num(run.step)} / ${num(run.totalSteps)}</span>`, "Recorded manually or by your local trainer", "runs")}${metric("Training loss", `<span id="run-loss-value">${latest ? String(latest.loss) : "—"}</span>`, `<span id="run-validation-value">${validation ? `Latest validation loss: ${validation.evalLoss}` : "No validation loss recorded"}</span>`, "evaluations")}${metric("Dataset", num(dataset.records), `${esc(dataset.name)} · ${dataset.holdout}% holdout`, "datasets", `#/datasets/${dataset.id}`)}</div>
+    <div class="detail-grid"><section class="card chart-card"><div class="section-heading"><h2>Training &amp; validation loss</h2><span class="muted">Recorded observations</span></div><div id="run-loss-chart">${lossChart(run)}</div></section>
     <section class="card"><h2>Recipe</h2><dl class="facts"><dt>Method</dt><dd>${METHODS[run.recipe.method]}</dd>${run.recipe.teacher ? `<dt>Teacher</dt><dd>${esc(run.recipe.teacher)}</dd>` : ""}<dt>LoRA rank / alpha</dt><dd>${run.recipe.rank} / ${run.recipe.alpha}</dd><dt>Learning rate</dt><dd>${run.recipe.learningRate}</dd><dt>Epochs</dt><dd>${run.recipe.epochs}</dd><dt>Output</dt><dd><code>${esc(run.recipe.outputPath)}</code></dd></dl><p class="muted">${esc(run.recipe.objective)}</p></section></div>
     <section class="card"><h2>Run locally</h2><p>${esc(ADAPTERS[run.recipe.adapter])} · ${run.recipe.familiarId ? `${esc(run.recipe.instanceId)} / ${esc(run.recipe.familiarId)}` : "Unbound legacy recipe: create a new recipe with familiar and instance IDs to use the local trainer."}</p>
       <p>Export this recipe, then prepare an identity-bound bundle with your original dataset and that familiar's workspace. Preparation does not train or download a model.</p>
@@ -235,11 +243,153 @@ npm run lab -- prepare --recipe /path/recipe.json --dataset /path/examples.jsonl
       <pre>.venv/bin/python training/train.py --bundle .lab/experiment --model /path/local-model</pre>
       <p class="help">Once training exits, import <code>run-report.json</code> below, then import <code>result.json</code> to register the actual adapter path and holdout comparison. Run a separate versioned suite with <code>training/evaluate.py</code> and import its paired report from Evaluations. Nothing promotes the adapter.</p></section>
     <section class="card"><div class="section-heading"><h2>Progress journal</h2><div class="actions">${button("Report template", "report-template", "code", "small", `data-id="${run.id}"`)}${closed ? "" : button("Import report", "import-report", "upload", "small", `data-id="${run.id}"`)}</div></div>
+<<<<<<< Updated upstream
     ${run.history.length ? table(["Recorded", "Status", "Step", "Loss / validation", "Notes"], run.history.slice().reverse().map((event) => [formatDate(event.recordedAt), badge(event.status), `${event.step} / ${event.totalSteps}`, `${event.loss ?? "—"} / ${event.evalLoss ?? "—"}`, esc(event.note) || "—"]), "Run progress journal") : '<p class="muted">This recipe is planned, not running. Start your local trainer and record its first update here.</p>'}</section>
     <section class="card"><div class="section-heading"><h2>Local model artifacts</h2><div class="actions">${run.status === "completed" ? button("Import training result", "import-training-result", "upload", "small", `data-id="${run.id}"`) : ""}${button("Register artifact", "new-artifact", "plus", "small", `data-id="${run.id}"`)}</div></div>
     ${workspace.artifacts.some((artifact) => artifact.runId === run.id) ? artifactTable(workspace.artifacts.filter((artifact) => artifact.runId === run.id)) : '<p class="muted">Record an adapter, checkpoint, merged model, or GGUF path when your trainer creates one.</p>'}</section>`;
+=======
+    <div id="run-journal">${runJournal(run)}</div></section>
+    <section class="card"><div class="section-heading"><h2>Local model artifacts</h2>${button("Register artifact", "new-artifact", "plus", "small", `data-id="${run.id}"`)}</div>
+    <div id="run-artifacts">${runArtifacts(run)}</div></section>`;
+>>>>>>> Stashed changes
 }
 
+function runJournal(run) {
+  return run.history.length ? table(["Recorded", "Status", "Step", "Loss / validation", "Notes"], run.history.slice().reverse().map((event) => [formatDate(event.recordedAt), badge(event.status), `${event.step} / ${event.totalSteps}`, `${event.loss ?? "—"} / ${event.evalLoss ?? "—"}`, esc(event.note) || "—"]), "Run progress journal") : '<p class="muted">This recipe is planned, not running. Launch a local job or record observations from an external trainer.</p>';
+}
+
+function runArtifacts(run) {
+  const artifacts = workspace.artifacts.filter((artifact) => artifact.runId === run.id);
+  return artifacts.length ? artifactTable(artifacts) : '<p class="muted">Local managed jobs register finalized adapters automatically. Other trainer outputs can be registered manually.</p>';
+}
+
+function receiveTrainingJob(job) {
+  pendingTraining.set(job.run.id, job);
+  if (!trainingFlushTimer) trainingFlushTimer = setTimeout(() => { trainingFlushTimer = null; flushTrainingUpdates(); }, localJobActive(job) ? 200 : 0);
+}
+
+function flushTrainingUpdates() {
+  if (!workspace || storageError || submissionCount || dialog.open || ui.conflict) return;
+  for (const [runId, job] of pendingTraining) {
+    if (!workspace.runs.some((run) => run.id === runId)) { pendingTraining.delete(runId); continue; }
+    try {
+      const next = mergeTrainingJob(workspace, job);
+      if (JSON.stringify(next) !== JSON.stringify(workspace)) {
+        persist(next, savedSource);
+        refreshManagedRun(runId);
+      }
+      trainingSyncErrors.delete(runId);
+      pendingTraining.delete(runId);
+    } catch (error) {
+      trainingSyncErrors.set(runId, `Progress is retained by the local server, but workspace sync is blocked: ${error.message}`);
+    }
+    updateTrainingPanel(runId);
+  }
+}
+
+function refreshManagedRun(runId) {
+  const panel = document.querySelector("#local-training-panel");
+  if (panel?.dataset.runId !== runId) {
+    const current = route();
+    if (current.page === "home") {
+      const metrics = document.querySelectorAll(".overview-metrics .metric");
+      if (metrics.length === 4) {
+        metrics[0].querySelector("p").textContent = `${workspace.runs.filter((run) => ["running", "paused"].includes(run.status)).length} active · ${workspace.runs.filter((run) => run.status === "completed").length} completed`;
+        metrics[2].querySelector("strong").textContent = num(workspace.artifacts.length);
+        const run = byId(workspace.runs, runId);
+        const status = document.querySelector(`.recent-run[href="#/sessions/${runId}"] .badge`);
+        if (status) { status.className = `badge status-${run.status}`; status.innerHTML = `<span class="status-dot"></span>${esc(run.status)}`; }
+      }
+    } else if (current.page === "sessions" && !current.id) {
+      const href = document.activeElement.closest("#run-results a")?.getAttribute("href");
+      updateRunResults();
+      if (href) document.querySelector(`#run-results a[href="${CSS.escape(href)}"]`)?.focus({ preventScroll: true });
+    } else if (jobHasArtifact(runId) && ["projects", "checkpoints"].includes(current.page) && !current.id) {
+      const focused = document.activeElement;
+      const action = focused.dataset.action;
+      const id = focused.dataset.id;
+      const kind = focused.dataset.kind;
+      render();
+      if (action) document.querySelector(`[data-action="${CSS.escape(action)}"]${id ? `[data-id="${CSS.escape(id)}"]` : kind ? `[data-kind="${CSS.escape(kind)}"]` : ""}`)?.focus({ preventScroll: true });
+    }
+    const size = document.querySelector("#workspace-size");
+    if (size) size.textContent = `${formatBytes(new TextEncoder().encode(JSON.stringify(workspace)).length)} / 4 MB`;
+    return;
+  }
+  const run = byId(workspace.runs, runId);
+  const latest = run.history.filter((event) => event.loss !== null).at(-1);
+  const validation = run.history.filter((event) => event.evalLoss !== null).at(-1);
+  document.querySelector("#run-status-line").innerHTML = `${badge(run.status)}<code>${run.id}</code><span class="muted">Last recorded ${formatDate(run.updatedAt)}</span>`;
+  document.querySelector("#run-step-value").textContent = `${num(run.step)} / ${num(run.totalSteps)}`;
+  document.querySelector("#run-loss-value").textContent = latest ? String(latest.loss) : "—";
+  document.querySelector("#run-validation-value").textContent = validation ? `Latest validation loss: ${validation.evalLoss}` : "No validation loss recorded";
+  const chart = document.querySelector("#run-loss-chart");
+  const details = chart.querySelector("details");
+  const expanded = details?.open;
+  const summaryFocused = document.activeElement === details?.querySelector("summary");
+  chart.innerHTML = lossChart(run);
+  if (expanded) chart.querySelector("details").open = true;
+  if (summaryFocused) chart.querySelector("summary")?.focus({ preventScroll: true });
+  const journal = document.querySelector("#run-journal");
+  const scroll = journal.querySelector(".table-scroll")?.scrollLeft || 0;
+  const journalFocused = journal.contains(document.activeElement);
+  journal.innerHTML = runJournal(run);
+  const region = journal.querySelector(".table-scroll");
+  if (region) { region.scrollLeft = scroll; if (journalFocused) region.focus({ preventScroll: true }); }
+  if (jobHasArtifact(runId)) document.querySelector("#run-artifacts").innerHTML = runArtifacts(run);
+}
+
+function jobHasArtifact(runId) {
+  return Boolean(training.jobs.get(runId)?.artifact);
+}
+
+function updateTrainingPanel(runId) {
+  const panel = document.querySelector("#local-training-panel");
+  if (panel?.dataset.runId !== runId || !workspace) return;
+  const run = byId(workspace.runs, runId);
+  const dataset = byId(workspace.datasets, run.recipe.datasetId);
+  const rawJob = training.jobs.get(runId);
+  const matches = !rawJob || rawJob.identity === trainingIdentity(run, dataset);
+  const job = matches ? rawJob : null;
+  const registered = Boolean(job?.artifact && workspace.artifacts.some((item) => item.id === job.artifact.id));
+  const capability = training.available;
+  const loading = training.loading.has(runId);
+  const error = !matches ? "A different recipe already uses this run ID on the local server. Duplicate the recipe before launching." : trainingSyncErrors.get(runId) || training.errors.get(runId) || "";
+  const busy = [...training.jobs.values()].some(localJobActive) || capability?.busy;
+  const key = JSON.stringify([job?.id, job?.status, capability?.available, loading, error, run.status, busy, registered]);
+  if (panel.dataset.state !== key) {
+    const focused = panel.contains(document.activeElement);
+    const logsOpen = panel.querySelector("details")?.open;
+    panel.dataset.state = key;
+    panel.innerHTML = `<div class="section-heading"><h2 tabindex="-1">Local MLX-LM training</h2><span class="tag">${job ? esc(job.status) : "Apple Silicon"}</span></div>
+      ${error ? `<p class="warning" role="status">${esc(error)}</p>` : ""}
+      ${job ? `<p class="help">${job.status === "completed" ? registered ? "Local training completed. The adapter is registered in Model library." : "Adapter finalized; waiting to synchronize its reference into this workspace." : job.error ? esc(job.error) : "A real local trainer process owns this run. Closing the tab does not stop it; stopping the Mamase server does."}</p><dl class="facts"><dt>Model</dt><dd><code>${esc(job.modelPath)}</code></dd><dt>Managed output</dt><dd><code>${esc(job.outputPath)}</code></dd></dl><div class="actions">${localJobActive(job) ? button(job.status === "cancelling" ? "Cancelling…" : "Cancel local training", "local-cancel", "", "danger small", `data-id="${job.id}" ${job.status === "cancelling" ? "disabled" : ""}`) : ""}${link("Download trainer report", `/api/training/jobs/${job.id}/report`, "download", "small quiet")}${trainingSyncErrors.has(runId) ? button("Retry workspace sync", "local-sync", "", "small") : ""}</div><details class="trainer-log"><summary>Trainer logs</summary><pre tabindex="0" aria-label="Trainer logs"></pre></details>` :
+      `<p class="help">${loading ? "Checking the local Python runtime…" : capability?.available ? "Launch this saved recipe with a local MLX-compatible model directory and the original JSONL file. No model downloads or teacher API calls are made." : "Install the optional MLX training runtime, then recheck. External recipe exports and manual progress remain available."}</p>
+      <p class="help">${run.status !== "planned" ? "Duplicate this recipe for a new local training attempt." : busy ? "Another local job is active. Recheck after it finishes." : "Each job gets a new private output directory; the external recipe output path is not overwritten."}</p>
+      <div class="actions">${button("Launch local training", "local-launch", "lab", "primary", `data-id="${runId}" ${!capability?.available || loading || busy || rawJob || run.localJobId || run.status !== "planned" ? "disabled" : ""}`)}${button("Recheck runtime", "local-refresh", "", "quiet", `data-id="${runId}" ${loading ? "disabled" : ""}`)}</div>`}`;
+    if (logsOpen || job?.status === "failed") { const details = panel.querySelector("details"); if (details) details.open = true; }
+    if (focused) panel.querySelector("h2").focus({ preventScroll: true });
+  }
+  const log = panel.querySelector(".trainer-log pre");
+  if (log && job) {
+    const follow = log.scrollTop + log.clientHeight >= log.scrollHeight - 10;
+    const text = job.logs.join("\n") || "Waiting for trainer output…";
+    if (log.textContent !== text) { log.textContent = text; if (follow) log.scrollTop = log.scrollHeight; }
+  }
+  if (job) {
+    let live = panel.querySelector(".local-live-progress");
+    if (!live) { live = document.createElement("p"); live.className = "help local-live-progress"; live.setAttribute("role", "status"); panel.querySelector(".section-heading").after(live); }
+    const value = `Server observations: ${num(job.run.step)} / ${num(job.run.totalSteps)} optimizer steps.`;
+    if (live.textContent !== value) live.textContent = value;
+  }
+  document.querySelectorAll('[data-action="progress"], [data-action="import-report"]').forEach((element) => {
+    element.disabled = loading || Boolean(rawJob || run.localJobId);
+    element.hidden = Boolean(rawJob || run.localJobId);
+    if (rawJob || run.localJobId) element.title = "Managed jobs record their own progress. Duplicate the recipe for another attempt.";
+  });
+  const template = document.querySelector('[data-action="report-template"]');
+  if (template) template.hidden = Boolean(rawJob || run.localJobId);
+}
 function labPage() {
   const draft = ui.draft;
   const distill = draft.method === "distillation";
@@ -311,7 +461,7 @@ function syncRecipe() {
   document.querySelector("#draft-status").textContent = draftMessage;
   const missing = [["name", "a run name"], ["familiarId", "a familiar ID"], ["instanceId", "a Coven instance ID"], ["objective", "an objective"], ["datasetId", "a dataset"], ["student", "a base/student model"]].filter(([key]) => !ui.draft[key].trim()).map(([, label]) => label);
   const ready = !missing.length && [...form.querySelectorAll("input, select, textarea")].every((control) => control.validity.valid);
-  const message = incompatible ? "Choose a teacher-generated dataset for response distillation." : teacherControl?.validity.customError ? teacherControl.validationMessage : missing.length ? `Add ${missing.join(", ")}.` : ready ? "Ready to save a planned run. Training remains external." : "Review the dataset, teacher and configuration fields before saving.";
+  const message = incompatible ? "Choose a teacher-generated dataset for response distillation." : teacherControl?.validity.customError ? teacherControl.validationMessage : missing.length ? `Add ${missing.join(", ")}.` : ready ? "Ready to save a planned run. Launch training from the run page." : "Review the dataset, teacher and configuration fields before saving.";
   const readiness = document.querySelector("#recipe-readiness");
   if (readiness.textContent !== message) readiness.textContent = message;
 }
@@ -400,16 +550,29 @@ function resourcesPage() {
   return `${header("Training handbook", "", "A practical path from shared knowledge to a local model.")}
     <div class="resource-grid"><article class="card"><span class="eyebrow">01 · Curate</span><h2>Start with evidence, not volume.</h2><p>Import JSONL with <code>messages</code> or <code>prompt</code> / <code>response</code> records. Track licenses, consent, provenance, and the teacher ID. Do not train on private material without permission.</p><p>Set aside a holdout before training. The preparation CLI writes deterministic, disjoint splits and rejects duplicate prompts. Keep a separate final evaluation suite out of both splits.</p>${button("Download example JSONL", "example-dataset", "download")}</article>
     <article class="card"><span class="eyebrow">02 · Distill</span><h2>Pass the teacher's responses on.</h2><p>Generate responses with a teacher outside Mamase. Review and filter them, then import them as teacher-generated examples. Response distillation here means supervised LoRA fine-tuning on those responses.</p><p>It is not online inference, hidden chain-of-thought extraction, or logit/KL distillation. A teacher label alone does not generate data.</p>${link("Configure a recipe", "#/playground", "arrow")}</article>
+<<<<<<< Updated upstream
     <article class="card"><span class="eyebrow">03 · Train</span><h2>Keep execution on your terms.</h2><p>Export the recipe and use <code>npm run lab -- prepare</code> to check dataset fingerprints, bind familiar identity, and write disjoint splits. Then explicitly run <code>training/train.py</code> with a local model. LoRA, rsLoRA, DoRA, and CUDA QLoRA are supported.</p><p>The trainer saves adapters, actual progress, and base/adapter holdout loss locally. It makes no teacher API calls or automatic model downloads. Import its report from the run page.</p><a class="subtle-link" href="https://huggingface.co/docs/peft/main/en/package_reference/lora" target="_blank" rel="noreferrer">PEFT adapter techniques ${icon("external")}</a></article>
     <article class="card"><span class="eyebrow">04 · Evaluate &amp; keep</span><h2>A candidate must earn its place.</h2><p>Import the completed training result to bind the actual adapter and its holdout loss. Run <code>training/evaluate.py</code> on an independent, versioned task/identity/consent/tool-boundary suite. Import its report for base/adapter comparisons and regressions.</p><p>Rule checks are not semantic certification. Review the private outputs and require explicit operator approval before any runtime change. Model manifests and browser backups retain summaries and lineage, never prompts or model weights.</p>${link("Evaluations", "#/evaluations", "arrow")}</article></div>`;
+=======
+    <article class="card"><span class="eyebrow">03 · Train</span><h2>Keep execution on your terms.</h2><p>On Apple Silicon, launch a real MLX-LM job from a saved run. The base/student field must be a local compatible model directory. Select the original dataset, confirm the private copy and managed output directory, then follow real logs and loss.</p><p>Install the optional Python runtime with <code>python3.12 -m venv .venv-training</code> and <code>.venv-training/bin/python -m pip install -r training/requirements.txt</code>. Models stay offline; check their licenses, templates and memory requirements first.</p><p>You can still export recipes to Transformers + PEFT or TRL and record their results manually. Only the explicit local launch/cancel controls operate a process.</p><a class="subtle-link" href="https://github.com/ml-explore/mlx-lm" target="_blank" rel="noreferrer">MLX-LM documentation ${icon("external")}</a></article>
+    <article class="card"><span class="eyebrow">04 · Evaluate &amp; keep</span><h2>Make the final weights your own.</h2><p>Register the adapter or checkpoint path. Record benchmark versions, scores, sample counts, and conditions. Use your external tools to merge or quantize weights and register the resulting merged model or GGUF separately.</p><p>Model manifests carry the lineage, recipe, and recorded evaluations, not the model weights. Export a workspace backup before clearing browser data.</p>${link("Model library", "#/checkpoints", "arrow")}</article></div>`;
+>>>>>>> Stashed changes
+}
+
+function appearanceSettings() {
+  return `<section class="card appearance-card"><h2>Appearance</h2><p>System is the default and follows your device automatically. Choose an override here when you prefer.</p>${themePicker()}<p class="help" id="theme-description"></p><p class="help">Saved on this browser, independently of workspace backups.</p></section>`;
 }
 
 function settingsPage() {
   return `${header("Workspace settings", "", "A local home for the coven's experiments.")}
-    <div class="settings-grid"><section class="card appearance-card"><h2>Appearance</h2><p>Settle into the light that suits you. System follows your device automatically.</p>${themePicker("settings")}<p class="help" id="theme-description"></p><p class="help">Saved on this browser, independently of workspace backups.</p></section>
+    <div class="settings-grid">${appearanceSettings()}
     <section class="card"><h2>Workspace identity</h2><form data-form="workspace">${field("Workspace name", "workspaceName", workspace.name, { attrs: 'maxlength="80"' })}<button class="button primary" type="submit">Save name</button><p class="form-error" role="alert" hidden></p></form></section>
     <section class="card"><h2>Backups &amp; portability</h2><p>Recipes, dataset fingerprints, recorded results, and artifact references are saved in this browser. No cloud sync or accounts are configured.</p><div class="actions">${button("Export workspace", "export-workspace", "download")}${button("Restore backup", "restore-workspace", "upload")}</div><p class="help">Restoring replaces this workspace after confirmation. Dataset contents and model weights are never included.</p></section>
+<<<<<<< Updated upstream
     <section class="card"><h2>Execution boundary</h2><dl class="facts"><dt>Trainer</dt><dd>Explicit local CLI / not browser-controlled</dd><dt>Inference</dt><dd>Not connected</dd><dt>Storage</dt><dd>Browser localStorage + local training bundles</dd><dt>Workspace size</dt><dd>${formatBytes(new TextEncoder().encode(JSON.stringify(workspace)).length)} / 4 MB</dd></dl><p>No pretend API keys, credits, running jobs, or benchmark scores.</p></section>
+=======
+    <section class="card"><h2>Execution boundary</h2><dl class="facts"><dt>Trainer</dt><dd>Local MLX-LM (optional) or external tools</dd><dt>Inference</dt><dd>Not connected</dd><dt>Storage</dt><dd>Browser workspace; managed jobs on local disk</dd><dt>Workspace size</dt><dd id="workspace-size">${formatBytes(new TextEncoder().encode(JSON.stringify(workspace)).length)} / 4 MB</dd></dl><p>Managed jobs persist their input, split files, logs and adapters separately. Check runtime availability from a saved run. There are no fabricated jobs or benchmark scores.</p></section>
+>>>>>>> Stashed changes
     <section class="card"><h2>Reset workspace</h2><p>Remove this browser's saved metadata and start fresh. Your datasets and local model files are not touched.</p>${button("Reset local workspace", "reset-workspace", "", "danger")}</section></div>`;
 }
 
@@ -422,7 +585,7 @@ function render() {
     Object.assign(ui, { query, status, program, sort, runPage });
   }
   let content;
-  if (storageError) content = `${header("Workspace needs attention")}<div class="card"><p class="error-text">${esc(storageError)}</p><div class="actions">${button("Download stored data", "raw-backup", "download")}${button("Restore backup", "restore-workspace", "upload")}${button("Reset local workspace", "reset-workspace", "", "danger")}</div></div>`;
+  if (storageError) content = `${header("Workspace needs attention")}<div class="card"><p class="error-text">${esc(storageError)}</p><div class="actions">${button("Download stored data", "raw-backup", "download")}${button("Restore backup", "restore-workspace", "upload")}${button("Reset local workspace", "reset-workspace", "", "danger")}</div></div>${page === "settings" ? appearanceSettings() : ""}`;
   else if (page === "sessions" && id) content = workspace.runs.some((run) => run.id === id) ? runDetail(id) : empty("Run not found.", "This run is not in the current workspace.", link("Back to training runs", "#/sessions"));
   else if (page === "datasets" && id) content = workspace.datasets.some((item) => item.id === id) ? datasetDetail(id) : empty("Dataset not found.", "This dataset is not in the current workspace.", link("Back to datasets", "#/datasets"));
   else if (page === "checkpoints" && id) content = workspace.artifacts.some((item) => item.id === id) ? artifactDetail(id) : empty("Artifact not found.", "This artifact is not in the current workspace.", link("Back to model library", "#/checkpoints"));
@@ -440,6 +603,7 @@ function render() {
   syncRunCount();
   syncRecipe();
   syncThemeControls();
+  void training.watch(page === "sessions" && id && !storageError ? workspace.runs.find((run) => run.id === id) : null);
 }
 
 function updateSidebarAccess() {
@@ -585,6 +749,18 @@ const actions = {
   "run-page": (element) => { ui.runPage = Number(element.dataset.page); updateRunResults(true); },
   "reload-workspace": () => openModal("Reload the latest workspace?", `<p>Unsubmitted settings and dialog edits will be lost. Recipe drafts remain in this tab. Export the open workspace first if you need its older saved records.</p><div class="actions">${button("Cancel", "close-dialog", "", "quiet")}${button("Reload latest data", "confirm-reload", "", "primary")}</div>`),
   "confirm-reload": () => location.reload(),
+  "local-refresh": (element) => { void training.watch(byId(workspace.runs, element.dataset.id), true); },
+  "local-sync": flushTrainingUpdates,
+  "local-launch": (element) => {
+    const run = byId(workspace.runs, element.dataset.id);
+    const dataset = byId(workspace.datasets, run.recipe.datasetId);
+    assert(run.status === "planned" && !run.localJobId, "Duplicate this recipe to start a new local attempt.");
+    openModal("Launch local MLX training", `<p>This starts a real process on this Mac. Keep the Mamase server running; closing the browser does not cancel the job.</p><dl class="facts"><dt>Saved model</dt><dd><code>${esc(run.recipe.student)}</code></dd><dt>Dataset</dt><dd>${esc(dataset.name)}</dd><dt>Fingerprint</dt><dd><code>${dataset.sha256}</code></dd></dl><p class="help">The saved base/student model must point to an existing local MLX-compatible model directory. No models or custom code are downloaded. Only one managed job runs at a time.</p>
+      ${field("Original JSONL file", "file", "", { type: "file", attrs: 'accept=".jsonl,.ndjson,application/x-ndjson"', hint: "Select the exact file imported for this dataset. Its size, SHA-256, format and example count are checked again." })}
+      <label class="check-label"><input type="checkbox" name="confirmManagedOutput" required> I authorize local training and a private copy of this dataset. Use a new managed output directory instead of overwriting the external recipe output path.</label>
+      <p class="help">Original data, split files, logs and adapters remain in <code>.mamase/training/</code> (or the configured training directory). Review model licenses and available memory before launching.</p>${formFooter("Launch local job")}`, "local-launch", { runId: run.id });
+  },
+  "local-cancel": (element) => openModal("Cancel local training?", `<p>The local trainer process will be stopped. Partial files are retained for inspection but will not be registered as a completed adapter.</p>${formFooter("Cancel local job")}`, "local-cancel", { jobId: element.dataset.id }),
   "new-program": () => programModal(),
   "edit-program": (element) => programModal(byId(workspace.programs, element.dataset.id)),
   "import-dataset": () => openModal("Import a dataset", `
@@ -616,6 +792,7 @@ const actions = {
   },
   progress: (element) => {
     const run = byId(workspace.runs, element.dataset.id);
+    assert(!run.localJobId && !training.jobs.has(run.id), "Managed local jobs record their own progress.");
     const allowed = run.status === "planned" ? ["running", "cancelled"] : ["running", "paused", "completed", "failed", "cancelled"];
     openModal("Record training progress", `<p class="muted">Record what your trainer actually reports. This does not control a training process.</p>
       ${select("Run status", "status", run.status === "planned" ? "running" : run.status, allowed.map((status) => [status, status]))}
@@ -628,9 +805,16 @@ const actions = {
     const run = byId(workspace.runs, element.dataset.id);
     downloadJson(`${run.id}-report-template.json`, { schema: "mamase.run-report.v1", runId: run.id, updates: [{ status: "running", step: run.step, totalSteps: run.totalSteps, loss: null, evalLoss: null, note: "Replace with actual trainer observations before importing.", recordedAt: now() }] });
   },
+<<<<<<< Updated upstream
   "import-report": (element) => importDialog("Import progress report", "report", "Import a mamase.run-report.v1 JSON file. Updates must be chronological, use this run ID, and cannot move completed steps backwards.", { runId: element.dataset.id }),
   "import-training-result": (element) => importDialog("Import training result", "training-result", "Choose result.json from a completed local training bundle. Import its run-report.json first. This registers the actual adapter path, source fingerprints, and base/adapter holdout loss; it never promotes a model.", { runId: element.dataset.id }),
   "import-evaluation": () => importDialog("Import paired evaluation", "paired-evaluation", "Choose evaluation-report.json from the local evaluator (up to 20 MB). Import the matching training result first. Scores are recomputed from the report's string checks; only summaries and fingerprints are saved, not its prompts or responses."),
+=======
+  "import-report": (element) => {
+    assert(!byId(workspace.runs, element.dataset.id).localJobId && !training.jobs.has(element.dataset.id), "Managed local jobs record their own progress.");
+    importDialog("Import progress report", "report", "Import a mamase.run-report.v1 JSON file. Updates must be chronological, use this run ID, and cannot move completed steps backwards.", { runId: element.dataset.id });
+  },
+>>>>>>> Stashed changes
   "new-artifact": (element) => {
     assert(workspace.runs.length, "Save a planned run in the distillation lab before registering its outputs.");
     const run = workspace.runs.find((item) => item.id === element.dataset.id) || workspace.runs.at(-1);
@@ -706,6 +890,26 @@ async function submitForm(form) {
   const type = form.dataset.form;
   const context = { ...modalContext };
   const expectedSource = savedSource;
+  if (type === "local-launch") {
+    const run = structuredClone(byId(workspace.runs, context.runId));
+    const dataset = structuredClone(byId(workspace.datasets, run.recipe.datasetId));
+    const program = structuredClone(byId(workspace.programs, run.recipe.programId));
+    assert(input.confirmManagedOutput === "on", "Confirm the local training and managed output directory.");
+    assert(input.file instanceof File && input.file.size > 0 && input.file.size <= MAX_IMPORT_BYTES, "Choose a nonempty JSONL file of at most 20 MB.");
+    const datasetBase64 = encodeDataset(await input.file.arrayBuffer());
+    assert(form.isConnected && dialog.open, "The launch form was closed. No local job was requested.");
+    assert(localStorage.getItem(STORAGE_KEY) === expectedSource, "The workspace changed before launch. Reload the latest recipe first.");
+    await training.launch({ workspace: { version: 1, name: workspace.name, programs: [program], datasets: [dataset], runs: [run], artifacts: [], evaluations: [] }, datasetBase64, confirmManagedOutput: true });
+    if (form.isConnected && dialog.open) closeModal();
+    notify("Local training requested. Real observations will appear in this run.");
+    return;
+  }
+  if (type === "local-cancel") {
+    await training.cancel(context.jobId);
+    if (form.isConnected && dialog.open) closeModal();
+    notify("Cancellation requested for the local trainer.");
+    return;
+  }
   let next = structuredClone(workspace);
   let message;
   let destination;
@@ -728,10 +932,12 @@ async function submitForm(form) {
     destination = `#/sessions/${run.id}`;
     message = "Planned run saved. No training process was started.";
   } else if (type === "progress") {
+    assert(!byId(next.runs, context.runId).localJobId && !training.jobs.has(context.runId), "Managed local jobs record their own progress.");
     const index = next.runs.findIndex((run) => run.id === context.runId);
     next.runs[index] = recordProgress(byId(next.runs, context.runId), { ...input, step: Number(input.step), totalSteps: Number(input.totalSteps), loss: optionalNumber(input.loss), evalLoss: optionalNumber(input.evalLoss), recordedAt: now() });
     message = "Training progress recorded.";
   } else if (type === "report") {
+    assert(!byId(next.runs, context.runId).localJobId && !training.jobs.has(context.runId), "Managed local jobs record their own progress.");
     const { source } = await readFile(form, MAX_WORKSPACE_BYTES);
     const report = JSON.parse(source);
     assert(report.schema === "mamase.run-report.v1" && report.runId === context.runId, "Expected a mamase.run-report.v1 report for this run.");
@@ -786,7 +992,7 @@ async function submitForm(form) {
     if (ui.draft.method === "distillation" && dataset.kind === "teacher") ui.draft.teacher = dataset.teacher;
     saveDraft();
   }
-  if (type === "reset" || type === "restore") { ui.program = "all"; ui.status = "all"; ui.query = ""; }
+  if (type === "reset" || type === "restore") { ui.program = "all"; ui.status = "all"; ui.query = ""; training.forget(); pendingTraining.clear(); trainingSyncErrors.clear(); }
   closeModal();
   if (destination && location.hash !== destination) location.hash = destination; else render();
   if (type === "dataset" && context.fromLab) document.querySelector("#field-datasetId")?.focus();
@@ -816,6 +1022,9 @@ document.addEventListener("submit", async (event) => {
   submit.disabled = true;
   submit.textContent = form.querySelector('input[type="file"]') ? "Importing…" : "Saving…";
   form.setAttribute("aria-busy", "true");
+  if (form.dataset.form === "local-launch") submit.textContent = "Launching…";
+  if (form.dataset.form === "local-cancel") submit.textContent = "Cancelling…";
+  submissionCount++;
   try {
     await submitForm(form);
   } catch (error) {
@@ -831,6 +1040,8 @@ document.addEventListener("submit", async (event) => {
     submit.disabled = false;
     submit.innerHTML = label;
     form.removeAttribute("aria-busy");
+    submissionCount--;
+    flushTrainingUpdates();
   }
 });
 
@@ -907,4 +1118,5 @@ window.addEventListener("storage", (event) => {
   if (event.key === STORAGE_KEY || event.key === null) { ui.conflict = true; updateStorageNotice(); }
 });
 document.addEventListener("mamase:themechange", syncThemeControls);
+dialog.addEventListener("close", flushTrainingUpdates);
 render();

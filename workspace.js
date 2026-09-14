@@ -145,6 +145,7 @@ export function createRun(input, workspace) {
     createdAt: date(input.createdAt),
     updatedAt: input.createdAt,
     history: [],
+    ...(input.localJobId === undefined ? {} : { localJobId: id(input.localJobId) }),
   };
 }
 
@@ -275,8 +276,14 @@ export function exportRecipe(run, workspace) {
     schema: "mamase.training-recipe.v1",
     runId: run.id,
     name: run.name,
+<<<<<<< Updated upstream
     execution: "external",
     description: "External execution only. Prepare this recipe with npm run lab -- prepare; training requires an explicit local Python command.",
+=======
+    execution: run.localJobId ? "local-mlx" : "external",
+    ...(run.localJobId ? { localJobId: run.localJobId } : {}),
+    description: "Planning manifest, not an executable trainer configuration. Map these fields to your local trainer.",
+>>>>>>> Stashed changes
     recipe: run.recipe,
     dataset: { ...dataset, split: splitCounts(dataset), splitSeed: 42 },
     splitPolicy: "The Mamase prepare command orders unique prompts by SHA-256(seed + prompt), reserves the recorded holdout count, and writes disjoint train/holdout files. Other trainers must apply an equivalent leakage-free split.",
