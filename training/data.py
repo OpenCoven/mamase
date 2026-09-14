@@ -153,7 +153,10 @@ def read_source(path, metadata):
 
 
 def write_splits(directory, train, valid):
-    directory.mkdir(mode=0o700)
+    for name in ("train.jsonl", "valid.jsonl"):
+        path = directory / name
+        if path.exists() or path.is_symlink():
+            raise FileExistsError(f"Refusing to overwrite existing split file: {path}")
     for name, examples in (("train.jsonl", train), ("valid.jsonl", valid)):
         path = directory / name
         with path.open("x", encoding="utf-8") as stream:

@@ -70,6 +70,16 @@ test("missing optional runtime is explicit and cannot create a pretend job", asy
   assert.equal(trainer.jobs.size, 0);
 });
 
+test("managed MLX refuses unsupported adapter techniques before allocating a job", async (context) => {
+  const { trainer, payload } = await setup(context);
+  for (const adapter of ["rslora", "dora", "qlora"]) {
+    payload.workspace.runs[0].recipe.adapter = adapter;
+    await assert.rejects(trainer.launch(payload), /Managed MLX supports LoRA only/);
+    assert.equal(trainer.jobs.size, 0);
+    assert.equal(trainer.processes.size, 0);
+  }
+});
+
 for (const name of ["failure", "protocol", "missing-output"]) {
   test(`${name} cannot produce a successful job or artifact`, async (context) => {
     const { trainer, payload } = await setup(context, name);

@@ -1,0 +1,9 @@
+.mamase/
+.lab/
+.venv/
+.venv-training/
+training/
+outputs/
+node_modules/
+.env*
+*.log

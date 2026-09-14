@@ -1,7 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { createWorkspace, createRun, recordProgress, validateWorkspace } from "../workspace.js";
-import { trainingIdentity, mergeTrainingJob } from "../training-state.js";
+import { createWorkspace, createRun, recordProgress, validateWorkspace, validateRecipe } from "../workspace.js";
+import { trainingIdentity, mergeTrainingJob, managedRecipeIssue } from "../training-state.js";
 
 function fixture() {
   const workspace = createWorkspace();
@@ -44,4 +44,15 @@ test("managed sync rejects mismatched recipes, divergent history and false artif
   manual.runs[0] = recordProgress(manual.runs[0], { ...job.run.history[0], note: "Different manual update" });
   assert.throws(() => mergeTrainingJob(manual, job), /history/i);
   assert.throws(() => mergeTrainingJob(workspace, { ...job, artifact: { id: "artifact-job-1" } }), /completed/i);
+});
+
+test("workflow selection persists without adding fields to legacy recipe identities", () => {
+  const { workspace } = fixture();
+  const recipe = workspace.runs[0].recipe;
+  assert.equal(Object.hasOwn(validateRecipe(recipe, workspace), "workflow"), false);
+  assert.equal(validateRecipe({ ...recipe, workflow: "managed" }, workspace).workflow, "managed");
+  assert.throws(() => validateRecipe({ ...recipe, workflow: "unknown" }, workspace), /workflow/i);
+  assert.throws(() => validateRecipe({ ...recipe, workflow: "cli" }, workspace), /familiar/i);
+  assert.throws(() => validateRecipe({ ...recipe, workflow: "managed", adapter: "dora" }, workspace), /LoRA/);
+  assert.match(managedRecipeIssue({ ...recipe, workflow: "cli" }), /terminal|CLI/);
 });

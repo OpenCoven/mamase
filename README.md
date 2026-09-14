@@ -8,9 +8,15 @@ familiar identity or proof of improvement.
 ## Run locally
 
 The browser workspace requires Node.js 20 or later, with no runtime dependencies
+<<<<<<< Updated upstream
 or build step. Optional identity-bound PEFT training uses Python 3.10+ and
 `training/requirements.txt`. Managed Apple Silicon training uses a separate
 Python 3.12 environment with `training/requirements-mlx.txt`.
+=======
+or build step. Identity-bound CLI training uses Python 3.10+ and
+`training/requirements.txt`. Optional managed MLX training uses an isolated
+Python 3.12 environment and `training/requirements-mlx.txt` on Apple Silicon.
+>>>>>>> Stashed changes
 
 ```sh
 npm start
@@ -33,11 +39,20 @@ different port.
    configure the student/base model, rank, alpha, learning rate, epochs,
    micro-batch size, gradient accumulation, sequence length, and output path.
    Saving creates a **planned run**, not a training process.
+<<<<<<< Updated upstream
 4. **Training runs:** export a recipe and execute the explicit local preparation
    and training commands below, then import its progress report. Alternatively,
    launch a managed local MLX-LM job. Actual observations drive status,
    optimizer-step progress, loss charts, and the progress journal.
 5. **Model library:** import a completed training `result.json` to register its
+=======
+4. **Training runs:** launch a managed local MLX-LM LoRA job, or export a recipe
+   and execute the identity-bound preparation and training commands below, then
+   import the CLI progress report. Actual observations
+   drive status, optimizer-step progress, loss charts, and the progress journal.
+5. **Model library:** managed MLX adapters register automatically. For CLI jobs,
+   import a completed training `result.json` to register its
+>>>>>>> Stashed changes
    actual adapter path, familiar binding, source fingerprints, and paired
    holdout loss. Other adapters, checkpoints, merged weights, and GGUF paths
    can still be registered manually.
@@ -61,6 +76,12 @@ tokenizer. Prepare or download that model separately with MLX-LM tooling.
 Managed training is offline: it does not download weights, call a teacher API,
 or enable remote model code.
 
+Managed MLX supports **LoRA only**. Familiar and instance IDs remain recipe
+labels; this worker does not inject a canonical familiar identity bundle.
+Use the separate identity-bound CLI below for that binding, rsLoRA/DoRA/QLoRA,
+and PEFT paired evaluation. MLX's recorded holdout loss is adapter-only, not a
+base-versus-adapter improvement claim.
+
 Save the recipe, then choose **Launch local training** from its run page.
 Select the exact original JSONL file and confirm local execution. Mamase checks
 the file's bytes, SHA-256, example count and format against the imported
@@ -82,6 +103,7 @@ Only one managed job runs at a time. Each job gets a new private directory:
   adapter/
     adapters.safetensors
     adapter_config.json
+    training_receipt.json
 ```
 
 **Managed output is isolated from the external recipe's output path.** Existing
@@ -177,18 +199,29 @@ Or:
 {"messages":[{"role":"user","content":"A question"},{"role":"assistant","content":"A reviewed answer"}]}
 ```
 
+<<<<<<< Updated upstream
 At least two examples are required. The identity-bound preparation CLI orders unique prompts by
+=======
+At least two examples are required. The identity-bound CLI preparation orders unique prompts by
+>>>>>>> Stashed changes
 SHA-256 of seed 42 and the prompt fingerprint, reserves the holdout count, and
 writes disjoint split files. Duplicate prompts (even with different responses)
 are rejected instead of leaking between splits. Conversations must alternate
 user/assistant turns and end with an assistant response. Remove dataset system
 messages: the selected familiar's canonical identity supplies the system prompt.
+Managed MLX uses a separate deterministic split: Python `Random(42)` shuffles
+source records, reserves the holdout count, and writes `train.jsonl` and
+`valid.jsonl` beside the copied source. Do not compare holdout scores between
+these workflows as though they used identical splits.
 The browser itself stores no examples. The handbook includes a tiny sample;
 it is not a serious training corpus.
+<<<<<<< Updated upstream
 
 The separate managed MLX worker shuffles source indices with seed 42 and
 reserves the holdout count. It writes and applies that split itself; browser-only
 metadata imports do not write split files.
+=======
+>>>>>>> Stashed changes
 
 ### Response distillation
 
@@ -499,6 +532,7 @@ overwriting changes. The warning preserves open forms and offers an export of
 the currently open workspace before reloading newer saved data.
 
 There is no hosted training, inference endpoint, cloud sync, billing, account
+<<<<<<< Updated upstream
 system, or fabricated progress. The browser's artifact paths remain references;
 the explicit Python runner does save actual local adapters and fingerprints.
 Managed MLX training checks its output files at finalization. Neither path
@@ -506,6 +540,16 @@ merges adapters or exports GGUF. `.lab/`, `.mamase/`, `outputs/`, `.venv/`,
 `.venv-training/`, and cache directories are ignored by Git. Bundles and managed
 jobs contain private training data: do not commit or publish them. Fonts and
 artwork are local; browser documentation links open only when clicked.
+=======
+system, or fabricated training progress. Managed training runs locally through
+MLX-LM; its output files are checked at finalization. Other artifact paths remain
+references; the explicit CLI saves real adapters and fingerprints as well.
+The browser does not merge adapters, quantize weights, or export model binaries.
+`.lab/`, `.mamase/`, `outputs/`, `.venv/`, `.venv-training/`, and cache directories
+are ignored by Git. Bundles contain identity and training data: keep them private
+and do not commit or publish them. Fonts and artwork are local; browser
+documentation links open only when clicked.
+>>>>>>> Stashed changes
 
 ## Development checks
 
@@ -552,8 +596,23 @@ npm run test:training
 This creates a tiny randomly initialized diagnostic model and original synthetic
 examples, saves a recipe through the UI, launches the real worker, reconnects
 the browser, and checks live observations, changed adapter tensors and automatic
-registration. It makes no model downloads and is not a production model or a
-model-quality benchmark. Its temporary model/job directories are cleaned up.
+registration. It reloads that exact output through MLX-LM, checks every saved
+tensor against its reloaded parameter, and confirms changed logits versus the
+base model. It makes no model downloads and is not a production model or a
+model-quality benchmark. Temporary model/job directories are cleaned up by default.
+
+To retain the diagnostic model, job, adapter, workspace backup and
+`evidence.json`, choose a **new** output directory under an existing parent:
+
+```sh
+mkdir -p .mamase
+MAMASE_TRAINING_OUTPUT=.mamase/browser-smoke npm run test:training
+```
+
+Existing output directories are refused rather than overwritten. Diagnostic
+jobs use their own server and browser context, leaving the development workspace
+untouched. Keep these local outputs private.
+
 The fast process/API lifecycle fixture can be run separately with
 `node scripts/verify-training.mjs --protocol-fixture`; it is deliberately not
 evidence of real model training.

@@ -21,7 +21,7 @@ from training.data import (
 )
 from training.mlx_runner import (
     evaluate, load_local_model, optimizer_update, read_job, supervised_loss,
-    validated_model_config,
+    should_report_progress, validated_model_config,
 )
 
 TRAINING = Path(__file__).resolve().parent
@@ -70,9 +70,9 @@ class SplitTests(unittest.TestCase):
             }
             examples = read_source(source, metadata)
             train, valid = deterministic_split(examples, 25)
-            write_splits(Path(directory) / "splits", train, valid)
-            self.assertEqual(len((Path(directory) / "splits/train.jsonl").read_text().splitlines()), 7)
-            self.assertEqual(len((Path(directory) / "splits/valid.jsonl").read_text().splitlines()), 2)
+            write_splits(source.parent, train, valid)
+            self.assertEqual(len((source.parent / "train.jsonl").read_text().splitlines()), 7)
+            self.assertEqual(len((source.parent / "valid.jsonl").read_text().splitlines()), 2)
             self.assertEqual(source.read_bytes(), original)
             with self.assertRaisesRegex(ValueError, "count mismatch"):
                 read_source(source, {**metadata, "records": 8})
@@ -80,6 +80,30 @@ class SplitTests(unittest.TestCase):
                 read_source(source, {**metadata, "sha256": "0" * 64})
             with self.assertRaisesRegex(ValueError, "messages"):
                 read_source(source, {**metadata, "format": "messages"})
+
+    def test_split_files_are_never_overwritten(self):
+        for existing in ("train.jsonl", "valid.jsonl"):
+            with self.subTest(existing=existing), tempfile.TemporaryDirectory(dir=TRAINING) as directory:
+                path = Path(directory)
+                (path / existing).write_text("preserve existing content")
+                example = Example(1, {"prompt": "Hello", "response": "World"})
+                with self.assertRaisesRegex(FileExistsError, "Refusing to overwrite"):
+                    write_splits(path, [example], [example])
+                self.assertEqual((path / existing).read_text(), "preserve existing content")
+                self.assertEqual(list(path.iterdir()), [path / existing])
+
+    def test_final_progress_when_interval_does_not_divide_total(self):
+        for total in (5001, 9999, 10001, 25003):
+            with self.subTest(total=total):
+                interval = (total + 4999) // 5000
+                self.assertNotEqual(total % interval, 0)
+                reports = [
+                    step for step in range(1, total + 1)
+                    if should_report_progress(step, total)
+                ]
+                self.assertEqual(reports[-1], total)
+                self.assertLessEqual(len(reports), 5000)
+                self.assertTrue(all(step % interval == 0 for step in reports[:-1]))
 
     def test_reject_empty_response_and_non_text(self):
         for record in (
@@ -256,7 +280,10 @@ class MLXTests(unittest.TestCase):
         directory = Path(directory)
         job_directory = directory / "job"
         job_directory.mkdir()
-        source = Path(self.fixture["datasetPath"])
+        source = directory / "data" / "original.jsonl"
+        source.parent.mkdir()
+        shutil.copyfile(self.fixture["datasetPath"], source)
+        (directory / "adapters").mkdir(mode=0o700)
         job = {
             "version": 1, "jobId": "unittest-real-worker",
             "run": {"id": "test", "name": "Real fixture", "recipe": {
@@ -320,9 +347,10 @@ class MLXTests(unittest.TestCase):
                 stdout.seek(0)
                 stderr.seek(0)
                 self.assertEqual(result, 0, stderr.read())
-                events = [
-                    json.loads(line.removeprefix("MAMASE_EVENT ")) for line in stdout
-                ]
+                events = []
+                for line in stdout:
+                    self.assertTrue(line.startswith("MAMASE_EVENT "))
+                    events.append(json.loads(line[13:]))
             self.assertEqual(events[-1], {"type": "complete"})
             progress = [event for event in events if event["type"] == "progress"]
             self.assertEqual([event["step"] for event in progress], [0, 1, 1])
@@ -330,6 +358,17 @@ class MLXTests(unittest.TestCase):
             self.assertEqual(source.read_bytes(), original)
             self.assertFalse(Path(job["run"]["recipe"]["outputPath"]).exists())
             self.assertGreater((Path(job["outputPath"]) / "adapters.safetensors").stat().st_size, 0)
+            self.assertEqual(len((source.parent / "train.jsonl").read_text().splitlines()), 7)
+            self.assertEqual(len((source.parent / "valid.jsonl").read_text().splitlines()), 2)
+            self.assertFalse((path.parent / "train.jsonl").exists())
+            self.assertEqual(
+                json.loads((Path(job["outputPath"]) / "adapter_config.json").read_text()),
+                {
+                    "fine_tune_type": "lora", "num_layers": 2,
+                    "lora_parameters": {"rank": 2, "scale": 2.0, "dropout": 0.0},
+                    "model": str(local_model),
+                },
+            )
 
     def test_real_worker_rejects_tampered_source_and_existing_output(self):
         with tempfile.TemporaryDirectory(dir=TRAINING) as directory:
@@ -344,10 +383,9 @@ class MLXTests(unittest.TestCase):
             self.assertNotEqual(result.returncode, 0)
             self.assertIn("SHA-256 mismatch", result.stderr)
             self.assertNotIn('"type": "complete"', result.stdout)
-            self.assertFalse(Path(job["outputPath"]).exists())
+            self.assertEqual(list(Path(job["outputPath"]).iterdir()), [])
             path.write_text(original)
             output = Path(job["outputPath"])
-            output.mkdir()
             sentinel = output / "owned-by-someone-else"
             sentinel.write_text("must not change")
             result = subprocess.run(command, capture_output=True, text=True, timeout=15)
@@ -355,6 +393,14 @@ class MLXTests(unittest.TestCase):
             self.assertIn("new or empty", result.stderr)
             self.assertEqual(sentinel.read_text(), "must not change")
             self.assertEqual(list(output.iterdir()), [sentinel])
+
+    def test_manifest_rejects_unsupported_adapter_techniques(self):
+        for adapter in ("rslora", "dora", "qlora"):
+            with self.subTest(adapter=adapter), tempfile.TemporaryDirectory(dir=TRAINING) as directory:
+                path, job = self.make_job(directory, adapter=adapter)
+                with self.assertRaisesRegex(ValueError, "Managed MLX supports LoRA only"):
+                    read_job(path)
+                self.assertEqual(list(Path(job["outputPath"]).iterdir()), [])
 
     def test_resolve_parent_directory_alias_but_reject_symlink_output(self):
         with tempfile.TemporaryDirectory(dir=TRAINING) as directory:
@@ -412,6 +458,32 @@ class MLXTests(unittest.TestCase):
 
 
 class ParentLivenessTests(unittest.TestCase):
+    def test_finished_monitor_exits_cleanly_with_open_stdin_or_late_eof(self):
+        code = (
+            "from training.mlx_runner import monitor_parent; import time; "
+            "finish = monitor_parent(); finish(); "
+            "print('finalized', flush=True); time.sleep(0.2); print('clean exit', flush=True)"
+        )
+        for close_stdin in (False, True):
+            with self.subTest(close_stdin=close_stdin):
+                process = subprocess.Popen(
+                    [sys.executable, "-u", "-c", code], cwd=ROOT,
+                    stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
+                )
+                try:
+                    self.assertEqual(process.stdout.readline().strip(), "finalized")
+                    if close_stdin:
+                        process.stdin.close()
+                    self.assertEqual(process.wait(timeout=5), 0)
+                    self.assertEqual(process.stdout.read().strip(), "clean exit")
+                    self.assertEqual(process.stderr.read(), "")
+                finally:
+                    if process.poll() is None:
+                        process.kill()
+                        process.wait()
+                    for stream in (process.stdin, process.stdout, process.stderr):
+                        stream.close()
+
     def test_stdin_eof_terminates_monitor_during_blocking_work(self):
         code = (
             "from training.mlx_runner import monitor_parent; import time; "

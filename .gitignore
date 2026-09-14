@@ -85,6 +85,7 @@ out
 # Nuxt.js build / generate output
 .nuxt
 dist
+.vercel/
 .output
 
 # Gatsby files
@@ -152,3 +153,4 @@ __pycache__/
 *.pyc
 .lab/
 outputs/
+.vercel

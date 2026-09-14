@@ -10,7 +10,9 @@ import { createAppServer } from "../server.mjs";
 import { STORAGE_KEY, validateWorkspace } from "../workspace.js";
 
 const protocol = process.argv.includes("--protocol-fixture");
-const root = await mkdtemp(join(tmpdir(), "mamase-real-training-"));
+const keepOutput = Boolean(process.env.MAMASE_TRAINING_OUTPUT);
+const root = keepOutput ? resolve(process.env.MAMASE_TRAINING_OUTPUT) : await mkdtemp(join(tmpdir(), "mamase-real-training-"));
+if (keepOutput) await mkdir(root, { mode: 0o700 });
 const python = protocol ? process.env.MAMASE_TEST_PYTHON || "python3" : process.env.MAMASE_PYTHON || resolve(".venv-training/bin/python");
 let browser;
 let server;
@@ -62,16 +64,20 @@ try {
   await modal.getByLabel("Dataset name", { exact: true }).fill("Local training diagnostic examples");
   await modal.getByLabel("JSONL file", { exact: true }).setInputFiles(fixture.datasetPath);
   await modal.getByLabel("Provenance & permission", { exact: true }).fill("Original synthetic diagnostic examples; no private data.");
+  await modal.getByLabel("Holdout percentage", { exact: true }).fill("25");
   await modal.getByRole("button", { name: "Import dataset", exact: true }).click();
   await modal.waitFor({ state: "hidden" });
   const datasetId = await page.evaluate((key) => JSON.parse(localStorage.getItem(key)).datasets[0].id, STORAGE_KEY);
   await page.goto(`${base}/#/playground`);
+  assert.equal(await page.getByLabel("Base model", { exact: true }).inputValue(), "");
+  assert.equal(await page.locator("#recipe-advanced").evaluate((element) => element.open), false);
   await page.getByLabel("Run name", { exact: true }).fill("Local training diagnostic");
   await page.getByLabel("Familiar ID", { exact: true }).fill("fixture");
   await page.getByLabel("Coven instance ID", { exact: true }).fill("diagnostic-coven");
   await page.getByLabel("Training objective", { exact: true }).fill("Verify real LoRA optimization and artifact registration, not model quality.");
   await page.getByLabel("Base model", { exact: true }).fill(fixture.modelPath);
   await page.getByLabel("Training dataset", { exact: true }).selectOption(datasetId);
+  await page.locator("#recipe-advanced > summary").click();
   await page.getByLabel("Rank", { exact: true }).selectOption("4");
   await page.getByLabel("Alpha", { exact: true }).fill("8");
   await page.getByLabel("Learning rate", { exact: true }).fill("0.001");
@@ -79,14 +85,24 @@ try {
   await page.getByLabel("Micro batch", { exact: true }).fill("2");
   await page.getByLabel("Gradient accumulation", { exact: true }).fill("2");
   await page.getByLabel("Max sequence length", { exact: true }).fill("128");
-  await page.getByRole("button", { name: "Save planned run", exact: true }).click();
+  await page.getByRole("button", { name: "Save recipe & review", exact: true }).click();
   await page.waitForURL(/sessions\/run-/);
   const runUrl = page.url();
   const runId = await page.evaluate((key) => JSON.parse(localStorage.getItem(key)).runs[0].id, STORAGE_KEY);
-  await page.getByRole("button", { name: "Launch local training", exact: true }).click({ timeout: 45000 });
+  await page.getByRole("heading", { name: "Recipe saved. Training has not started.", exact: true }).waitFor({ timeout: 45000 });
+  assert.equal(await page.locator("#run-measurements").isVisible(), false);
+  await page.getByRole("button", { name: "Review & start training", exact: true }).click();
+  assert.equal(trainer.jobs.size, 0, "Opening review must not launch a job");
+  if (protocol) {
+    await modal.getByLabel("Original JSONL file", { exact: true }).setInputFiles({ name: "wrong.jsonl", mimeType: "application/x-ndjson", buffer: Buffer.from('{"prompt":"different","response":"data"}') });
+    await modal.getByRole("checkbox").check();
+    await modal.getByRole("button", { name: "Start training", exact: true }).click();
+    await modal.locator(".form-error").getByText(/does not match/).waitFor();
+    assert.equal(trainer.jobs.size, 0, "Mismatched files must leave the recipe unstarted");
+  }
   await modal.getByLabel("Original JSONL file", { exact: true }).setInputFiles(fixture.datasetPath);
   await modal.getByRole("checkbox").check();
-  await modal.getByRole("button", { name: "Launch local job", exact: true }).click();
+  await modal.getByRole("button", { name: "Start training", exact: true }).click();
   await modal.waitFor({ state: "hidden", timeout: 45000 });
   assert.ok((await trainer.findRun(runId)).id);
 
@@ -100,6 +116,8 @@ try {
   const job = await trainer.findRun(runId);
   assert.equal(job.status, "completed", `${job.error}\n${job.logs.slice(-20).join("\n")}`);
   assert.equal(workspace.runs[0].localJobId, job.id);
+  assert.equal(workspace.runs[0].recipe.workflow, "managed");
+  assert.equal(workspace.runs[0].recipe.familiarId, "");
   assert.equal(workspace.runs[0].step, workspace.runs[0].totalSteps);
   assert.ok(workspace.runs[0].history.some((event) => Number.isFinite(event.loss)));
   if (!protocol) assert.ok(workspace.runs[0].history.some((event) => Number.isFinite(event.evalLoss)));
@@ -111,45 +129,93 @@ try {
   assert.ok(messages.includes("progress"), "Expected live progress over SSE, not only a final snapshot");
   const weights = await readFile(join(job.outputPath, "adapters.safetensors"));
   assert.ok(weights.length > 0);
+  let reload = null;
   if (!protocol) {
-    const headerSize = Number(weights.readBigUInt64LE());
-    assert.ok(Number.isSafeInteger(headerSize) && headerSize > 0 && headerSize < weights.length - 8);
-    const header = JSON.parse(weights.subarray(8, 8 + headerSize).toString());
-    const learned = Object.entries(header).filter(([key]) => key.toLowerCase().endsWith("lora_b"));
-    assert.ok(learned.length > 0, "Expected real LoRA B tensors");
-    assert.ok(learned.some(([, tensor]) => {
-      const data = weights.subarray(8 + headerSize + tensor.data_offsets[0], 8 + headerSize + tensor.data_offsets[1]);
-      assert.ok(tensor.shape.includes(4), "Saved adapter rank must match the recipe");
-      if (tensor.dtype === "F32") {
-        for (let offset = 0; offset < data.length; offset += 4) {
-          const value = data.readFloatLE(offset);
-          assert.ok(Number.isFinite(value), "Adapter contains nonfinite weights");
-          if (value !== 0) return true;
-        }
-      } else if (["F16", "BF16"].includes(tensor.dtype)) {
-        for (let offset = 0; offset < data.length; offset += 2) {
-          const bits = data.readUInt16LE(offset) & 0x7fff;
-          assert.ok(tensor.dtype === "F16" ? (bits & 0x7c00) !== 0x7c00 : (bits & 0x7f80) !== 0x7f80, "Adapter contains nonfinite weights");
-          if (bits !== 0) return true;
-        }
-      } else throw new Error(`Unsupported diagnostic tensor dtype: ${tensor.dtype}`);
-      return false;
-    }), "LoRA B tensors must change from their zero initialization");
+    reload = JSON.parse(execFileSync(python, [resolve("training/smoke.py"), "--verify-adapter", fixture.modelPath, job.outputPath], {
+      encoding: "utf8", timeout: 120000, maxBuffer: 4 * 1024 * 1024,
+    }));
+    assert.equal(reload.rank, workspace.runs[0].recipe.rank);
+    assert.equal(reload.scale, workspace.runs[0].recipe.alpha / workspace.runs[0].recipe.rank);
+    assert.ok(reload.maxAbsLearnedB > 0 && reload.maxAbsReloadedLogitDelta > 0);
   }
   await page.reload();
   await page.locator("#local-training-panel").waitFor();
+  await page.getByRole("heading", { name: "Adapter saved. Review it next.", exact: true }).waitFor();
+  assert.equal(await page.locator("#run-technical").evaluate((element) => element.open), false);
+  assert.equal(await page.locator("#local-training-panel .button.primary").count(), 1);
+  assert.equal(await page.locator("#external-training-guide").isVisible(), false);
+  assert.match(await page.locator("#run-loss-value").innerText(), /^\d+\.\d{4}$/);
   assert.equal((await page.evaluate((key) => JSON.parse(localStorage.getItem(key)), STORAGE_KEY)).artifacts.length, 1);
   assert.deepEqual(errors, []);
   if (process.env.MAMASE_SCREENSHOTS) {
     await mkdir(process.env.MAMASE_SCREENSHOTS, { recursive: true });
-    await page.locator(".trainer-log summary").click();
     await page.screenshot({ path: join(process.env.MAMASE_SCREENSHOTS, protocol ? "training-protocol.png" : "training-real-mlx.png"), fullPage: true });
   }
-  console.log(`${protocol ? "Protocol-fixture" : "Real MLX-LM"} training passed: saved recipe -> local process -> streamed observations -> browser reconnect -> completed run -> one registered adapter. ${workspace.runs[0].step} optimizer steps; ${weights.length} adapter bytes.`);
+  await page.getByRole("link", { name: "Review adapter", exact: true }).click();
+  await page.getByRole("heading", { name: "Saved does not mean evaluated.", exact: true }).waitFor();
+  await page.getByText(/not the complete model/).waitFor();
+  await page.goto(runUrl);
+  if (protocol) {
+    await page.getByRole("button", { name: "Duplicate recipe", exact: true }).click();
+    await page.waitForURL("**/#/playground");
+    await page.getByRole("button", { name: /Train in a terminal/ }).click();
+    await page.getByLabel("Familiar ID", { exact: true }).fill("diagnostic");
+    await page.getByLabel("Coven instance ID", { exact: true }).fill("offline-smoke");
+    await page.locator("#recipe-advanced > summary").click();
+    await page.getByLabel("Adapter technique", { exact: true }).selectOption("dora");
+    await page.getByRole("button", { name: "Save recipe & review", exact: true }).click();
+    await page.waitForURL(/sessions\/run-/);
+    await page.getByRole("heading", { name: "Recipe saved for terminal training.", exact: true }).waitFor();
+    assert.equal(await page.getByRole("button", { name: "Review & start training", exact: true }).count(), 0);
+    assert.equal(trainer.jobs.size, 1);
+    await page.getByRole("button", { name: "Duplicate recipe", exact: true }).click();
+    await page.waitForURL("**/#/playground");
+    await page.getByRole("button", { name: /Train on this Mac/ }).click();
+    await page.getByLabel("Run name", { exact: true }).fill("cancel");
+    await page.getByRole("button", { name: "Save recipe & review", exact: true }).click();
+    await page.waitForURL(/sessions\/run-/);
+    await page.getByRole("button", { name: "Review & start training", exact: true }).click();
+    modal = page.locator("#dialog");
+    await modal.getByLabel("Original JSONL file", { exact: true }).setInputFiles(fixture.datasetPath);
+    await modal.getByRole("checkbox").check();
+    await modal.getByRole("button", { name: "Start training", exact: true }).click();
+    await modal.waitFor({ state: "hidden" });
+    await page.getByRole("button", { name: "Cancel local training", exact: true }).click();
+    await modal.getByRole("button", { name: "Cancel local job", exact: true }).click();
+    await modal.waitFor({ state: "hidden" });
+    await page.waitForFunction((key) => JSON.parse(localStorage.getItem(key)).runs.at(-1).status === "cancelled", STORAGE_KEY);
+    await page.getByRole("heading", { name: "Training was cancelled.", exact: true }).waitFor();
+    await page.getByRole("button", { name: "Edit a copy & retry", exact: true }).click();
+    await page.waitForURL("**/#/playground");
+    await page.getByLabel("Run name", { exact: true }).fill("failure");
+    await page.getByRole("button", { name: "Save recipe & review", exact: true }).click();
+    await page.waitForURL(/sessions\/run-/);
+    await page.getByRole("button", { name: "Review & start training", exact: true }).click();
+    await modal.getByLabel("Original JSONL file", { exact: true }).setInputFiles(fixture.datasetPath);
+    await modal.getByRole("checkbox").check();
+    await modal.getByRole("button", { name: "Start training", exact: true }).click();
+    await modal.waitFor({ state: "hidden" });
+    await page.getByRole("heading", { name: "Training stopped with an error.", exact: true }).waitFor();
+    await page.getByRole("button", { name: "Show technical details", exact: true }).click();
+    assert.equal(await page.locator("#run-technical").evaluate((element) => element.open), true);
+    assert.equal(await page.locator(".trainer-log").evaluate((element) => element.open), true);
+    assert.equal((await page.evaluate((key) => JSON.parse(localStorage.getItem(key)), STORAGE_KEY)).artifacts.length, 1);
+  }
+  if (keepOutput) {
+    const evidence = {
+      diagnostic: true, backend: protocol ? "protocol-fixture-not-training" : "mlx-lm",
+      runId, jobId: job.id, modelPath: job.modelPath, outputPath: job.outputPath,
+      optimizerSteps: job.run.step, observations: job.run.history, reload,
+    };
+    await writeFile(join(root, "evidence.json"), JSON.stringify(evidence, null, 2), { flag: "wx", mode: 0o600 });
+    await writeFile(join(root, "workspace.json"), JSON.stringify(workspace, null, 2), { flag: "wx", mode: 0o600 });
+  }
+  assert.deepEqual(errors, []);
+  console.log(`${protocol ? "Protocol-fixture" : "Real MLX-LM"} training passed: saved recipe -> local process -> streamed observations -> browser reconnect -> completed run -> one registered adapter${reload ? " -> MLX-LM reload" : ""}. ${workspace.runs[0].step} optimizer steps; ${weights.length} adapter bytes.${keepOutput ? ` Output retained in ${root}` : ""}`);
 } finally {
   if (browser) await browser.close();
   if (server) server.closeTrainingConnections();
   if (trainer) await trainer.close();
   if (server) await new Promise((resolve) => server.close(resolve));
-  await rm(root, { recursive: true, force: true });
+  if (!keepOutput) await rm(root, { recursive: true, force: true });
 }

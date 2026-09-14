@@ -6,7 +6,7 @@ import { resolve, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { createInterface } from "node:readline";
 import { assert, MAX_IMPORT_BYTES, parseDataset, validateWorkspace, validateArtifact, recordProgress } from "./workspace.js";
-import { trainingIdentity } from "./training-state.js";
+import { trainingIdentity, managedRecipeIssue } from "./training-state.js";
 
 const project = fileURLToPath(new URL(".", import.meta.url));
 const active = (job) => ["starting", "running", "cancelling"].includes(job.status);
@@ -134,6 +134,8 @@ export class LocalTrainer extends EventEmitter {
       assert(workspace.runs.length === 1 && workspace.datasets.length === 1 && workspace.programs.length === 1 && workspace.artifacts.length === 0 && workspace.evaluations.length === 0, "Launch requires exactly one saved recipe, its dataset and its program.");
       const run = workspace.runs[0];
       const dataset = workspace.datasets[0];
+      const recipeIssue = managedRecipeIssue(run.recipe);
+      assert(!recipeIssue, recipeIssue);
       assert(run.status === "planned" && run.history.length === 0 && !run.localJobId, "Only an untouched planned run can be launched. Duplicate an existing attempt.");
       if ([...this.jobs.values()].some((job) => job.run.id === run.id)) throw problem("This run already has a managed job. Reconnect to it instead of launching twice.", 409);
       assert(typeof input.datasetBase64 === "string" && input.datasetBase64.length <= Math.ceil(MAX_IMPORT_BYTES / 3) * 4 && input.datasetBase64.length % 4 === 0, "Choose a valid JSONL file of at most 20 MB.");

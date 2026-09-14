@@ -108,6 +108,11 @@ export function validateRecipe(input, workspace) {
   const instanceId = text(input.instanceId ?? "", "Coven instance ID", 80, true);
   assert(Boolean(familiarId) === Boolean(instanceId), "Set both familiar and Coven instance IDs, or leave both unbound.");
   if (familiarId) { id(familiarId); id(instanceId); }
+  if (input.workflow !== undefined) {
+    assert(["managed", "cli"].includes(input.workflow), "Choose a training workflow.");
+    if (input.workflow === "managed") assert(adapter === "lora", "Training on this Mac supports LoRA. Choose the terminal workflow for other techniques.");
+    if (input.workflow === "cli") assert(familiarId && instanceId, "Terminal training needs both a familiar ID and Coven instance ID.");
+  }
   return {
     method: input.method,
     programId: input.programId,
@@ -126,6 +131,7 @@ export function validateRecipe(input, workspace) {
     maxSequence: number(input.maxSequence, "Sequence length", 128, 131072, true),
     outputPath: text(input.outputPath, "Local output path", 500),
     objective: text(input.objective, "Training objective", 2000),
+    ...(input.workflow !== undefined ? { workflow: input.workflow } : {}),
   };
 }
 
@@ -351,6 +357,7 @@ export function exportRecipe(run, workspace) {
     name: run.name,
     execution: run.localJobId ? "local-mlx" : "external",
     ...(run.localJobId ? { localJobId: run.localJobId } : {}),
+<<<<<<< Updated upstream
     description: run.localJobId
       ? "Recipe for the recorded managed local MLX job. Exporting does not start training."
       : "External execution only. Prepare this recipe with npm run lab -- prepare; training requires an explicit local Python command.",
@@ -359,6 +366,12 @@ export function exportRecipe(run, workspace) {
     splitPolicy: run.localJobId
       ? "The managed MLX worker shuffles source indices with seed 42, reserves the recorded holdout count, and writes separate training and validation files."
       : "The Mamase prepare command orders unique prompts by SHA-256(seed + prompt), reserves the recorded holdout count, and writes disjoint train/holdout files. Other trainers must apply an equivalent leakage-free split.",
+=======
+    description: run.localJobId ? "Recipe for a managed local MLX job; its output is tracked on local disk." : "Prepare this recipe with npm run lab -- prepare; CLI training requires an explicit local Python command. Managed MLX training can also be launched from the saved run.",
+    recipe: run.recipe,
+    dataset: { ...dataset, split: splitCounts(dataset), splitSeed: 42 },
+    splitPolicy: run.localJobId ? "Managed MLX shuffles source records with Python Random(42), reserves the recorded holdout count, and writes train.jsonl and valid.jsonl beside the original data." : "The Mamase prepare command orders unique prompts by SHA-256(seed + prompt), reserves the recorded holdout count, and writes disjoint train/holdout files. Other trainers must apply an equivalent leakage-free split.",
+>>>>>>> Stashed changes
     distillation: run.recipe.method === "distillation" ? "Supervised LoRA training on pre-generated teacher responses; no online generation or logit/KL matching." : null,
     estimatedOptimizerSteps: estimatedSteps(run.recipe, dataset),
   };

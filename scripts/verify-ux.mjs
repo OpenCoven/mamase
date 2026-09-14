@@ -122,6 +122,8 @@ try {
   await go(page, "playground");
   await page.getByLabel("Run name", { exact: true }).fill("Recovered recipe");
   await page.getByLabel("Training objective", { exact: true }).fill("Keep my experiment intact.");
+  await page.getByLabel("Base model", { exact: true }).fill("/local/model");
+  await page.locator("#recipe-advanced > summary").click();
   for (const label of ["Familiar ID", "Coven instance ID"]) {
     const input = page.getByLabel(label, { exact: true });
     await input.fill("invalid id");
@@ -167,8 +169,8 @@ try {
   await modal.waitFor({ state: "hidden" });
   assert.equal(await page.getByLabel("Training objective", { exact: true }).inputValue(), "Keep my experiment intact.");
   assert.equal(await page.getByLabel("Training dataset", { exact: true }).inputValue(), (await stored(page)).datasets[0].id);
-  await page.getByText("Ready to save a planned run. Launch training from the run page.", { exact: true }).waitFor();
-  await page.getByRole("button", { name: "Save planned run", exact: true }).click();
+  await page.getByText("Ready to save your recipe. Training has not started.", { exact: true }).waitFor();
+  await page.getByRole("button", { name: "Save recipe & review", exact: true }).click();
   await page.waitForURL(/sessions\/run-/);
   assert.equal((await stored(page)).runs[0].status, "planned");
   assert.equal(await page.evaluate((key) => sessionStorage.getItem(key), DRAFT_KEY), null);
@@ -195,6 +197,7 @@ try {
   await page.evaluate((key) => localStorage.setItem(key, "invalid workspace"), STORAGE_KEY);
   await page.reload();
   await go(page, "settings");
+  await page.reload();
   await page.getByRole("heading", { name: "Workspace needs attention", exact: true }).waitFor();
   await page.getByRole("group", { name: "Appearance mode", exact: true }).getByRole("button", { name: "Light", exact: true }).click();
   await page.waitForFunction(() => document.documentElement.dataset.theme === "light");
@@ -392,8 +395,9 @@ try {
   await lab.getByRole("button", { name: "Duplicate recipe", exact: true }).click();
   await modal.getByRole("button", { name: "Replace draft", exact: true }).click();
   await lab.waitForURL("**/#/playground");
+  await lab.locator("#recipe-advanced > summary").click();
   assert.equal(await lab.getByLabel("External trainer output hint", { exact: true }).inputValue(), "./outputs/run-1-copy");
-  await lab.getByRole("button", { name: "Save planned run", exact: true }).click();
+  await lab.getByRole("button", { name: "Save recipe & review", exact: true }).click();
   await lab.waitForURL(/sessions\/run-/);
   const copy = (await stored(lab)).runs.at(-1);
   assert.equal(copy.status, "planned");

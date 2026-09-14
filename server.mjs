@@ -4,22 +4,7 @@ import { pipeline } from "node:stream/promises";
 import { fileURLToPath } from "node:url";
 import { createTrainingApi } from "./training-api.mjs";
 import { LocalTrainer } from "./local-training.mjs";
-
-const files = new Map([
-  ["/", ["index.html", "text/html"]],
-  ["/index.html", ["index.html", "text/html"]],
-  ["/styles.css", ["styles.css", "text/css"]],
-  ["/app.js", ["app.js", "text/javascript"]],
-  ["/theme.js", ["theme.js", "text/javascript"]],
-  ["/ui.js", ["ui.js", "text/javascript"]],
-  ["/workspace.js", ["workspace.js", "text/javascript"]],
-  ["/experience.js", ["experience.js", "text/javascript"]],
-  ["/validation.js", ["validation.js", "text/javascript"]],
-  ["/results.js", ["results.js", "text/javascript"]],
-  ["/training-state.js", ["training-state.js", "text/javascript"]],
-  ["/training-client.js", ["training-client.js", "text/javascript"]],
-  ["/favicon.svg", ["favicon.svg", "image/svg+xml"]],
-]);
+import { publicAssets as files } from "./public-assets.mjs";
 
 export function createAppServer({ training = null } = {}) {
   const trainingApi = createTrainingApi(training);
