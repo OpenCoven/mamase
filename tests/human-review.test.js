@@ -86,6 +86,20 @@ test("changed report, suite, decoding, weights and context cannot inherit a deci
   }
 });
 
+test("selected context is visible during review and remains bound through backup recovery", async () => {
+  const { workspace, report, source } = reviewFixture({ selectedContext: true });
+  const review = await prepareReview(workspace, "synthetic-evaluation", report, hash(source));
+  assert.match(reviewBody(review, workspace.evaluations[0], []), /Familiar context: Selected sources/);
+  const saved = recordHumanDecision(workspace, review, decision(review));
+  assert.deepEqual(saved.evaluations[0].reviews[0].evidence.familiarContext, report.familiarContext);
+  assert.deepEqual(parseWorkspaceBackup(exportWorkspaceBackup(saved, at)).workspace, saved);
+  const changed = structuredClone(saved);
+  changed.artifacts[0].lineage.familiarContext.sha256 = hash("changed-context");
+  changed.evaluations[0].comparison.familiarContext.sha256 = hash("changed-context");
+  assert.throws(() => validateWorkspace(changed), /Human decision evidence changed/);
+  await assert.rejects(prepareReview(changed, "synthetic-evaluation", report, hash(source)), /context/i);
+});
+
 test("annotations cannot forge case associations, drop denominators or add execution receipts", async () => {
   const { workspace, report, source } = reviewFixture();
   const review = await prepareReview(workspace, "synthetic-evaluation", report, hash(source));

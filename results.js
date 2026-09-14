@@ -1,5 +1,6 @@
 import { assert, text, number, date, id, digest } from "./validation.js";
 import { validateSuiteSummary, validateCaseFamilies } from "./evaluation-suites.js";
+import { validateFamiliarContext, sameFamiliarContext } from "./context-summary.js";
 
 export const EVAL_CATEGORIES = ["task", "identity", "consent", "tool-boundary"];
 
@@ -10,6 +11,7 @@ function notPromoted(value) {
 
 export function validateTrainingLineage(input, run, dataset) {
   assert(input && run.status === "completed", "Import the completed run report before its training result.");
+  assert(!run.localJobId || input.familiarContext === undefined, "Managed MLX artifacts cannot claim selected familiar context.");
   const lineage = {
     resultSha256: digest(input.resultSha256, "Training result"),
     bundleSha256: digest(input.bundleSha256, "Bundle"),
@@ -23,6 +25,7 @@ export function validateTrainingLineage(input, run, dataset) {
     samples: number(input.samples, "Holdout samples", 1, 1_000_000, true),
     optimizerSteps: number(input.optimizerSteps, "Optimizer steps", 1, 1_000_000_000, true),
     promotion: notPromoted(input.promotion),
+    ...(input.familiarContext === undefined ? {} : { familiarContext: validateFamiliarContext(input.familiarContext, input) }),
   };
   assert(lineage.datasetSha256 === dataset.sha256, "Training result dataset does not match this run.");
   for (const key of ["familiarId", "instanceId", "student", "adapter"]) {
@@ -60,6 +63,7 @@ export function artifactFromTrainingResult(result, metadata, run, dataset) {
     student: result.baseModel.label, adapter: result.adapter.technique,
     baseLoss: result.evaluation.baseLoss, adapterLoss: result.evaluation.adapterLoss,
     samples: result.evaluation.samples, optimizerSteps: result.optimizerSteps, promotion: result.promotion,
+    ...(result.familiarContext === undefined ? {} : { familiarContext: result.familiarContext }),
   }, run, dataset);
   const delta = result.evaluation.delta;
   assert(typeof delta === "number" && Number.isFinite(delta) && Math.abs(delta - (lineage.adapterLoss - lineage.baseLoss)) < 1e-10, "Training result loss delta is inconsistent.");
@@ -87,6 +91,8 @@ export function validateComparison(input, artifact) {
     assert(input[key] === lineage[key], `Evaluation ${key} does not match the imported training result.`);
   }
   assert(input.adapterPath === artifact.path, "Evaluation adapter path does not match the imported artifact.");
+  if (input.familiarContext !== undefined) validateFamiliarContext(input.familiarContext, lineage);
+  assert(sameFamiliarContext(input.familiarContext, lineage.familiarContext), "Evaluation familiar context does not match the imported training result.");
   const suite = validateSuiteSummary(input.suite, input.samples);
   assert(input.decoding?.doSample === false && input.decoding.numBeams === 1 && input.decoding.seed === 42, "Expected paired greedy decoding with seed 42.");
   const decoding = { doSample: false, numBeams: 1, seed: 42, maxNewTokens: number(input.decoding.maxNewTokens, "Maximum new tokens", 1, 512, true) };
@@ -107,6 +113,7 @@ export function validateComparison(input, artifact) {
     datasetSha256: lineage.datasetSha256, familiarId: lineage.familiarId, instanceId: lineage.instanceId,
     adapterPath: artifact.path, suite, decoding, ...summary, categories, device: input.device,
     promotion: notPromoted(input.promotion),
+    ...(lineage.familiarContext === undefined ? {} : { familiarContext: validateFamiliarContext(lineage.familiarContext, lineage) }),
   };
 }
 

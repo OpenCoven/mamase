@@ -5,7 +5,7 @@ import { syntheticSuiteTemplate } from "../../evaluation-suites.js";
 export const at = "2026-09-14T12:00:00.000Z";
 export const hash = (value) => createHash("sha256").update(value).digest("hex");
 
-export function reviewFixture() {
+export function reviewFixture({ selectedContext = false } = {}) {
   let workspace = createWorkspace();
   workspace.datasets.push({
     id: "synthetic-data", name: "Synthetic only", filename: "synthetic.jsonl", records: 10, bytes: 1000,
@@ -32,6 +32,11 @@ export function reviewFixture() {
     evaluation: { metric: "completion-token-weighted-negative-log-likelihood", samples: 2, baseLoss: 2, adapterLoss: 2, delta: 0 },
     trainableParameters: 10, totalParameters: 100, promotion: "not-authorized",
   };
+  if (selectedContext) result.familiarContext = {
+    schema: "mamase.familiar-context-summary.v1", sha256: hash("selected-context"), scope: "selected-sources",
+    familiarId: "fixture-bot", instanceId: "synthetic-coven", lane: "review", role: "Synthetic review familiar",
+    promptSha256: hash("composed-prompt"), sourceRoles: ["identity", "soul", "role"],
+  };
   const resultHash = hash(JSON.stringify(result));
   workspace = importTrainingResult(workspace, result, { id: "synthetic-artifact", sha256: resultHash, createdAt: at });
   const suite = syntheticSuiteTemplate();
@@ -41,6 +46,7 @@ export function reviewFixture() {
     schema: "mamase.evaluation-report.v1", runId: run.id, createdAt: at,
     resultSha256: resultHash, bundleSha256: result.bundleSha256, datasetSha256: result.datasetSha256,
     familiar: result.familiar, adapterPath: result.adapter.path,
+    ...(selectedContext ? { familiarContext: result.familiarContext } : {}),
     suite: {
       name, version, schema, sha256: hash(JSON.stringify(suite)), historySha256: null,
       governance: { ...declarations, classification: "declared-v2", independence: "known-exposure",

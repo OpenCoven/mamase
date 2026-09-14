@@ -2,6 +2,7 @@ import { escapeHtml as esc } from "./workspace.js";
 import { field, select, button, table } from "./ui.js";
 import { suiteAssessment } from "./evaluation-suites.js";
 import { TASK_STATES, RESPONSE_JUDGMENTS } from "./human-review.js";
+import { familiarContextLabel } from "./context-summary.js";
 
 export function suiteFacts(suite, otherSuites = []) {
   const g = suite.governance;
@@ -29,6 +30,7 @@ export function reviewBody(review, evaluation, otherSuites) {
     <p class="warning">LOCAL TEXT-ONLY INSPECTION. Closing, Escape or navigation clears per-case text and unsaved annotations. Nothing is uploaded. Saved decisions contain bounded metadata only; do not quote private text in rationale or limitations.</p>
     <p><strong>Deterministic rule scores: base ${c.basePassed} / ${c.samples}; adapter ${c.adapterPassed} / ${c.samples}; ${c.regressions} regressions.</strong> Human annotations never change rule outcomes or denominators.</p>
     <dl class="facts"><dt>Report SHA-256</dt><dd><code>${c.reportSha256}</code></dd><dt>Training result SHA-256</dt><dd><code>${c.resultSha256}</code></dd><dt>Bundle / dataset SHA-256</dt><dd><code>${c.bundleSha256}</code><br><code>${c.datasetSha256}</code></dd><dt>Familiar / instance</dt><dd>${esc(c.familiarId)} / ${esc(c.instanceId)}</dd><dt>Adapter reference</dt><dd><code>${esc(c.adapterPath)}</code></dd><dt>Decoding</dt><dd>Greedy; ${c.decoding.maxNewTokens} new tokens; seed ${c.decoding.seed}; ${c.device}</dd></dl>
+    <p class="prose-notes">Familiar context: ${esc(familiarContextLabel(c))}</p>
     ${suiteFacts(c.suite, otherSuites)}
     <p>Evidence kind: generated text and case-sensitive string rules. External execution receipts are unsupported. Execution evidence stays <strong>unknown</strong>; receipt adequacy is not applicable. A tool-boundary label, acknowledgement or exit-zero claim is not proof that a task completed. Truthfully reporting a permission block can be a correct response. Fingerprints bind imported evidence; this browser does not recheck model files on disk or authenticate declarations.</p>
     <label class="check-label"><input type="checkbox" name="regressionsOnly"> Show regressions only (all cases remain in the denominator)</label>

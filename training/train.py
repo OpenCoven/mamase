@@ -11,6 +11,11 @@ from pathlib import Path
 import platform
 import re
 
+if __package__:
+    from .familiar_context import fingerprint, require, validate_context
+else:
+    from familiar_context import fingerprint, require, validate_context
+
 os.environ["HF_HUB_OFFLINE"] = "1"
 os.environ["TRANSFORMERS_OFFLINE"] = "1"
 os.environ["HF_DATASETS_OFFLINE"] = "1"
@@ -18,19 +23,6 @@ os.environ["HF_HUB_DISABLE_TELEMETRY"] = "1"
 os.environ["TOKENIZERS_PARALLELISM"] = "false"
 
 TRAINING_PACKAGES = ("torch", "transformers", "peft", "accelerate", "tokenizers", "safetensors", "numpy")
-
-
-def require(condition, message):
-    if not condition:
-        raise ValueError(message)
-
-
-def fingerprint(path):
-    digest = hashlib.sha256()
-    with path.open("rb") as stream:
-        for chunk in iter(lambda: stream.read(1024 * 1024), b""):
-            digest.update(chunk)
-    return digest.hexdigest()
 
 
 def fingerprint_tree(directory):
@@ -128,9 +120,13 @@ def load_bundle(directory):
     directory = directory.resolve(strict=True)
     bundle = json.loads((directory / "bundle.json").read_text(encoding="utf-8"))
     require(isinstance(bundle, dict), "Bundle must be a JSON object.")
-    require(bundle.get("schema") == "mamase.local-bundle.v1", "Unsupported bundle schema.")
+    require(bundle.get("schema") in ("mamase.local-bundle.v1", "mamase.local-bundle.v2"), "Unsupported bundle schema.")
     validate_recipe(bundle.get("recipe"))
     expected = {"train.jsonl", "holdout.jsonl", "identity.json", "recipe.json"}
+    if bundle["schema"] == "mamase.local-bundle.v2":
+        expected.add("context.json")
+    else:
+        require("familiarContext" not in bundle, "Legacy identity-files-only bundles cannot claim selected context.")
     require(set(bundle["files"]) == expected, "Bundle file inventory is invalid.")
     for name, digest in bundle["files"].items():
         path = (directory / name).resolve(strict=True)
@@ -147,12 +143,14 @@ def load_bundle(directory):
     for name, record in identity["files"].items():
         require(hashlib.sha256(record["content"].encode()).hexdigest() == record["sha256"], f"Identity snapshot mismatch: {name}")
         require(fingerprint(Path(record["path"])) == record["sha256"], f"Familiar identity changed: {name}. Prepare a new run.")
-    declared_name = re.search(r"^\s*(?:-\s*)?(?:\*\*)?Name:(?:\*\*)?\s*(.+?)\s*$", identity["files"]["IDENTITY.md"]["content"], re.MULTILINE | re.IGNORECASE)
+    declared_name = re.search(r"^[\s\ufeff]*(?:-\s*)?(?:\*\*)?Name:(?:\*\*)?\s*(.+?)\s*$", identity["files"]["IDENTITY.md"]["content"], re.MULTILINE | re.IGNORECASE)
     require(declared_name is not None, "IDENTITY.md must declare a Name: line.")
     require(re.sub(r"[^a-z0-9_-]+", "-", declared_name[1].lower()) == identity["familiarId"].lower(), "Declared familiar name does not match the recipe.")
     rows = {}
     prompt_sets = {}
     canonical = f'Coven instance: {identity["instanceId"]}\nFamiliar ID: {identity["familiarId"]}\n\n{identity["files"]["IDENTITY.md"]["content"]}\n\n{identity["files"]["SOUL.md"]["content"]}'
+    if bundle["schema"] == "mamase.local-bundle.v2":
+        canonical = validate_context(directory, bundle, identity)
     for split in ("train", "holdout"):
         rows[split] = [json.loads(line) for line in (directory / f"{split}.jsonl").read_text(encoding="utf-8").splitlines() if line.strip()]
         require(len(rows[split]) == bundle["split"][split] > 0, f"Invalid {split} count.")
@@ -320,6 +318,7 @@ def train(args):
             "versions": package_versions(recipe["adapter"]),
             "python": platform.python_version(), "platform": platform.platform(),
             "promotion": "not-authorized",
+            **({"familiarContext": bundle["familiarContext"]} if "familiarContext" in bundle else {}),
         }
         write_json(bundle_dir / "result.json", metrics)
         progress.record("completed", trainer.state.global_step, trainer.state.max_steps, loss=float(outcome.training_loss), eval_loss=adapter_loss, note="Adapter and result.json saved. Identity/task evaluation and explicit promotion remain separate.")

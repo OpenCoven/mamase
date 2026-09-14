@@ -3,7 +3,7 @@ import { reviewFixture } from "../tests/fixtures/evaluation-fixture.js";
 import { STORAGE_KEY } from "../workspace.js";
 
 export async function verifyReviewUx({ newContext, base, watch, downloaded, bounds }) {
-  const { workspace, source, report } = reviewFixture();
+  const { workspace, source, report } = reviewFixture({ selectedContext: true });
   const context = await newContext({ viewport: { width: 1440, height: 1000 } });
   let completed = false;
   try {
@@ -27,6 +27,8 @@ export async function verifyReviewUx({ newContext, base, watch, downloaded, boun
       await choose();
       await load();
       await modal.getByRole("heading", { name: "Inspect paired case evidence", exact: true }).waitFor();
+      await modal.getByText(/Familiar context: Selected sources \(3\)/).waitFor();
+      assert.ok((await modal.textContent()).includes(report.familiarContext.sha256));
     };
     const fillOpinion = async () => {
       await modal.getByLabel("Reviewer", { exact: true }).fill("Synthetic reviewer");
