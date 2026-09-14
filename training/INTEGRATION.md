@@ -62,10 +62,15 @@ Use the actual virtual-environment executable, not the default `python3`:
 ```
 
 Keep the child's stdin **open through process exit**, including after `complete`.
-Do not call `stdin.end()` after launch or after receiving `complete`. A daemon
-thread starts before MLX imports and exits the entire process with code 143 on
-stdin EOF, even while loading. SIGTERM retains the OS default handler and kills
-the process promptly; there is no success-producing cancellation handler.
+Do not call `stdin.end()` after launch. A daemon thread starts before MLX imports
+and uses unbuffered `os.read`, avoiding Python buffered-stdin locks at interpreter
+shutdown. Before successful finalization it exits the entire process with code
+143 on stdin EOF, even while loading. After successful artifact publication,
+a finished flag disarms EOF cancellation immediately before `complete`; late
+stdin EOF cannot turn a finalized run into a cancellation. A lock serializes
+that decision with the EOF path. The daemon is never joined while stdin is open.
+SIGTERM retains the OS default handler and kills the process promptly; there is
+no success-producing cancellation handler.
 Only direct developer invocations may add `--standalone` to disable the monitor.
 
 The worker accepts the supplied version-1 manifest. `dataset.holdout` is a
@@ -82,11 +87,12 @@ be inside the base model directory, or contain the model, source or manifest. Th
 `outputPath` is never used. The worker logs this managed destination; the parent
 should continue disclosing the distinction in launch confirmation.
 
-Actual `train.jsonl` and `valid.jsonl` are written exclusively into a new
-`splits/` directory beside **job.json**, never beside the original source unless
-that happens to be the private job directory. Existing splits or nonempty output
-directories cause a failure rather than an overwrite. Retry using a fresh job
-directory and fresh output allocation.
+Actual `train.jsonl` and `valid.jsonl` are written directly beside **sourcePath**,
+not relative to job.json and not in a `splits/` subdirectory. The source file
+itself is never modified. The parent must provide a private source directory
+whose split filenames are unused. Existing splits or nonempty output directories
+cause a failure rather than an overwrite. Retry using fresh source/split and
+output allocations. Pre-created empty private output directories are supported.
 
 Stdout contains only `MAMASE_EVENT ` followed by one-line JSON. Library prints
 are redirected to stderr, which the parent should also log. Errors propagate with
@@ -168,6 +174,27 @@ adapter tensors, then publishes these files using exclusive hard links:
 | `adapter_config.json` | MLX-LM reload config: `fine_tune_type`, `num_layers`, `lora_parameters`, base model path |
 | `training_receipt.json` | Actual optimizer count, losses, epoch metrics, split line indices/hash, settings and versions |
 
+For rank 2, alpha 4 and the two-layer fixture, `adapter_config.json` is:
+
+```json
+{
+  "fine_tune_type": "lora",
+  "num_layers": 2,
+  "lora_parameters": {
+    "rank": 2,
+    "scale": 2.0,
+    "dropout": 0.0
+  },
+  "model": "/absolute/local/base-model-directory"
+}
+```
+
+Validate `lora_parameters.rank` against the recipe, `scale` against
+`recipe.alpha / recipe.rank`, and `num_layers` against the base model's layer
+count. Both training methods save `fine_tune_type: "lora"`. There is no separate
+`alpha` field. Reload with MLX-LM `load_adapters(model, outputPath)` after loading
+the standard local base model.
+
 `complete` is emitted only after file writes, tensor read-back, publication and
 fsync. A cancelled/failed run can leave split/staging files or incompletely
 published artifacts. File presence alone is **not** success: the parent must
@@ -202,7 +229,8 @@ learned B and effective weight delta, changed model logits, genuine finite
 training/holdout losses, exact optimizer counts and valid protocol output.
 
 The smoke writes `smoke_evidence.json`, `worker.stdout.log`, `worker.stderr.log`,
-`job/job.json`, `job/splits/{train,valid}.jsonl`, `fixture/`, and `adapters/`.
+`job/job.json`, `fixture/{train,valid}.jsonl` beside `fixture/original.jsonl`,
+the fixture model, and `adapters/`.
 Unit tests also exercise a real non-standalone worker with an open stdin pipe,
 pre-generated sequence distillation using the plain-format fallback, hash/output
 failures, stdin EOF and SIGTERM during loading, and real MLX gradient accumulation

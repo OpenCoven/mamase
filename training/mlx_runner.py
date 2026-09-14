@@ -40,21 +40,41 @@ def emit(stream, event):
     stream.flush()
 
 
+def should_report_progress(step, total_steps):
+    interval = (total_steps + 4999) // 5000
+    return step == total_steps or step % interval == 0
+
+
 def monitor_parent():
-    """Exit the whole process on pipe EOF, even while the main thread loads MLX."""
+    """Start EOF cancellation and return a callback to disarm it after finalization."""
     descriptor = sys.stdin.fileno()
+    finished = threading.Event()
+    completion_lock = threading.Lock()
 
     def watch():
+        diagnostic = b"Parent stdin closed; terminating training without completion.\n"
         try:
-            while os.read(descriptor, 4096):
-                pass
+            while not finished.is_set():
+                if not os.read(descriptor, 4096):
+                    break
         except OSError as error:
-            os.write(2, f"Parent stdin monitor failed: {error}\n".encode())
-            os._exit(143)
-        os.write(2, b"Parent stdin closed; terminating training without completion.\n")
-        os._exit(143)
+            diagnostic = f"Parent stdin monitor failed: {error}\n".encode()
+        # Serialize the EOF decision with finalization: an EOF already committed
+        # to cancellation must not race a subsequent complete event.
+        with completion_lock:
+            if finished.is_set():
+                return
+            try:
+                os.write(2, diagnostic)
+            finally:
+                os._exit(143)
+
+    def finish():
+        with completion_lock:
+            finished.set()
 
     threading.Thread(target=watch, name="mamase-parent-monitor", daemon=True).start()
+    return finish
 
 
 def absolute_path(value, name):
@@ -80,6 +100,8 @@ def read_job(job_path):
         raise ValueError("dataset must be an object")
     if recipe.get("method") not in ("lora", "distillation"):
         raise ValueError("Only lora and pre-generated response distillation are supported")
+    if recipe.get("adapter", "lora") != "lora":
+        raise ValueError("Managed MLX supports LoRA only; use the identity-bound CLI for other techniques")
     if recipe.get("datasetId") != dataset.get("id") or not dataset.get("id"):
         raise ValueError("recipe.datasetId must match dataset.id")
     for key in ("rank", "epochs", "batchSize", "accumulation"):
@@ -279,7 +301,7 @@ def save_adapters(output, model, config, receipt):
         os.close(descriptor)
 
 
-def run(job_path, event_stream):
+def run(job_path, event_stream, finish_monitor=None):
     def log(message):
         emit(event_stream, {"type": "log", "message": message})
 
@@ -293,7 +315,7 @@ def run(job_path, event_stream):
     total_steps = optimizer_steps(
         len(train), recipe["batchSize"], recipe["accumulation"], recipe["epochs"]
     )
-    split_directory = job_path.resolve().parent / "splits"
+    split_directory = source_path.parent
     write_splits(split_directory, train, valid)
     output.mkdir(mode=0o700, exist_ok=True)
     log(
@@ -372,7 +394,6 @@ def run(job_path, event_stream):
     )
     optimizer = optim.Adam(learning_rate=recipe["learningRate"])
     loss_and_grad = nn.value_and_grad(model, supervised_loss)
-    interval = (total_steps + 4999) // 5000
     step = 0
     window_loss, window_tokens = 0.0, 0
     train_loss = eval_loss = None
@@ -398,7 +419,7 @@ def run(job_path, event_stream):
             epoch_tokens += count
             window_loss += measured * count
             window_tokens += count
-            if step % interval == 0 or step == total_steps:
+            if should_report_progress(step, total_steps):
                 progress(window_loss / window_tokens, None, f"Epoch {epoch + 1}: optimizer update")
                 window_loss, window_tokens = 0.0, 0
         train_loss = epoch_loss / epoch_tokens
@@ -442,6 +463,8 @@ def run(job_path, event_stream):
     }
     save_adapters(output, model, adapter_config, receipt)
     log(f"Saved trained adapters and reload configuration after {actual_steps} optimizer updates.")
+    if finish_monitor is not None:
+        finish_monitor()
     emit(event_stream, {"type": "complete"})
 
 
@@ -450,12 +473,11 @@ def main():
     parser.add_argument("--standalone", action="store_true", help="Disable stdin parent-liveness monitor")
     parser.add_argument("job", type=Path, help="Absolute version-1 job JSON path")
     args = parser.parse_args()
-    if not args.standalone:
-        monitor_parent()
+    finish_monitor = None if args.standalone else monitor_parent()
     event_stream = sys.stdout
     # Libraries may print diagnostics; only the worker's protocol reaches stdout.
     with contextlib.redirect_stdout(sys.stderr):
-        run(args.job, event_stream)
+        run(args.job, event_stream, finish_monitor)
 
 
 if __name__ == "__main__":

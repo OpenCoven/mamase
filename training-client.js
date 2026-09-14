@@ -40,11 +40,15 @@ export class TrainingClient {
     this.loading.add(run.id);
     this.onStatus(run.id);
     try {
-      const [capability, result] = await Promise.all([this.capability(refresh), this.request(`runs/${encodeURIComponent(run.id)}`)]);
+      const capability = await this.capability(refresh);
       this.errors.delete(run.id);
-      if (result.job) this.accept(result.job);
-      else if (run.localJobId) this.errors.set(run.id, "This run's managed job is not available on this server. Keep its recorded history; restore the original training directory or duplicate the recipe for a new attempt.");
-      if (!capability.available && !result.job) this.errors.set(run.id, capability.message);
+      if (!capability.enabled) this.errors.set(run.id, capability.message);
+      else {
+        const result = await this.request(`runs/${encodeURIComponent(run.id)}`);
+        if (result.job) this.accept(result.job);
+        else if (run.localJobId) this.errors.set(run.id, "This run's managed job is not available on this server. Keep its recorded history; restore the original training directory or duplicate the recipe for a new attempt.");
+        if (!capability.available && !result.job) this.errors.set(run.id, capability.message);
+      }
     } catch (error) {
       this.errors.set(run.id, error.message);
     }
@@ -101,10 +105,13 @@ export class TrainingClient {
 
   async command(path, value) {
     const capability = await this.capability();
+    if (!capability.enabled) throw new Error(capability.message || "Local training is unavailable on this server.");
     return this.request(path, { method: "POST", headers: { "Content-Type": "application/json", "X-Mamase-Token": capability.token }, body: JSON.stringify(value) });
   }
 
   async launch(payload) {
+    const capability = await this.capability();
+    if (!capability.enabled || !capability.available) throw new Error(capability.message || "The local trainer is not ready.");
     let job;
     try { ({ job } = await this.command("jobs", payload)); } catch (error) {
       // A lost response must not turn a retry into a second training process.

@@ -1,0 +1,17 @@
+export const publicAssets = new Map([
+  ["/", ["index.html", "text/html"]],
+  ["/index.html", ["index.html", "text/html"]],
+  ["/styles.css", ["styles.css", "text/css"]],
+  ["/app.js", ["app.js", "text/javascript"]],
+  ["/theme.js", ["theme.js", "text/javascript"]],
+  ["/ui.js", ["ui.js", "text/javascript"]],
+  ["/workspace.js", ["workspace.js", "text/javascript"]],
+  ["/experience.js", ["experience.js", "text/javascript"]],
+  ["/validation.js", ["validation.js", "text/javascript"]],
+  ["/results.js", ["results.js", "text/javascript"]],
+  ["/backups.js", ["backups.js", "text/javascript"]],
+  ["/training-state.js", ["training-state.js", "text/javascript"]],
+  ["/training-guide.js", ["training-guide.js", "text/javascript"]],
+  ["/training-client.js", ["training-client.js", "text/javascript"]],
+  ["/favicon.svg", ["favicon.svg", "image/svg+xml"]],
+]);

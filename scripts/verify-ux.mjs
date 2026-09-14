@@ -7,6 +7,7 @@ import { createHash } from "node:crypto";
 import { createAppServer } from "../server.mjs";
 import { createWorkspace, createRun, recordProgress, STORAGE_KEY } from "../workspace.js";
 import { DRAFT_KEY } from "../experience.js";
+import { MAX_BACKUP_BYTES } from "../backups.js";
 
 const server = createAppServer();
 server.listen(0, "127.0.0.1");
@@ -122,6 +123,8 @@ try {
   await go(page, "playground");
   await page.getByLabel("Run name", { exact: true }).fill("Recovered recipe");
   await page.getByLabel("Training objective", { exact: true }).fill("Keep my experiment intact.");
+  await page.getByLabel("Base model", { exact: true }).fill("/local/model");
+  await page.locator("#recipe-advanced > summary").click();
   for (const label of ["Familiar ID", "Coven instance ID"]) {
     const input = page.getByLabel(label, { exact: true });
     await input.fill("invalid id");
@@ -167,8 +170,8 @@ try {
   await modal.waitFor({ state: "hidden" });
   assert.equal(await page.getByLabel("Training objective", { exact: true }).inputValue(), "Keep my experiment intact.");
   assert.equal(await page.getByLabel("Training dataset", { exact: true }).inputValue(), (await stored(page)).datasets[0].id);
-  await page.getByText("Ready to save a planned run. Launch training from the run page.", { exact: true }).waitFor();
-  await page.getByRole("button", { name: "Save planned run", exact: true }).click();
+  await page.getByText("Ready to save your recipe. Training has not started.", { exact: true }).waitFor();
+  await page.getByRole("button", { name: "Save recipe & review", exact: true }).click();
   await page.waitForURL(/sessions\/run-/);
   assert.equal((await stored(page)).runs[0].status, "planned");
   assert.equal(await page.evaluate((key) => sessionStorage.getItem(key), DRAFT_KEY), null);
@@ -195,6 +198,7 @@ try {
   await page.evaluate((key) => localStorage.setItem(key, "invalid workspace"), STORAGE_KEY);
   await page.reload();
   await go(page, "settings");
+  await page.reload();
   await page.getByRole("heading", { name: "Workspace needs attention", exact: true }).waitFor();
   await page.getByRole("group", { name: "Appearance mode", exact: true }).getByRole("button", { name: "Light", exact: true }).click();
   await page.waitForFunction(() => document.documentElement.dataset.theme === "light");
@@ -212,23 +216,118 @@ try {
   const pairedPage = await pairedContext.newPage();
   watch(pairedPage);
   await go(pairedPage, "sessions/run-1");
-  const importJson = async (data) => {
+  const importJson = async (data, label = "Import") => {
     const modal = pairedPage.locator("#dialog");
     await modal.getByLabel("JSON file", { exact: true }).setInputFiles({
       name: "synthetic-report.json", mimeType: "application/json", buffer: Buffer.from(JSON.stringify(data)),
     });
-    await modal.getByRole("button", { name: "Import", exact: true }).click();
+    await modal.getByRole("button", { name: label, exact: true }).click();
   };
   const recordedAt = new Date().toISOString();
+  const progressUpdates = [
+    { status: "running", step: 0, totalSteps: 2, loss: null, evalLoss: 2, note: "Synthetic browser fixture", recordedAt },
+    { status: "running", step: 1, totalSteps: 2, loss: 1.8, evalLoss: null, note: "Synthetic browser fixture", recordedAt: new Date(Date.parse(recordedAt) + 1).toISOString() },
+    { status: "completed", step: 2, totalSteps: 2, loss: 1, evalLoss: 1.5, note: "Synthetic browser fixture", recordedAt: new Date(Date.parse(recordedAt) + 2).toISOString() },
+  ];
+  const progressReport = (updates) => ({ schema: "mamase.run-report.v1", runId: "run-1", updates });
+  const previewReport = async (updates) => {
+    await pairedPage.getByRole("button", { name: "Import report", exact: true }).click();
+    await importJson(progressReport(updates), "Preview report");
+    await pairedPage.locator("#dialog-report-summary").waitFor();
+  };
+  const reportModal = pairedPage.locator("#dialog");
+  const untouched = await stored(pairedPage);
+  await previewReport(progressUpdates.slice(0, 1));
+  assert.match(await reportModal.locator("#dialog-report-summary").textContent(), /1 new.*0 duplicates.*0 conflicts/);
+  assert.equal(await pairedPage.evaluate(() => document.activeElement.id), "dialog-title");
+  await pairedPage.setViewportSize({ width: 390, height: 844 });
+  await bounds(pairedPage);
+  assert.deepEqual(await stored(pairedPage), untouched, "Preview must not persist observations");
+  await pairedPage.keyboard.press("Escape");
+  await pairedPage.setViewportSize({ width: 1440, height: 900 });
+  assert.deepEqual(await stored(pairedPage), untouched, "Cancelling a preview must leave storage unchanged");
+
   await pairedPage.getByRole("button", { name: "Import report", exact: true }).click();
-  await importJson({
-    schema: "mamase.run-report.v1", runId: "run-1",
-    updates: [
-      { status: "running", step: 0, totalSteps: 2, loss: null, evalLoss: 2, note: "Synthetic browser fixture", recordedAt },
-      { status: "completed", step: 2, totalSteps: 2, loss: 1, evalLoss: 1.5, note: "Synthetic browser fixture", recordedAt },
-    ],
+  await pairedPage.evaluate(() => {
+    window.originalReportText = File.prototype.text;
+    File.prototype.text = function() {
+      return new Promise((resolve, reject) => { window.releaseReport = () => window.originalReportText.call(this).then(resolve, reject); });
+    };
   });
-  await pairedPage.locator("#dialog").waitFor({ state: "hidden" });
+  await importJson(progressReport(progressUpdates.slice(0, 1)), "Preview report");
+  await pairedPage.waitForFunction(() => typeof window.releaseReport === "function");
+  await pairedPage.keyboard.press("Escape");
+  await pairedPage.evaluate(() => { File.prototype.text = window.originalReportText; window.releaseReport(); });
+  await pairedPage.locator("#toast").getByText(/form was closed/).waitFor();
+  assert.deepEqual(await stored(pairedPage), untouched, "An aborted file read must not reopen a preview or save");
+  assert.equal(await reportModal.isVisible(), false);
+
+  await previewReport(progressUpdates.slice(0, 1));
+  await reportModal.getByRole("button", { name: "Import new observations", exact: true }).click();
+  await reportModal.waitFor({ state: "hidden" });
+  const partialReport = await stored(pairedPage);
+  assert.deepEqual(partialReport.runs[0].history, progressUpdates.slice(0, 1));
+  await pairedPage.evaluate(() => {
+    window.originalReportSetItem = Storage.prototype.setItem;
+    window.reportWriteAttempts = 0;
+    Storage.prototype.setItem = function(key, value) {
+      if (key === "mamase.coven-lab.v1") {
+        window.reportWriteAttempts++;
+        throw new DOMException("Synthetic full storage", "QuotaExceededError");
+      }
+      return window.originalReportSetItem.call(this, key, value);
+    };
+  });
+  await previewReport(progressUpdates.slice(0, 1));
+  assert.match(await reportModal.locator("#dialog-report-summary").textContent(), /0 new.*1 duplicates.*0 conflicts/);
+  await reportModal.getByRole("button", { name: "Keep existing history", exact: true }).click();
+  await reportModal.waitFor({ state: "hidden" });
+  assert.equal(await pairedPage.evaluate(() => window.reportWriteAttempts), 0, "Duplicate-only imports must not write storage");
+  assert.deepEqual(await stored(pairedPage), partialReport);
+
+  await previewReport(progressUpdates.slice(0, 2));
+  assert.match(await reportModal.locator("#dialog-report-summary").textContent(), /1 new.*1 duplicates.*0 conflicts/);
+  await reportModal.getByRole("button", { name: "Import new observations", exact: true }).click();
+  await reportModal.getByText(/Browser storage is full/).waitFor();
+  assert.deepEqual(await stored(pairedPage), partialReport, "Quota failures must preserve the partial journal");
+  assert.ok(await reportModal.getByRole("button", { name: "Export open workspace", exact: true }).isVisible());
+  await pairedPage.evaluate(() => { Storage.prototype.setItem = window.originalReportSetItem; });
+  await reportModal.getByRole("button", { name: "Import new observations", exact: true }).click();
+  await reportModal.waitFor({ state: "hidden" });
+  assert.deepEqual((await stored(pairedPage)).runs[0].history, progressUpdates.slice(0, 2));
+
+  await previewReport(progressUpdates);
+  const otherTab = await pairedContext.newPage();
+  await go(otherTab, "settings");
+  await otherTab.evaluate((key) => {
+    const latest = JSON.parse(localStorage.getItem(key));
+    latest.name = "Concurrent report workspace";
+    localStorage.setItem(key, JSON.stringify(latest));
+  }, STORAGE_KEY);
+  const concurrentReport = await stored(pairedPage);
+  await reportModal.getByRole("button", { name: "Import new observations", exact: true }).click();
+  await reportModal.getByText(/workspace changed while you were editing/).waitFor();
+  assert.deepEqual(await stored(pairedPage), concurrentReport, "Confirmation must use the preview's original snapshot");
+  await reportModal.getByRole("button", { name: "Reload workspace", exact: true }).click();
+  await reportModal.getByRole("button", { name: "Reload latest data", exact: true }).click();
+  await reportModal.waitFor({ state: "hidden" });
+  await otherTab.close();
+  await previewReport(progressUpdates);
+  assert.match(await reportModal.locator("#dialog-report-summary").textContent(), /1 new.*2 duplicates.*0 conflicts/);
+  await reportModal.getByRole("button", { name: "Import new observations", exact: true }).click();
+  await reportModal.waitFor({ state: "hidden" });
+  const completedReport = await stored(pairedPage);
+  assert.equal(completedReport.name, "Concurrent report workspace");
+  assert.deepEqual(completedReport.runs[0].history, progressUpdates);
+  await previewReport([progressUpdates[0], { ...progressUpdates[1], loss: 0.5 }, progressUpdates[2]]);
+  assert.match(await reportModal.locator("#dialog-report-summary").textContent(), /0 new.*2 duplicates.*1 conflicts/);
+  assert.equal(await reportModal.getByRole("button", { name: "Import new observations", exact: true }).count(), 0);
+  assert.deepEqual(await stored(pairedPage), completedReport, "Competing closed-run evidence must not replace history");
+  await pairedPage.keyboard.press("Escape");
+  await previewReport(progressUpdates);
+  await reportModal.getByRole("button", { name: "Keep existing history", exact: true }).click();
+  await reportModal.waitFor({ state: "hidden" });
+  assert.deepEqual(await stored(pairedPage), completedReport, "Closed-run replays must be visible no-ops");
   const hash = (letter) => letter.repeat(64);
   const trainingResult = {
     schema: "mamase.training-result.v1", runId: "run-1", bundleSha256: hash("c"),
@@ -274,7 +373,114 @@ try {
   await go(pairedPage, "settings");
   const pairedBackup = await downloaded(pairedPage, pairedPage.getByRole("button", { name: "Export workspace", exact: true }));
   assert.ok(!pairedBackup.includes("private synthetic") && !pairedBackup.includes('"cases"') && !pairedBackup.includes('"response"'));
-  assert.equal(JSON.parse(pairedBackup).evaluations[0].comparison.regressions, 1);
+  assert.equal(JSON.parse(pairedBackup).schema, "mamase.workspace-backup.v1");
+  assert.equal(JSON.parse(pairedBackup).workspace.evaluations[0].comparison.regressions, 1);
+  const backupWorkspace = await stored(pairedPage);
+  await pairedPage.getByRole("group", { name: "Appearance mode", exact: true }).getByRole("button", { name: "Light", exact: true }).click();
+  const chooseBackup = async (source) => {
+    await pairedPage.getByRole("button", { name: "Restore backup", exact: true }).click();
+    await reportModal.getByLabel("Workspace JSON backup", { exact: true }).setInputFiles({
+      name: "synthetic-backup.json", mimeType: "application/json", buffer: Buffer.from(source),
+    });
+    await reportModal.getByRole("button", { name: "Preview backup", exact: true }).click();
+  };
+  for (const source of [
+    "broken JSON",
+    JSON.stringify({ ...JSON.parse(pairedBackup), schema: "mamase.workspace-backup.v99" }),
+    JSON.stringify({ ...backupWorkspace, runs: [{ ...backupWorkspace.runs[0], step: 0 }] }),
+    " ".repeat(MAX_BACKUP_BYTES + 1),
+  ]) {
+    await chooseBackup(source);
+    await reportModal.locator(".form-error").waitFor({ state: "visible" });
+    assert.deepEqual(await stored(pairedPage), backupWorkspace, "Rejected backups must preserve saved evidence");
+    await pairedPage.keyboard.press("Escape");
+  }
+  await chooseBackup(pairedBackup);
+  await reportModal.locator("#dialog-restore-summary").waitFor();
+  await reportModal.getByText("mamase.workspace-backup.v1", { exact: true }).waitFor();
+  assert.equal(await reportModal.getByRole("region", { name: "Workspace restore collection counts" }).getByRole("row").count(), 6);
+  assert.equal(await reportModal.locator("form").evaluate((form) => form.checkValidity()), false);
+  await pairedPage.setViewportSize({ width: 390, height: 844 });
+  await bounds(pairedPage);
+  assert.deepEqual(await stored(pairedPage), backupWorkspace);
+  await pairedPage.keyboard.press("Escape");
+  await pairedPage.setViewportSize({ width: 1440, height: 900 });
+  assert.deepEqual(await stored(pairedPage), backupWorkspace, "Cancelling restore preview must not replace data");
+
+  await pairedPage.evaluate(() => {
+    window.originalRestoreText = File.prototype.text;
+    File.prototype.text = function() {
+      return new Promise((resolve, reject) => { window.releaseRestore = () => window.originalRestoreText.call(this).then(resolve, reject); });
+    };
+  });
+  await chooseBackup(pairedBackup);
+  await pairedPage.waitForFunction(() => typeof window.releaseRestore === "function");
+  await pairedPage.keyboard.press("Escape");
+  await pairedPage.evaluate(() => { File.prototype.text = window.originalRestoreText; window.releaseRestore(); });
+  await pairedPage.locator("#toast").getByText(/form was closed/).waitFor();
+  assert.equal(await reportModal.isVisible(), false);
+  assert.deepEqual(await stored(pairedPage), backupWorkspace, "Interrupted restore reads must not save or reopen a dialog");
+
+  const legacyBackup = { ...backupWorkspace, name: "Restored legacy workspace" };
+  await chooseBackup(JSON.stringify(legacyBackup));
+  await reportModal.getByText("legacy-workspace-v1", { exact: true }).waitFor();
+  await reportModal.getByRole("checkbox").check();
+  await pairedPage.evaluate(() => {
+    window.originalRestoreSetItem = Storage.prototype.setItem;
+    Storage.prototype.setItem = function(key, value) {
+      if (key === "mamase.coven-lab.v1") throw new DOMException("Synthetic full storage", "QuotaExceededError");
+      return window.originalRestoreSetItem.call(this, key, value);
+    };
+  });
+  await reportModal.getByRole("button", { name: "Restore workspace", exact: true }).click();
+  await reportModal.getByText(/Browser storage is full/).waitFor();
+  assert.deepEqual(await stored(pairedPage), backupWorkspace);
+  const recoveryBackup = await downloaded(pairedPage, reportModal.getByRole("button", { name: "Export open workspace", exact: true }));
+  assert.deepEqual(JSON.parse(recoveryBackup).workspace, backupWorkspace);
+  await pairedPage.evaluate(() => { Storage.prototype.setItem = window.originalRestoreSetItem; });
+  await reportModal.getByRole("button", { name: "Restore workspace", exact: true }).click();
+  await reportModal.waitFor({ state: "hidden" });
+  await pairedPage.waitForURL("**/#/home");
+  assert.deepEqual(await stored(pairedPage), legacyBackup);
+  assert.equal(await pairedPage.locator("html").getAttribute("data-theme-preference"), "light");
+  await go(pairedPage, "settings");
+
+  await chooseBackup(pairedBackup);
+  await reportModal.locator("#dialog-restore-summary").waitFor();
+  const restoreTab = await pairedContext.newPage();
+  await go(restoreTab, "settings");
+  await restoreTab.evaluate((key) => {
+    const latest = JSON.parse(localStorage.getItem(key));
+    latest.name = "Newer restore workspace";
+    localStorage.setItem(key, JSON.stringify(latest));
+  }, STORAGE_KEY);
+  const newerBackupWorkspace = await stored(pairedPage);
+  await reportModal.getByRole("checkbox").check();
+  await reportModal.getByRole("button", { name: "Restore workspace", exact: true }).click();
+  await reportModal.getByText(/workspace changed while you were editing/).waitFor();
+  assert.deepEqual(await stored(pairedPage), newerBackupWorkspace);
+  await reportModal.getByRole("button", { name: "Reload workspace", exact: true }).click();
+  await reportModal.getByRole("button", { name: "Reload latest data", exact: true }).click();
+  await reportModal.waitFor({ state: "hidden" });
+  await restoreTab.close();
+  await chooseBackup(pairedBackup);
+  await reportModal.getByRole("checkbox").check();
+  await reportModal.getByRole("button", { name: "Restore workspace", exact: true }).click();
+  await reportModal.waitFor({ state: "hidden" });
+  assert.deepEqual(await stored(pairedPage), backupWorkspace);
+  assert.equal(await pairedPage.locator("html").getAttribute("data-theme-preference"), "light");
+
+  await pairedPage.evaluate((key) => localStorage.setItem(key, "corrupt workspace retained for recovery"), STORAGE_KEY);
+  await pairedPage.reload();
+  await pairedPage.getByRole("heading", { name: "Workspace needs attention", exact: true }).waitFor();
+  await chooseBackup(pairedBackup);
+  await reportModal.locator("#dialog-restore-summary").waitFor();
+  assert.equal(await downloaded(pairedPage, reportModal.getByRole("button", { name: "Download stored data", exact: true })), "corrupt workspace retained for recovery");
+  await reportModal.getByRole("checkbox").check();
+  await reportModal.getByRole("button", { name: "Restore workspace", exact: true }).click();
+  await reportModal.waitFor({ state: "hidden" });
+  assert.deepEqual(await stored(pairedPage), backupWorkspace);
+  assert.equal(await pairedPage.locator("html").getAttribute("data-theme-preference"), "light");
   await pairedContext.close();
 
   const populated = await browser.newContext({ viewport: { width: 1440, height: 900 }, colorScheme: "dark" });
@@ -291,7 +497,9 @@ try {
   await lab.getByLabel("Run name", { exact: true }).fill("Keep this draft");
   await go(lab, "sessions/run-1");
   const preflightCommand = ".venv/bin/python training/preflight.py --bundle .lab/experiment --model /path/local-model --device cpu";
-  const runInstructions = lab.locator("section.card").filter({ has: lab.getByRole("heading", { name: "Run locally", exact: true }) });
+  const runInstructions = lab.locator("#external-training-guide");
+  await runInstructions.waitFor({ state: "visible" });
+  await runInstructions.locator("summary").click();
   const commands = await runInstructions.locator("pre").allTextContents();
   assert.ok(commands.includes(preflightCommand));
   assert.ok(commands.indexOf(preflightCommand) < commands.findIndex((command) => command.includes("training/train.py")));
@@ -314,8 +522,9 @@ try {
   await lab.getByRole("button", { name: "Duplicate recipe", exact: true }).click();
   await modal.getByRole("button", { name: "Replace draft", exact: true }).click();
   await lab.waitForURL("**/#/playground");
+  await lab.locator("#recipe-advanced > summary").click();
   assert.equal(await lab.getByLabel("External trainer output hint", { exact: true }).inputValue(), "./outputs/run-1-copy");
-  await lab.getByRole("button", { name: "Save planned run", exact: true }).click();
+  await lab.getByRole("button", { name: "Save recipe & review", exact: true }).click();
   await lab.waitForURL(/sessions\/run-/);
   const copy = (await stored(lab)).runs.at(-1);
   assert.equal(copy.status, "planned");
@@ -455,7 +664,7 @@ try {
   }
   assert.deepEqual(errors, []);
   assert.deepEqual(external, []);
-  console.log(`UX end-to-end passed: ${layouts} responsive layouts, read-only preflight instructions, recoverable drafts, atomic imports, paired-report lineage and regression review, private-summary backups, matching CSV exports, guarded comparisons, loss accessibility and conflict recovery.`);
+  console.log(`UX end-to-end passed: ${layouts} responsive layouts, read-only preflight instructions, recoverable drafts, report previews and no-op replay, atomic import/restore recovery, versioned and legacy private-summary backups, independent appearance, paired-report lineage and regression review, matching CSV exports, guarded comparisons and loss accessibility.`);
 } catch (error) {
   if (currentPage && !currentPage.isClosed()) await capture(currentPage, "failure");
   throw error;

@@ -8,9 +8,9 @@ familiar identity or proof of improvement.
 ## Run locally
 
 The browser workspace requires Node.js 20 or later, with no runtime dependencies
-or build step. Optional identity-bound PEFT training uses Python 3.10+ and
-`training/requirements.txt`. Managed Apple Silicon training uses a separate
-Python 3.12 environment with `training/requirements-mlx.txt`.
+or build step. Identity-bound CLI training uses Python 3.10+ and
+`training/requirements.txt`. Optional managed MLX training uses an isolated
+Python 3.12 environment and `training/requirements-mlx.txt` on Apple Silicon.
 
 Use `.venv` for PEFT commands and `.venv-training` for managed MLX. These are
 separate runtimes and artifact formats; installing the MLX requirements does
@@ -37,11 +37,12 @@ different port.
    configure the student/base model, rank, alpha, learning rate, epochs,
    micro-batch size, gradient accumulation, sequence length, and output path.
    Saving creates a **planned run**, not a training process.
-4. **Training runs:** export a recipe and execute the explicit local preparation
-   and training commands below, then import its progress report. Alternatively,
-   launch a managed local MLX-LM job. Actual observations drive status,
-   optimizer-step progress, loss charts, and the progress journal.
-5. **Model library:** import a completed training `result.json` to register its
+4. **Training runs:** launch a managed local MLX-LM LoRA job, or export a recipe
+   and execute the identity-bound preparation and training commands below, then
+   import the CLI progress report. Actual observations
+   drive status, optimizer-step progress, loss charts, and the progress journal.
+5. **Model library:** managed MLX adapters register automatically. For CLI jobs,
+   import a completed training `result.json` to register its
    actual adapter path, familiar binding, source fingerprints, and paired
    holdout loss. Other adapters, checkpoints, merged weights, and GGUF paths
    can still be registered manually.
@@ -65,13 +66,17 @@ tokenizer. Prepare or download that model separately with MLX-LM tooling.
 Managed training is offline: it does not download weights, call a teacher API,
 or enable remote model code.
 
+Managed MLX supports **LoRA only**. Familiar and instance IDs remain recipe
+labels; this worker does not inject a canonical familiar identity bundle.
+Use the separate identity-bound CLI below for that binding, rsLoRA/DoRA/QLoRA,
+and PEFT paired evaluation. MLX's recorded holdout loss is adapter-only, not a
+base-versus-adapter improvement claim.
+
 The PEFT preflight below does **not** validate or launch managed MLX jobs.
 The server's runtime-availability probe is not a model/token/context or memory
 preflight and initializes its managed state directory. The MLX worker validates
 its own manifest, source and model metadata during execution, then loads weights.
-It uses MLX LoRA and its own response masking/truncation rules, not the PEFT
-LoRA/rsLoRA/DoRA/CUDA-QLoRA switch or canonical-identity bundle injection.
-Do not infer identity-bound or variant support from a successful runtime probe.
+Do not infer model or memory readiness from a successful runtime probe.
 See [the worker integration notes](training/INTEGRATION.md).
 
 Save the recipe, then choose **Launch local training** from its run page.
@@ -95,6 +100,7 @@ Only one managed job runs at a time. Each job gets a new private directory:
   adapter/
     adapters.safetensors
     adapter_config.json
+    training_receipt.json
 ```
 
 **Managed output is isolated from the external recipe's output path.** Existing
@@ -190,18 +196,19 @@ Or:
 {"messages":[{"role":"user","content":"A question"},{"role":"assistant","content":"A reviewed answer"}]}
 ```
 
-At least two examples are required. The identity-bound preparation CLI orders unique prompts by
+At least two examples are required. The identity-bound CLI preparation orders unique prompts by
 SHA-256 of seed 42 and the prompt fingerprint, reserves the holdout count, and
 writes disjoint split files. Duplicate prompts (even with different responses)
 are rejected instead of leaking between splits. Conversations must alternate
 user/assistant turns and end with an assistant response. Remove dataset system
 messages: the selected familiar's canonical identity supplies the system prompt.
+Managed MLX uses a separate deterministic split: Python `Random(42)` shuffles
+source records, reserves the holdout count, and writes `train.jsonl` and
+`valid.jsonl` beside the copied source. Do not compare holdout scores between
+these workflows as though they used identical splits.
 The browser itself stores no examples. The handbook includes a tiny sample;
 it is not a serious training corpus.
-
-The separate managed MLX worker shuffles source indices with seed 42 and
-reserves the holdout count. It writes and applies that split itself; browser-only
-metadata imports do not write split files.
+Browser-only metadata imports do not write split files.
 
 ### Response distillation
 
@@ -368,8 +375,8 @@ every familiar. This runner uses Transformers + PEFT directly, not TRL.
 The bundle receives:
 
 - `adapter/`: reloadable adapter weights and tokenizer, not a replacement base.
-- `run-report.json`: observed optimizer steps/loss and final state, importable
-  from the matching UI run's progress journal **after the process exits**.
+- `run-report.json`: cumulative observed optimizer steps/loss and current state,
+  importable from the matching UI run's progress journal.
 - `result.json`: exact lineage, file fingerprints, library versions, trainable
   parameter count, device, and completion-token-weighted base/adapter holdout
   negative log-likelihood on the same examples. A negative loss delta is lower
@@ -379,10 +386,32 @@ Import `run-report.json` into its run's progress journal first. Once the run is
 completed, choose **Import training result** on that run or in Model library
 and select `result.json`. This registers the actual adapter path, not the
 recipe's `outputPath` hint, and retains its identity/dataset binding and
-holdout loss. Imports reject mismatched runs, identities, datasets, step
-counts, or duplicate files instead of partially updating the workspace.
-Do not repeatedly import a cumulative report into a partially updated UI run.
-Fresh experiments require fresh UI runs and bundles.
+holdout loss. Training-result and paired-evaluation imports reject mismatched
+lineage or duplicate files instead of partially updating the workspace.
+
+Progress reports use a read-only **Preview report** followed by confirmation.
+The preview counts new observations, duplicates, and conflicts, and displays up
+to 20 proposed additions/conflicts. Strict cumulative extensions append only new
+observations. Exact repeated evidence is a visible no-op with no storage write,
+including on completed, failed, or cancelled runs.
+
+An observation is identified within its run by status, optimizer step, and
+timestamp instant. Its total steps, losses, and note must match to count as a
+duplicate. Same-step measurements at later times and status transitions remain
+distinct. The original timestamp spelling and journal order are preserved;
+JSON key order and equivalent timezone spellings do not change the identity.
+Unknown historical observations are never inserted behind the recorded journal,
+and competing measurements never replace existing evidence. Any conflict blocks
+the entire import; use the original report or a separate run rather than editing
+closed history.
+
+Cancelling either stage leaves storage unchanged. Quota failures keep the
+preview available for retry and backup export. Confirmation checks the same
+workspace snapshot used for preview; concurrent-tab changes require reloading
+and previewing again. Managed MLX histories remain server-owned and reconcile
+through the existing local-job sync, not external report imports.
+
+Fresh experiments still require fresh UI runs and bundles.
 Failed runs have a nonzero process exit and a failed report when execution
 has started; preflight errors do not pretend to have started training.
 An interrupted/killed process can leave a lock or nonterminal report: preserve
@@ -538,21 +567,47 @@ clipping essential content. Opening navigation does not rebuild open forms.
 
 Workspace metadata is saved in this browser's `localStorage`, under
 `mamase.coven-lab.v1` (4 MB maximum). **Export a workspace backup from Settings**
-before clearing browser data or changing browsers/ports. Restoring a validated
-backup replaces existing metadata after confirmation. Corrupt data and failed
-saves surface an error instead of silently resetting the workspace. Concurrent
+before clearing browser data or changing browsers/ports. New exports are compact
+JSON envelopes with `schema: "mamase.workspace-backup.v1"`, an `exportedAt`
+timestamp, and the validated version-1 `workspace` payload. Internal localStorage
+remains workspace v1; this does not introduce a new database or sync format.
+
+| Backup source | Restore behavior |
+| --- | --- |
+| `mamase.workspace-backup.v1` envelope | Validate the envelope and workspace, retaining recorded lineage and comparisons. |
+| Legacy raw workspace with `version: 1` | Explicit legacy-v1 migration: validate history and relationships, apply the existing defaults for older recipe fields, and retain workspace v1. The next export uses an envelope. |
+| Future/unknown schema, extra envelope fields, or unsupported workspace version | Reject without downgrading, resetting, or replacing data. Keep the original file for a compatible version. |
+
+**Preview backup** shows the source file/format, export timestamp when available,
+workspace names, and current/replacement collection counts. No replacement occurs
+until the separate confirmation checkbox and **Restore workspace** action.
+The serialized workspace must still fit 4 MiB; the backup file allows an extra
+1 KiB for envelope metadata. Compact exports round-trip even at the workspace
+limit. Export timestamps describe the file, not independently verified provenance.
+
+Corrupt data and failed saves surface an error instead of silently resetting the workspace. Concurrent
 edits from another tab show a persistent warning and require a reload to avoid
-overwriting changes. The warning preserves open forms and offers an export of
-the currently open workspace before reloading newer saved data.
+overwriting changes. Restore confirmation is bound to its preview's workspace
+snapshot. Quota failures retain that preview for retry; backup and reload actions
+remain available. Cancelled or interrupted reads leave the original data intact.
+If the current workspace is corrupt, **Download stored data** preserves its exact
+bytes before restoring a valid backup.
+
+Backups include only the validated workspace metadata, including optional adapter
+lineage, paired-comparison summaries, and managed job IDs. They exclude appearance
+preferences, recipe drafts, original dataset contents, identity snapshots, model
+weights, and per-case report prompts/responses. Restoring does not cancel or delete
+managed jobs or files on disk, and does not change the selected appearance mode.
 
 There is no hosted training, inference endpoint, cloud sync, billing, account
-system, or fabricated progress. The browser's artifact paths remain references;
-the explicit Python runner does save actual local adapters and fingerprints.
-Managed MLX training checks its output files at finalization. Neither path
-merges adapters or exports GGUF. `.lab/`, `.mamase/`, `outputs/`, `.venv/`,
-`.venv-training/`, and cache directories are ignored by Git. Bundles and managed
-jobs contain private training data: do not commit or publish them. Fonts and
-artwork are local; browser documentation links open only when clicked.
+system, or fabricated training progress. Managed training runs locally through
+MLX-LM; its output files are checked at finalization. Other artifact paths remain
+references; the explicit CLI saves real adapters and fingerprints as well.
+The browser does not merge adapters, quantize weights, or export model binaries.
+`.lab/`, `.mamase/`, `outputs/`, `.venv/`, `.venv-training/`, and cache directories
+are ignored by Git. Bundles contain identity and training data: keep them private
+and do not commit or publish them. Fonts and artwork are local; browser
+documentation links open only when clicked.
 
 ## Development checks
 
@@ -599,8 +654,23 @@ npm run test:training
 This creates a tiny randomly initialized diagnostic model and original synthetic
 examples, saves a recipe through the UI, launches the real worker, reconnects
 the browser, and checks live observations, changed adapter tensors and automatic
-registration. It makes no model downloads and is not a production model or a
-model-quality benchmark. Its temporary model/job directories are cleaned up.
+registration. It reloads that exact output through MLX-LM, checks every saved
+tensor against its reloaded parameter, and confirms changed logits versus the
+base model. It makes no model downloads and is not a production model or a
+model-quality benchmark. Temporary model/job directories are cleaned up by default.
+
+To retain the diagnostic model, job, adapter, workspace backup and
+`evidence.json`, choose a **new** output directory under an existing parent:
+
+```sh
+mkdir -p .mamase
+MAMASE_TRAINING_OUTPUT=.mamase/browser-smoke npm run test:training
+```
+
+Existing output directories are refused rather than overwritten. Diagnostic
+jobs use their own server and browser context, leaving the development workspace
+untouched. Keep these local outputs private.
+
 The fast process/API lifecycle fixture can be run separately with
 `node scripts/verify-training.mjs --protocol-fixture`; it is deliberately not
 evidence of real model training.

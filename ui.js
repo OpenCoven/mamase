@@ -80,20 +80,27 @@ export function progress(run) {
 
 export function lossChart(run) {
   const observations = run.history.filter((event) => event.loss !== null || event.evalLoss !== null);
-  if (!observations.length) return empty("Waiting for recorded loss.", "Add a progress update or import a report from your trainer.", "", "evaluations", true);
-  const maximum = Math.max(0.01, ...observations.flatMap((event) => [event.loss ?? 0, event.evalLoss ?? 0]));
+  if (!observations.length) return empty("No loss measurements yet.", "The chart appears when the trainer reports a measurement.", "", "evaluations", true);
+  const values = observations.flatMap((event) => [event.loss, event.evalLoss]).filter((value) => value !== null);
+  const low = Math.min(...values);
+  const high = Math.max(...values);
+  const padding = Math.max((high - low) * 0.12, Math.abs(high) * 0.02, 0.000001);
+  const minimum = Math.max(0, low - padding);
+  const maximum = high + padding;
   const x = (event) => 46 + event.step / run.totalSteps * 690;
-  const y = (value) => 190 - value / maximum * 155;
+  const y = (value) => 190 - (value - minimum) / (maximum - minimum) * 155;
+  const axis = (value) => value > 0 && (value < 0.001 || value >= 1000) ? value.toExponential(1) : value.toFixed(2);
   const series = [["loss", "Training", ""], ["evalLoss", "Validation", "validation-loss"]];
-  return `<div class="chart-legend"><span>Training: ${observations.some((event) => event.loss !== null) ? "solid line" : "not recorded"}</span><span class="validation-label">Validation: ${observations.some((event) => event.evalLoss !== null) ? "dashed line" : "not recorded"}</span></div>
-    <svg class="loss-chart" viewBox="0 0 780 232" role="img" aria-label="Recorded training and validation loss over optimizer steps. Exact values follow in the loss observations table.">
-    ${[0, 0.5, 1].map((tick) => `<line x1="46" y1="${190 - tick * 155}" x2="736" y2="${190 - tick * 155}"/><text x="4" y="${194 - tick * 155}">${(maximum * tick).toFixed(2)}</text>`).join("")}
+  return `<div class="chart-legend"><span>Training: ${observations.some((event) => event.loss !== null) ? "solid line" : "not recorded"}</span><span class="validation-label">Holdout (validation): ${observations.some((event) => event.evalLoss !== null) ? "dashed line" : "not recorded"}</span></div>
+    <div class="loss-plot"><div class="loss-y-axis" aria-hidden="true">${[maximum, (minimum + maximum) / 2, minimum].map((value) => `<span>${axis(value)}</span>`).join("")}</div>
+    <svg class="loss-chart" viewBox="40 20 702 190" role="img" aria-label="Recorded training and validation loss over optimizer steps. Exact values follow in the loss observations table.">
+    ${[0, 0.5, 1].map((tick) => `<line x1="46" y1="${190 - tick * 155}" x2="736" y2="${190 - tick * 155}"/>`).join("")}
     ${series.map(([key, label, className]) => {
       const points = observations.filter((event) => event[key] !== null);
       return `<polyline class="${className}" points="${points.map((event) => `${x(event)},${y(event[key])}`).join(" ")}" fill="none" stroke-width="2.5"/>${points.map((event) => `<circle class="${className}" cx="${x(event)}" cy="${y(event[key])}" r="4"><title>${label}, step ${event.step}: ${event[key]}</title></circle>`).join("")}`;
     }).join("")}
-    <text x="46" y="220">0</text><text x="640" y="220">${run.totalSteps} steps</text></svg>
-    <p class="help">${observations.length} recorded ${observations.length === 1 ? "observation" : "observations"}. Lines connect recorded values; missing values are not treated as zero. Lower loss alone does not prove a better model.</p>
+    </svg></div><div class="loss-x-axis" aria-hidden="true"><span>0</span><span>${run.totalSteps} learning updates</span></div>
+    <p class="help">${observations.length} recorded ${observations.length === 1 ? "observation" : "observations"}. The vertical axis follows the measured range, not always zero. Missing readings are not zero; batch and full-pass readings may share an update number.</p>
     <details class="loss-data"><summary>View loss observations</summary>${table(["Step", "Training loss", "Validation loss", "Recorded"], observations.map((event) => [event.step, event.loss ?? "Not recorded", event.evalLoss ?? "Not recorded", formatDate(event.recordedAt)]), "Loss observations")}</details>`;
 }
 

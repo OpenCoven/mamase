@@ -6,6 +6,7 @@
   "scripts": {
     "dev": "node server.mjs",
     "start": "node server.mjs",
+    "build:hosted": "node scripts/build-hosted.mjs",
     "lab": "node lab.mjs",
     "test": "node --test",
     "test:e2e": "node scripts/verify-ux.mjs",

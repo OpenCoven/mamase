@@ -1,19 +1,22 @@
 import {
   STORAGE_KEY, METHODS, ADAPTERS, STATUSES, MAX_IMPORT_BYTES, MAX_WORKSPACE_BYTES, assert,
-  createWorkspace, loadWorkspace, saveWorkspace, validateWorkspace, parseDataset,
+  createWorkspace, loadWorkspace, saveWorkspace, parseDataset,
   validateDataset, splitCounts, createRun, recordProgress, validateArtifact,
   validateEvaluation, exportRecipe, escapeHtml as esc, runsCsv, estimatedSteps,
-  importTrainingResult, importEvaluationReport,
+  importTrainingResult, importEvaluationReport, previewProgressReport, importProgressReport,
 } from "./workspace.js";
 import { icon, button, link, field, select, badge, empty, table, formatDate, formatBytes, progress, lossChart, distillationArt } from "./ui.js";
 import { DRAFT_KEY, RUN_PAGE_SIZE, parseRoute, runUrl, selectRuns, searchWorkspace, compareEvaluations, readRecipeDraft } from "./experience.js";
 import { TrainingClient, encodeDataset, localJobActive } from "./training-client.js";
-import { mergeTrainingJob, trainingIdentity } from "./training-state.js";
+import { mergeTrainingJob, trainingIdentity, managedRecipeIssue } from "./training-state.js";
+import { trainingWorkflow, runGuidance, formatLoss, lossReading, modelName } from "./training-guide.js";
+import { MAX_BACKUP_BYTES, exportWorkspaceBackup, parseWorkspaceBackup } from "./backups.js";
 
 const app = document.querySelector("#app");
 const dialog = document.querySelector("#dialog");
 const toast = document.querySelector("#toast");
 const theme = window.mamaseTheme;
+const hosted = document.querySelector('meta[name="mamase-runtime"]')?.content === "hosted";
 const pendingTraining = new Map();
 const trainingSyncErrors = new Map();
 let submissionCount = 0;
@@ -31,10 +34,10 @@ try {
 
 const defaults = () => ({
   name: "", method: "lora", programId: workspace?.programs[0]?.id || "coven", datasetId: "",
-  student: "Qwen/Qwen2.5-7B-Instruct", teacher: "", rank: "16", alpha: "32",
+  student: "", teacher: "", rank: "16", alpha: "32",
   learningRate: "0.0002", epochs: "3", batchSize: "1", accumulation: "4",
   maxSequence: "2048", outputPath: "./outputs/coven-adapter", objective: "",
-  adapter: "lora", familiarId: "", instanceId: "",
+  adapter: "lora", familiarId: "", instanceId: "", workflow: "managed",
 });
 const ui = { menu: false, collapsed: false, draft: defaults(), query: "", status: "all", program: "all", sort: "updated", runPage: 1, modelKind: "all", conflict: false };
 let draftBlocked = false;
@@ -104,7 +107,7 @@ function sidebar(page) {
   return `<aside class="sidebar" id="navigation" aria-label="Workspace navigation">
     <div class="brand-row"><a class="brand" href="#/home" aria-label="Mamase overview">mamase<span class="brand-dot">.</span></a>
       <button class="icon-button" type="button" data-action="toggle-sidebar" aria-label="${ui.collapsed ? "Expand" : "Collapse"} navigation">${icon("panel")}</button></div>
-    <div class="workspace-label"><span class="tiny-mark">${icon("spark")}</span><span>${esc(workspace?.name || "The Coven")}</span><span class="workspace-tag">LOCAL</span></div>
+    <div class="workspace-label"><span class="tiny-mark">${icon("spark")}</span><span>${esc(workspace?.name || "The Coven")}</span><span class="workspace-tag">${hosted ? "HOSTED" : "LOCAL"}</span></div>
     ${workspace ? `<button type="button" class="workspace-search-button" data-action="search" aria-label="Search workspace">${icon("search")}<span>Search workspace</span><kbd>Ctrl K</kbd></button>` : ""}
     <nav>${links.map(([id, label, glyph], index) => `${index === 7 ? '<div class="nav-section">Workspace</div>' : ""}<a href="#/${id}" class="nav-link ${page === id ? "active" : ""}" ${page === id ? 'aria-current="page"' : ""} aria-label="${label}" title="${label}">${icon(glyph)}<span>${label}</span>${id === "sessions" && workspace?.runs.length ? `<span class="nav-count">${workspace.runs.length}</span>` : ""}</a>`).join("")}</nav>
     <div class="sidebar-bottom"><div class="local-status"><span class="status-dot"></span><span>Local workspace</span></div>
@@ -161,10 +164,10 @@ function homePage() {
       ${workspace.runs.length ? `<div class="recent-list">${workspace.runs.slice(-2).reverse().map((run) => `<a class="recent-run" href="#/sessions/${run.id}"><span class="item-icon">${icon(run.recipe.method === "lora" ? "spark" : "lab")}</span><div><strong>${esc(run.name)}</strong><small>${METHODS[run.recipe.method]} · ${esc(run.recipe.student.split("/").at(-1))}</small></div>${badge(run.status)}</a>`).join("")}</div>` : empty("Every model starts with an experiment.", hasDataset ? "Your dataset is ready. Give your first experiment a shape." : "Start with a dataset, then shape your first training recipe.", link(hasDataset ? "Create a training recipe" : "Add training examples", hasDataset ? "#/playground" : "#/datasets", "plus"), "runs", true)}
     </article><article class="home-panel"><div class="section-heading"><h2>${icon("lab")} From teacher to familiar</h2><span class="muted">The workflow</span></div>
       <ol class="workflow"><li><span>1</span><div><a href="#/datasets">Curate the knowledge</a><p>Bring your examples or a teacher's responses.</p></div></li>
-      <li><span>2</span><div><a href="#/playground">Shape a smaller model</a><p>Set the student, LoRA adapter, and training recipe.</p></div></li>
-      <li><span>3</span><div><a href="#/evaluations">Measure what matters</a><p>Record results, compare artifacts, and keep the best.</p></div></li></ol>
+      <li><span>2</span><div><a href="#/playground">Save a recipe, then train</a><p>Choose a workflow. Saving alone starts nothing.</p></div></li>
+      <li><span>3</span><div><a href="#/checkpoints">Review the saved output</a><p>Test fresh examples before choosing an adapter.</p></div></li></ol>
     </article></section>
-    <div class="local-note">${icon("local")} Launch local MLX jobs from saved runs, or record results from external trainers. Only real observations are tracked.</div>
+    <div class="local-note">${icon("local")} ${hosted ? "Hosted workspace: planning and records only. Export recipes to your local Mamase app to train. Browser storage is separate on each address." : "Launch local MLX jobs from saved runs, or record results from external trainers. Only real observations are tracked."}</div>
   </div>`;
 }
 
@@ -180,7 +183,8 @@ function projectsPage() {
 
 function datasetsPage() {
   return `${header("Datasets", button("Import JSONL", "import-dataset", "plus", "primary"), "Know what goes into the model. Keep training and holdout examples separate.")}
-    <div class="notice">${icon("local")} Imports stay on this device. Only metadata and a SHA-256 fingerprint are saved; example contents are not retained.</div>
+    <div class="notice">${icon("local")} Keep the original JSONL file. This import saves its description and fingerprint, not the examples. You will choose the file again before managed training makes a private local copy.</div>
+    <p class="help">“Holdout” means examples kept out of training, used to check how the model handles unseen data.</p>
     ${workspace.datasets.length ? table(["Dataset", "Source", "Examples", "Train / holdout", "Size", ""], workspace.datasets.map((dataset) => [
       `<a class="record-link" href="#/datasets/${dataset.id}">${esc(dataset.name)}</a><small>${esc(dataset.filename)}</small>`,
       dataset.kind === "teacher" ? `<span class="tag">Teacher responses</span><small>${esc(dataset.teacher)}</small>` : '<span class="tag">Supervised examples</span>',
@@ -228,27 +232,37 @@ function runDetail(id) {
   const latest = run.history.filter((event) => event.loss !== null).at(-1);
   const validation = run.history.filter((event) => event.evalLoss !== null).at(-1);
   const closed = ["completed", "failed", "cancelled"].includes(run.status);
+  const workflow = trainingWorkflow(run);
+  const manual = workflow === "cli" && !run.localJobId;
   return `<a class="breadcrumb" href="#/sessions">Training runs / <span>${esc(run.name)}</span></a>
-    ${header(esc(run.name), `${button("Duplicate recipe", "duplicate-run", "plus", "", `data-id="${run.id}"`)}${button("Export recipe", "export-recipe", "download", "", `data-id="${run.id}"`)}${closed ? "" : button("Record progress", "progress", "plus", "primary", `data-id="${run.id}"`)}`, `${esc(METHODS[run.recipe.method])} · ${esc(run.recipe.student)}`)}
-    <div class="run-status-row" id="run-status-line">${badge(run.status)}<code>${run.id}</code><span class="muted">Last recorded ${formatDate(run.updatedAt)}</span></div>
-    <section class="card local-training-panel" id="local-training-panel" data-run-id="${run.id}" aria-label="Local training"><h2>Local MLX-LM training</h2><p class="help">Checking the local trainer…</p></section>
-    <div class="metrics three">${metric("Optimizer steps", `<span id="run-step-value">${num(run.step)} / ${num(run.totalSteps)}</span>`, "Recorded manually or by your local trainer", "runs")}${metric("Training loss", `<span id="run-loss-value">${latest ? String(latest.loss) : "—"}</span>`, `<span id="run-validation-value">${validation ? `Latest validation loss: ${validation.evalLoss}` : "No validation loss recorded"}</span>`, "evaluations")}${metric("Dataset", num(dataset.records), `${esc(dataset.name)} · ${dataset.holdout}% holdout`, "datasets", `#/datasets/${dataset.id}`)}</div>
-    <div class="detail-grid"><section class="card chart-card"><div class="section-heading"><h2>Training &amp; validation loss</h2><span class="muted">Recorded observations</span></div><div id="run-loss-chart">${lossChart(run)}</div></section>
-    <section class="card"><h2>Recipe</h2><dl class="facts"><dt>Method</dt><dd>${METHODS[run.recipe.method]}</dd>${run.recipe.teacher ? `<dt>Teacher</dt><dd>${esc(run.recipe.teacher)}</dd>` : ""}<dt>LoRA rank / alpha</dt><dd>${run.recipe.rank} / ${run.recipe.alpha}</dd><dt>Learning rate</dt><dd>${run.recipe.learningRate}</dd><dt>Epochs</dt><dd>${run.recipe.epochs}</dd><dt>Output</dt><dd><code>${esc(run.recipe.outputPath)}</code></dd></dl><p class="muted">${esc(run.recipe.objective)}</p></section></div>
-    <section class="card"><h2>Run locally</h2><p>${esc(ADAPTERS[run.recipe.adapter])} · ${run.recipe.familiarId ? `${esc(run.recipe.instanceId)} / ${esc(run.recipe.familiarId)}` : "Unbound legacy recipe: create a new recipe with familiar and instance IDs to use the local trainer."}</p>
-      <p>Export this recipe, then prepare an identity-bound bundle with your original dataset and that familiar's workspace. Preparation does not train or download a model.</p>
-      <pre>mkdir -p .lab
+    ${header(esc(run.name), button("Duplicate recipe", "duplicate-run", "plus", "quiet", `data-id="${run.id}"`), `${workflow === "managed" ? "Train on this Mac" : "Terminal workflow"} · ${esc(modelName(run.recipe.student))}`)}
+    <div id="run-journey"></div>
+    <section class="card local-training-panel run-control" id="local-training-panel" data-run-id="${run.id}" aria-label="Training status"><h2>Loading this run…</h2></section>
+    <section class="card run-output" id="run-output-section" ${workspace.artifacts.some((item) => item.runId === id) ? "" : "hidden"}><h2>Saved output</h2><div id="run-artifacts">${runArtifacts(run)}</div></section>
+    <section id="run-measurements" aria-label="Training measurements" ${latest || validation ? "" : "hidden"}>
+      <div class="metrics three run-metrics">${metric("Learning updates", `<span id="run-step-value">${num(run.step)} / ${num(run.totalSteps)}</span>`, "One update adjusts the adapter's weights.", "runs")}${metric("Training loss", `<span id="run-loss-value">${formatLoss(latest?.loss)}</span>`, "Fit to the examples the model learns from.", "evaluations")}${metric("Holdout loss", `<span id="run-validation-value">${formatLoss(validation?.evalLoss)}</span>`, "Fit to examples kept out of training.", "datasets")}</div>
+      <div class="detail-grid run-insight-grid"><section class="card chart-card"><h2>How the measurements are changing</h2><div id="run-loss-chart">${lossChart(run)}</div></section>
+      <aside class="card loss-explainer"><span class="eyebrow">HOW TO READ THIS</span><h2>Loss is a fit measurement, not a score.</h2><p>Lower loss means the model more closely matches the recorded answers. It does not mean “percent correct.”</p><p id="run-loss-reading">${lossReading(run.history)}</p><p class="help">Compare holdout readings within this run. Different datasets and training workflows are not directly comparable.</p></aside></div>
+    </section>
+    <section class="card" id="external-training-guide" ${manual ? "" : "hidden"}><h2>Run this recipe in your terminal</h2>
+      <ol class="next-steps"><li><strong>Export the recipe.</strong> Keep the original dataset and the familiar's workspace available.</li><li><strong>Prepare, preflight, then train.</strong> Preparation binds the familiar's identity and writes the split. Preflight checks readiness without loading weights; neither step starts training.</li><li><strong>Bring back the results.</strong> Import <code>run-report.json</code> for progress, then <code>result.json</code> for the adapter and holdout comparison.</li></ol>
+      ${run.status === "planned" || closed ? `<div class="actions">${button("Import report", "import-report", "upload", "small", `data-id="${run.id}"`)}<span class="help">${closed ? "Recheck a report without rewriting closed history." : "Already ran the trainer? Import its progress here."}</span></div>` : ""}
+      <details class="disclosure"><summary>Terminal commands <span>Requires the separate Python / PEFT environment</span></summary><p class="help">${run.recipe.familiarId ? `${esc(run.recipe.instanceId)} / ${esc(run.recipe.familiarId)}` : "This older recipe has no familiar binding. Duplicate it and choose the terminal workflow to add both IDs."}</p><pre>mkdir -p .lab
 npm run lab -- prepare --recipe /path/recipe.json --dataset /path/examples.jsonl --identity-dir /path/familiar --out .lab/experiment</pre>
       <p>Use the PEFT environment from <code>training/requirements.txt</code>, separate from managed MLX. Check the prepared bundle and local safetensors model without loading weights:</p>
       <pre>.venv/bin/python training/preflight.py --bundle .lab/experiment --model /path/local-model --device cpu</pre>
       <p class="help">Stdout is <code>mamase.preflight.v1</code> JSON: <code>ready</code>, blocking <code>errors</code>, <code>warnings</code>, verified <code>facts</code> and <code>skipped</code> checks. Exit 1 means blocked. It checks bound identity/splits, model headers, dependencies/device, tokenizer/template and token budgets; it creates no report or outputs and never starts training. Tensor values and memory fit remain unverified. Do not import it as progress or promotion evidence. This browser does not inspect your hardware; this command does not preflight managed MLX jobs.</p>
       <p>After reviewing readiness and warnings, explicitly train with the same model and device:</p>
       <pre>.venv/bin/python training/train.py --bundle .lab/experiment --model /path/local-model --device cpu</pre>
-      <p class="help">Once training exits, import <code>run-report.json</code> below, then import <code>result.json</code> to register the actual adapter path and holdout comparison. Run a separate versioned suite with <code>training/evaluate.py</code> and import its paired report from Evaluations. Nothing promotes the adapter.</p></section>
-    <section class="card"><div class="section-heading"><h2>Progress journal</h2><div class="actions">${button("Report template", "report-template", "code", "small", `data-id="${run.id}"`)}${closed ? "" : button("Import report", "import-report", "upload", "small", `data-id="${run.id}"`)}</div></div>
-    <div id="run-journal">${runJournal(run)}</div></section>
-    <section class="card"><div class="section-heading"><h2>Local model artifacts</h2><div class="actions">${run.status === "completed" && !run.localJobId ? button("Import training result", "import-training-result", "upload", "small", `data-id="${run.id}"`) : ""}${button("Register artifact", "new-artifact", "plus", "small", `data-id="${run.id}"`)}</div></div>
-    <div id="run-artifacts">${runArtifacts(run)}</div></section>`;
+      <p class="help">Replace the example paths with your own. Preview cumulative progress reports before confirming new observations; identical evidence is skipped and conflicts never overwrite history. Setup and the independent evaluator are in the Training handbook. Nothing promotes the adapter.</p>${link("Open training handbook", "#/resources", "docs", "small quiet")}</details></section>
+    <details class="card disclosure run-technical" id="run-technical"><summary>Technical details <span>Files, recipe, trainer logs and exact history</span></summary>
+      <dl class="facts"><dt>Run ID</dt><dd><code>${run.id}</code></dd><dt>Base model folder</dt><dd><code>${esc(run.recipe.student)}</code></dd><dt>Dataset</dt><dd><a href="#/datasets/${dataset.id}">${esc(dataset.name)}</a> · ${datasetSummary(dataset)}</dd><dt>Dataset fingerprint</dt><dd><code>${dataset.sha256}</code></dd><dt>External output hint</dt><dd><code>${esc(run.recipe.outputPath)}</code> · not used for managed output</dd><dt>Objective</dt><dd>${esc(run.recipe.objective)}</dd></dl>
+      <div id="run-job-files"></div><div class="actions">${button("Export recipe", "export-recipe", "download", "small", `data-id="${run.id}"`)}${button("Register artifact", "new-artifact", "plus", "small quiet", `data-id="${run.id}"`)}</div>
+      <details class="disclosure"><summary>Full recipe parameters</summary><pre>${esc(JSON.stringify(run.recipe, null, 2))}</pre></details>
+      <details class="trainer-log disclosure"><summary>Trainer logs</summary><pre tabindex="0" aria-label="Trainer logs">No managed trainer is linked to this record.</pre></details>
+      <div class="section-heading"><h2>Progress journal</h2><div class="actions">${manual ? button("Report template", "report-template", "code", "small", `data-id="${run.id}"`) : ""}${closed || !manual ? "" : button("Record progress", "progress", "plus", "small", `data-id="${run.id}"`)}</div></div>
+      <div id="run-journal">${runJournal(run)}</div>
+    </details>`;
 }
 
 function runJournal(run) {
@@ -257,7 +271,7 @@ function runJournal(run) {
 
 function runArtifacts(run) {
   const artifacts = workspace.artifacts.filter((artifact) => artifact.runId === run.id);
-  return artifacts.length ? artifactTable(artifacts) : '<p class="muted">Local managed jobs register finalized adapters automatically. Other trainer outputs can be registered manually.</p>';
+  return artifacts.length ? `<ul class="output-list">${artifacts.map((artifact) => `<li><span class="item-icon">${icon("models")}</span><div><a class="record-link" href="#/checkpoints/${artifact.id}">${esc(artifact.name)}</a><p>${artifact.kind === "adapter" ? "Adapter · use alongside the same base model" : esc(artifact.kind)} · ${workspace.evaluations.some((item) => item.artifactId === artifact.id) ? "evaluation records available" : "not evaluated yet"}</p></div></li>`).join("")}</ul>` : '<p class="help">No output has been registered for this run.</p>';
 }
 
 function receiveTrainingJob(job) {
@@ -316,10 +330,12 @@ function refreshManagedRun(runId) {
   const run = byId(workspace.runs, runId);
   const latest = run.history.filter((event) => event.loss !== null).at(-1);
   const validation = run.history.filter((event) => event.evalLoss !== null).at(-1);
-  document.querySelector("#run-status-line").innerHTML = `${badge(run.status)}<code>${run.id}</code><span class="muted">Last recorded ${formatDate(run.updatedAt)}</span>`;
+  document.querySelector("#run-status-line").textContent = `Last recorded ${formatDate(run.updatedAt)}`;
   document.querySelector("#run-step-value").textContent = `${num(run.step)} / ${num(run.totalSteps)}`;
-  document.querySelector("#run-loss-value").textContent = latest ? String(latest.loss) : "—";
-  document.querySelector("#run-validation-value").textContent = validation ? `Latest validation loss: ${validation.evalLoss}` : "No validation loss recorded";
+  document.querySelector("#run-loss-value").textContent = formatLoss(latest?.loss);
+  document.querySelector("#run-validation-value").textContent = formatLoss(validation?.evalLoss);
+  document.querySelector("#run-measurements").hidden = !latest && !validation;
+  document.querySelector("#run-loss-reading").textContent = lossReading(run.history);
   const chart = document.querySelector("#run-loss-chart");
   const details = chart.querySelector("details");
   const expanded = details?.open;
@@ -329,11 +345,13 @@ function refreshManagedRun(runId) {
   if (summaryFocused) chart.querySelector("summary")?.focus({ preventScroll: true });
   const journal = document.querySelector("#run-journal");
   const scroll = journal.querySelector(".table-scroll")?.scrollLeft || 0;
+  const scrollTop = journal.querySelector(".table-scroll")?.scrollTop || 0;
   const journalFocused = journal.contains(document.activeElement);
   journal.innerHTML = runJournal(run);
   const region = journal.querySelector(".table-scroll");
-  if (region) { region.scrollLeft = scroll; if (journalFocused) region.focus({ preventScroll: true }); }
-  if (jobHasArtifact(runId)) document.querySelector("#run-artifacts").innerHTML = runArtifacts(run);
+  if (region) { region.scrollLeft = scroll; region.scrollTop = scrollTop; if (journalFocused) region.focus({ preventScroll: true }); }
+  document.querySelector("#run-artifacts").innerHTML = runArtifacts(run);
+  document.querySelector("#run-output-section").hidden = !workspace.artifacts.some((item) => item.runId === runId);
 }
 
 function jobHasArtifact(runId) {
@@ -348,88 +366,127 @@ function updateTrainingPanel(runId) {
   const rawJob = training.jobs.get(runId);
   const matches = !rawJob || rawJob.identity === trainingIdentity(run, dataset);
   const job = matches ? rawJob : null;
-  const registered = Boolean(job?.artifact && workspace.artifacts.some((item) => item.id === job.artifact.id));
+  const artifact = workspace.artifacts.find((item) => job?.artifact ? item.id === job.artifact.id : item.runId === runId);
   const capability = training.available;
   const loading = training.loading.has(runId);
-  const error = !matches ? "A different recipe already uses this run ID on the local server. Duplicate the recipe before launching." : trainingSyncErrors.get(runId) || training.errors.get(runId) || "";
+  const recipeIssue = managedRecipeIssue(run.recipe);
+  const error = !matches ? "A different recipe already uses this run ID on the local server. Duplicate the recipe before launching." : trainingSyncErrors.get(runId) || training.errors.get(runId) || (trainingWorkflow(run) === "managed" ? recipeIssue : "") || "";
   const busy = [...training.jobs.values()].some(localJobActive) || capability?.busy;
-  const key = JSON.stringify([job?.id, job?.status, capability?.available, loading, error, run.status, busy, registered]);
+  const guide = runGuidance(!matches ? { ...run, localJobId: rawJob.id } : run, { job, artifact, available: capability?.available, loading, busy, error, hosted: hosted || capability?.hosted });
+  if (!matches) guide.action = "duplicate";
+  const diagnostic = guide.workflow === "managed" ? error || job?.error || "" : "";
+  const key = JSON.stringify([guide, diagnostic, artifact?.id, loading, busy]);
+  const labels = ["Recipe saved", "Train model", "Review output"];
+  document.querySelector("#run-journey").innerHTML = `<ol class="run-journey" aria-label="Experiment stages">${labels.map((label, index) => `<li class="${index < guide.stage ? "is-done" : index === guide.stage ? "is-current" : ""}" ${index === guide.stage ? 'aria-current="step"' : ""}><span>${index < guide.stage ? icon("check") : index + 1}</span><div><strong>${label}</strong><small>${index < guide.stage ? "Done" : index === guide.stage ? index === 2 ? "Next: assess quality" : guide.phase === "ready" || guide.phase === "external" ? "Not started here" : "Current stage" : "After training"}</small></div></li>`).join("")}</ol>`;
   if (panel.dataset.state !== key) {
     const focused = panel.contains(document.activeElement);
-    const logsOpen = panel.querySelector("details")?.open;
+    const setupOpen = panel.querySelector("#runtime-setup")?.open;
     panel.dataset.state = key;
-    panel.innerHTML = `<div class="section-heading"><h2 tabindex="-1">Local MLX-LM training</h2><span class="tag">${job ? esc(job.status) : "Apple Silicon"}</span></div>
-      ${error ? `<p class="warning" role="status">${esc(error)}</p>` : ""}
-      ${job ? `<p class="help">${job.status === "completed" ? registered ? "Local training completed. The adapter is registered in Model library." : "Adapter finalized; waiting to synchronize its reference into this workspace." : job.error ? esc(job.error) : "A real local trainer process owns this run. Closing the tab does not stop it; stopping the Mamase server does."}</p><dl class="facts"><dt>Model</dt><dd><code>${esc(job.modelPath)}</code></dd><dt>Managed output</dt><dd><code>${esc(job.outputPath)}</code></dd></dl><div class="actions">${localJobActive(job) ? button(job.status === "cancelling" ? "Cancelling…" : "Cancel local training", "local-cancel", "", "danger small", `data-id="${job.id}" ${job.status === "cancelling" ? "disabled" : ""}`) : ""}${link("Download trainer report", `/api/training/jobs/${job.id}/report`, "download", "small quiet")}${trainingSyncErrors.has(runId) ? button("Retry workspace sync", "local-sync", "", "small") : ""}</div><details class="trainer-log"><summary>Trainer logs</summary><pre tabindex="0" aria-label="Trainer logs"></pre></details>` :
-      `<p class="help">${loading ? "Checking the local Python runtime…" : capability?.available ? "Launch this saved recipe with a local MLX-compatible model directory and the original JSONL file. No model downloads or teacher API calls are made." : "Install the optional MLX training runtime, then recheck. External recipe exports and manual progress remain available."}</p>
-      <p class="help">${run.status !== "planned" ? "Duplicate this recipe for a new local training attempt." : busy ? "Another local job is active. Recheck after it finishes." : "Each job gets a new private output directory; the external recipe output path is not overwritten."}</p>
-      <div class="actions">${button("Launch local training", "local-launch", "lab", "primary", `data-id="${runId}" ${!capability?.available || loading || busy || rawJob || run.localJobId || run.status !== "planned" ? "disabled" : ""}`)}${button("Recheck runtime", "local-refresh", "", "quiet", `data-id="${runId}" ${loading ? "disabled" : ""}`)}</div>`}`;
-    if (logsOpen || job?.status === "failed") { const details = panel.querySelector("details"); if (details) details.open = true; }
+    panel.dataset.phase = guide.phase;
+    let action = "";
+    if (guide.action === "start") action = button("Review & start training", "local-launch", "arrow", "primary", `data-id="${runId}"`);
+    else if (guide.action === "recheck") action = button("Check trainer connection", "local-refresh", "local", "primary", `data-id="${runId}" ${loading ? "disabled" : ""}`);
+    else if (guide.action === "cancel") action = button("Cancel local training", "local-cancel", "", "quiet", `data-id="${job.id}"`);
+    else if (guide.action === "review") action = link(artifact.kind === "adapter" ? "Review adapter" : "Review output", `#/checkpoints/${artifact.id}`, "arrow", "primary");
+    else if (guide.action === "sync") action = button("Retry workspace sync", "local-sync", "", "primary");
+    else if (guide.action === "duplicate") action = button("Edit a copy & retry", "duplicate-run", "plus", "primary", `data-id="${runId}"`);
+    else if (guide.action === "export") action = button("Export recipe", "export-recipe", "download", "primary", `data-id="${runId}"`);
+    else if (guide.action === "report") action = button("Import report", "import-report", "upload", "primary", `data-id="${runId}"`);
+    else if (guide.action === "register") action = button("Import training result", "import-training-result", "upload", "primary", `data-id="${runId}"`);
+    else if (guide.action === "backup") action = `${button("Export workspace", "export-workspace", "download", "primary")}${link("Local setup guide", "#/resources", "docs", "quiet")}`;
+    panel.innerHTML = `<span class="eyebrow">${hosted ? "HOSTED WORKSPACE · NO LOCAL TRAINER" : guide.workflow === "managed" ? "LOCAL TRAINING · MLX / APPLE SILICON" : "TERMINAL TRAINING · EXTERNAL PROCESS"}</span>
+      <h2 tabindex="-1">${esc(guide.title)}</h2><p class="run-state-description">${esc(guide.description)}</p>
+      ${["ready", "checking", "setup", "busy"].includes(guide.phase) ? `<ul class="launch-checklist"><li><span>${icon("check")}</span><div><strong>Recipe saved</strong><small>${esc(modelName(run.recipe.student))} · ${num(splitCounts(dataset).train)} training examples</small></div></li><li><span>${capability?.available ? icon("check") : icon("local")}</span><div><strong>${loading ? "Checking trainer" : capability?.available ? "Local trainer available" : "Local trainer needs setup"}</strong><small>Model compatibility is checked when the worker opens it.</small></div></li><li><span>${icon("upload")}</span><div><strong>Choose the original file next</strong><small>${esc(dataset.filename)} · ${formatBytes(dataset.bytes)} · no model download</small></div></li></ul>` : ""}
+      ${localJobActive(job) ? `<div class="live-progress"><div><strong id="live-percent"></strong><span id="live-progress-text" role="status"></span></div><progress id="live-progress-bar" aria-label="Reported learning updates"></progress><p class="help">Percentage of learning updates, not time remaining.</p></div>` : ""}
+      ${diagnostic ? `<div class="run-warning" role="status"><strong>${trainingSyncErrors.has(runId) ? "Browser save needs attention" : "Details to resolve"}</strong><p>${esc(diagnostic)}</p></div>` : ""}
+      ${guide.phase === "setup" ? `<details id="runtime-setup" class="disclosure" open><summary>One-time setup <span>Run in a terminal inside the Mamase folder</span></summary><pre>python3.12 -m venv .venv-training
+.venv-training/bin/python -m pip install -r training/requirements-mlx.txt
+npm run dev</pre><p class="help">Requires Apple Silicon and Python 3.12. Bring an existing MLX-compatible model folder; installing the trainer does not download a model.</p></details>` : ""}
+      <div class="run-control-footer"><div class="actions">${action}${job || run.localJobId ? button("Show technical details", "run-details", "code", "quiet") : ""}</div><p class="help" id="run-status-line">Last recorded ${formatDate(run.updatedAt)}</p></div>`;
+    if (setupOpen && panel.querySelector("#runtime-setup")) panel.querySelector("#runtime-setup").open = true;
     if (focused) panel.querySelector("h2").focus({ preventScroll: true });
   }
-  const log = panel.querySelector(".trainer-log pre");
+  const log = document.querySelector(".run-technical .trainer-log pre");
   if (log && job) {
     const follow = log.scrollTop + log.clientHeight >= log.scrollHeight - 10;
     const text = job.logs.join("\n") || "Waiting for trainer output…";
     if (log.textContent !== text) { log.textContent = text; if (follow) log.scrollTop = log.scrollHeight; }
   }
-  if (job) {
-    let live = panel.querySelector(".local-live-progress");
-    if (!live) { live = document.createElement("p"); live.className = "help local-live-progress"; live.setAttribute("role", "status"); panel.querySelector(".section-heading").after(live); }
-    const value = `Server observations: ${num(job.run.step)} / ${num(job.run.totalSteps)} optimizer steps.`;
+  if (localJobActive(job)) {
+    const value = `${num(job.run.step)} of ${num(job.run.totalSteps)} learning updates reported`;
+    const live = panel.querySelector("#live-progress-text");
     if (live.textContent !== value) live.textContent = value;
+    panel.querySelector("#live-percent").textContent = `${Math.floor(job.run.step / job.run.totalSteps * 100)}%`;
+    const progress = panel.querySelector("#live-progress-bar");
+    progress.max = job.run.totalSteps;
+    progress.value = job.run.step;
+    progress.setAttribute("aria-valuetext", value);
+  }
+  const files = document.querySelector("#run-job-files");
+  if (job && files.dataset.job !== job.id) {
+    files.dataset.job = job.id;
+    files.innerHTML = `<dl class="facts"><dt>Job ID</dt><dd><code>${job.id}</code></dd><dt>Managed output folder</dt><dd><code>${esc(job.outputPath)}</code></dd></dl>${link("Download trainer report", `/api/training/jobs/${job.id}/report`, "download", "small quiet")}`;
   }
   document.querySelectorAll('[data-action="progress"], [data-action="import-report"]').forEach((element) => {
-    element.disabled = loading || Boolean(rawJob || run.localJobId);
+    element.disabled = Boolean(rawJob || run.localJobId);
     element.hidden = Boolean(rawJob || run.localJobId);
     if (rawJob || run.localJobId) element.title = "Managed jobs record their own progress. Duplicate the recipe for another attempt.";
   });
   const template = document.querySelector('[data-action="report-template"]');
   if (template) template.hidden = Boolean(rawJob || run.localJobId);
+  const externalGuide = document.querySelector("#external-training-guide");
+  if (externalGuide) externalGuide.hidden = guide.workflow !== "cli" || Boolean(rawJob || run.localJobId);
 }
 function labPage() {
   const draft = ui.draft;
   const distill = draft.method === "distillation";
+  const managed = draft.workflow === "managed";
   const dataset = workspace.datasets.find((item) => item.id === draft.datasetId);
-  return `${header("Distillation lab", `${button("Discard draft", "discard-draft", "", "quiet")}${button("View recipe", "preview-recipe", "code", "quiet")}`, "Design the experiment. Train locally. Keep the knowledge.")}
+  const identityFields = (required) => `<div class="form-grid">${field("Familiar ID", "familiarId", draft.familiarId, { required, attrs: 'maxlength="80" pattern="[a-zA-Z0-9_\\-]+" placeholder="cody"' })}${field("Coven instance ID", "instanceId", draft.instanceId, { required, attrs: 'maxlength="80" pattern="[a-zA-Z0-9_\\-]+" placeholder="my-coven"' })}</div>`;
+  return `${header("Distillation lab", `${button("Discard draft", "discard-draft", "", "quiet")}${button("View recipe", "preview-recipe", "code", "quiet")}`, "Make a recipe first. Review it before starting any training.")}
     <div class="draft-status"><p id="draft-status" class="help" role="status">${esc(draftMessage)}</p>${button("Download draft", "download-draft", "download", "small quiet")}</div>
     <form id="recipe-form" data-form="recipe" class="lab-layout"><div class="lab-main">
-      <div class="lab-intro"><span class="eyebrow">${icon("lab")} A NEW EXPERIMENT</span><h2>What will we teach<br>our next model?</h2><p>Build a focused LoRA adapter or pass a teacher's responses to a smaller student.</p></div>
+      <section class="form-section"><h2>Where will you train?</h2><div class="method-picker workflow-picker" role="group" aria-label="Training workflow">
+        <button type="button" data-action="workflow" data-workflow="managed" aria-pressed="${managed}" class="method-card ${managed ? "selected" : ""}">${icon("local")}<strong>Train on this Mac</strong><span>Guided LoRA training. Progress and output are saved automatically.</span><small>Apple Silicon · existing MLX model required</small></button>
+        <button type="button" data-action="workflow" data-workflow="cli" aria-pressed="${!managed}" class="method-card ${!managed ? "selected" : ""}">${icon("code")}<strong>Train in a terminal</strong><span>Advanced identity-bound workflow. Run commands and import the results.</span><small>LoRA, rsLoRA, DoRA or CUDA QLoRA</small></button></div><input type="hidden" name="workflow" value="${draft.workflow}"></section>
+      <h3>What examples will the model learn from?</h3>
       <div class="method-picker" role="group" aria-label="Training method">
         <button type="button" data-action="method" data-method="lora" aria-pressed="${!distill}" class="method-card ${!distill ? "selected" : ""}">${icon("spark")}<strong>LoRA fine-tuning</strong><span>Teach a base model with your own curated examples.</span></button>
         <button type="button" data-action="method" data-method="distillation" aria-pressed="${distill}" class="method-card ${distill ? "selected" : ""}">${icon("lab")}<strong>Response distillation</strong><span>Train a student on a teacher's recorded responses.</span></button></div>
-      <section class="form-section"><div class="section-heading"><h3>The experiment</h3><span class="muted">1 / Identity</span></div>
+      <section class="form-section"><h3>Name the experiment</h3>
         ${field("Run name", "name", draft.name, { attrs: 'maxlength="100" placeholder="e.g. Coven reasoning · v1"' })}
         ${select("Program", "programId", draft.programId, programOptions())}
-        <div class="form-grid">${field("Familiar ID", "familiarId", draft.familiarId, { attrs: 'maxlength="80" pattern="[a-zA-Z0-9_\\-]+" placeholder="cody"', hint: "The owner of this adapter, not a new identity." })}${field("Coven instance ID", "instanceId", draft.instanceId, { attrs: 'maxlength="80" pattern="[a-zA-Z0-9_\\-]+" placeholder="my-coven"' })}</div>
-        <p class="help">Local preparation binds the exact IDENTITY.md and SOUL.md from this familiar's workspace. Training never rewrites those files or grants new tools.</p>
+        ${managed ? "" : `${identityFields(true)}<p class="help">The terminal preparation command loads IDENTITY.md and SOUL.md from the familiar folder you supply. These IDs must match that identity; training does not grant new tools.</p>`}
         ${field("Training objective", "objective", draft.objective, { textarea: true, attrs: 'maxlength="2000" rows="3" placeholder="What should this model do better? How will you measure it?"' })}</section>
       <section class="form-section"><div class="section-heading"><h3>The knowledge</h3>${button("Import dataset", "import-dataset", "upload", "small quiet")}</div>
         ${select("Training dataset", "datasetId", draft.datasetId, datasetOptions(), "required")}
-        <div id="dataset-summary" class="dataset-summary">${dataset ? datasetSummary(dataset) : "Import a JSONL dataset to begin. Examples stay on your machine."}</div>
-        ${distill ? '<p class="notice inline">Response distillation uses pre-generated teacher examples with a supervised loss. This does not call a teacher API or perform logit matching.</p>' : ""}</section>
-      <section class="form-section"><h3>The destination</h3>${field("External trainer output hint", "outputPath", draft.outputPath, { attrs: 'maxlength="500"', hint: "For other trainers. Mamase's local runner always saves to the prepared bundle's adapter/ directory; register that actual path after training." })}</section>
-    </div><aside class="lab-settings" aria-label="Training configuration">
-      <div class="inspector-title">${icon("settings")} Model &amp; adapter</div><div class="recipe-readiness" id="recipe-readiness" role="status"></div>
-      <section>${field(distill ? "Student model" : "Base model", "student", draft.student, { attrs: 'maxlength="200" list="model-options"', hint: "Local path or model repository ID." })}
-        <datalist id="model-options"><option value="Qwen/Qwen2.5-7B-Instruct"><option value="meta-llama/Llama-3.1-8B-Instruct"><option value="mistralai/Mistral-7B-Instruct-v0.3"></datalist>
+        <div id="dataset-summary" class="dataset-summary">${dataset ? datasetSummary(dataset) : "Import and select your examples."}</div><p class="help">Keep the original JSONL file. ${managed ? "You will select it again before training; its contents must match this import." : "The preparation command needs that file, not just its name."}</p>
+        ${distill ? '<p class="notice inline">The teacher answers must already be in your dataset. This workflow does not call a teacher or generate answers for you.</p>' : ""}</section>
+      <section class="form-section"><h3>Choose the model to customize</h3>${field(distill ? "Student model" : "Base model", "student", draft.student, { attrs: `maxlength="200" placeholder="${managed ? "/Users/you/Models/your-model" : "Model name or local path"}"`, hint: managed ? "Use the path to an existing MLX-compatible model folder on this Mac. A name such as Qwen/model does not download a model. Compatibility is checked at launch." : "Record the base model here. The terminal command also requires the path to its compatible local model files." })}
         ${distill ? field("Teacher model", "teacher", draft.teacher, { attrs: 'maxlength="200"', hint: "Must match the dataset's recorded teacher." }) : ""}
-      </section><section><div class="section-heading"><h3>LoRA parameters</h3><span class="tag">PEFT</span></div>
-        ${select("Adapter technique", "adapter", draft.adapter, Object.entries(ADAPTERS))}
+      </section>
+      <details class="form-section disclosure" id="recipe-advanced"><summary>Advanced settings <span>Learning parameters${managed ? " and optional ownership labels" : ", adapter technique and export hint"}</span></summary>
+        <p class="help">Starting values are provided, not a guarantee of fit or memory usage. Change them when you understand your model's requirements.</p>
+        ${managed ? '<input type="hidden" name="adapter" value="lora"><p class="help">This Mac workflow uses LoRA: a small set of trainable changes to the base model.</p>' : select("Adapter technique", "adapter", draft.adapter, Object.entries(ADAPTERS))}
         <div class="form-grid">${select("Rank", "rank", draft.rank, [4, 8, 16, 32, 64, 128, 256].map((rank) => [rank, rank]))}${field("Alpha", "alpha", draft.alpha, { type: "number", attrs: 'min="1" max="1024" step="1"' })}</div>
-        <p class="help">The local trainer targets all linear layers. QLoRA requires CUDA and bitsandbytes; other variants support unquantized local models. No technique guarantees improvement.</p></section>
-      <section><h3>Training parameters</h3>${field("Learning rate", "learningRate", draft.learningRate, { type: "number", attrs: 'min="0.00000001" max="1" step="any"' })}
-        <div class="form-grid">${field("Epochs", "epochs", draft.epochs, { type: "number", attrs: 'min="1" max="100" step="1"' })}${field("Micro batch", "batchSize", draft.batchSize, { type: "number", attrs: 'min="1" max="128" step="1"' })}</div>
-        ${field("Gradient accumulation", "accumulation", draft.accumulation, { type: "number", attrs: 'min="1" max="1024" step="1"' })}
-        ${field("Max sequence length", "maxSequence", draft.maxSequence, { type: "number", attrs: 'min="128" max="131072" step="1"' })}
-        <div class="estimate">${icon("clock")}<span id="step-estimate">${stepEstimate()}</span></div></section>
-      <section><h3>A note on local training</h3><p class="help">Check model licenses and hardware requirements before training. No weights, datasets, or credentials are sent to a service by this lab.</p></section>
-    </aside><div class="lab-submit"><div class="lab-footer"><p>${icon("local")} Saves a plan. Does not launch training.</p><button type="submit" class="button primary">${icon("plus")} Save planned run</button></div>
+        <p class="help">Rank controls adapter capacity; alpha scales its contribution. More capacity does not guarantee a better model.</p>
+        ${field("Learning rate", "learningRate", draft.learningRate, { type: "number", attrs: 'min="0.00000001" max="1" step="any"', hint: "How large each learning adjustment is." })}
+        <div class="form-grid">${field("Epochs", "epochs", draft.epochs, { type: "number", attrs: 'min="1" max="100" step="1"', hint: "Passes through the training examples. Too many can overfit." })}${field("Micro batch", "batchSize", draft.batchSize, { type: "number", attrs: 'min="1" max="128" step="1"', hint: "Examples processed together. Larger batches need more memory." })}</div>
+        ${field("Gradient accumulation", "accumulation", draft.accumulation, { type: "number", attrs: 'min="1" max="1024" step="1"', hint: "Combine this many micro-batches before one learning update." })}
+        ${field("Max sequence length", "maxSequence", draft.maxSequence, { type: "number", attrs: 'min="128" max="131072" step="1"', hint: "Maximum tokens per example. Long examples may be truncated; examples with no remaining answer are rejected." })}
+        ${managed ? `<h3>Optional ownership labels</h3>${identityFields(false)}<p class="help">Supply both IDs or neither. These are labels only; this workflow does not load a canonical familiar identity.</p>` : ""}
+        ${field("External trainer output hint", "outputPath", draft.outputPath, { attrs: 'maxlength="500"', hint: "For exporting to other tools. Managed training uses a new private job folder; the terminal workflow uses its bundle's adapter/ folder." })}
+      </details>
+    </div><aside class="lab-settings recipe-overview" aria-label="Recipe overview">
+      <div class="inspector-title">${icon("lab")} Your plan</div><div class="recipe-readiness" id="recipe-readiness" role="status"></div>
+      <section><dl class="facts"><dt>Workflow</dt><dd>${managed ? "Train on this Mac" : "Train in a terminal"}</dd><dt>Model</dt><dd id="preview-model">${esc(draft.student ? modelName(draft.student) : "Not chosen")}</dd><dt>Examples</dt><dd id="preview-examples">${dataset ? num(dataset.records) : "Not chosen"}</dd><dt>Output</dt><dd>${managed ? "New private job folder, registered automatically" : "Adapter in the terminal bundle; import its result"}</dd></dl><div class="estimate">${icon("clock")}<span id="step-estimate">${stepEstimate()}</span></div></section>
+      <section><h3>What saving does</h3><p class="help">${managed ? "Saves this recipe and opens a review page. You choose the original file and confirm Start training there." : "Saves a recipe to export. You run the trainer yourself and import its reports."}</p><p class="help">An adapter needs its base model. Nothing is deployed or approved automatically.</p></section>
+    </aside><div class="lab-submit"><div class="lab-footer"><p>${icon("local")} No training starts when you save.</p><button type="submit" class="button primary">${icon("arrow")} Save recipe &amp; review</button></div>
       <p class="form-error" role="alert" hidden></p></div></form>`;
 }
 
 function datasetSummary(dataset) {
-  return `${num(dataset.records)} examples · ${num(splitCounts(dataset).train)} train / ${num(splitCounts(dataset).holdout)} holdout · ${dataset.kind === "teacher" ? "Teacher-generated" : "Supervised"}`;
+  return `${num(splitCounts(dataset).train)} examples to learn from · ${num(splitCounts(dataset).holdout)} kept aside for holdout checks`;
 }
 
 function datasetFacts(dataset) {
@@ -456,9 +513,17 @@ function syncRecipe() {
   document.querySelector("#dataset-summary").textContent = dataset ? datasetSummary(dataset) : "Import and select a JSONL dataset to begin.";
   document.querySelector("#step-estimate").textContent = stepEstimate();
   document.querySelector("#draft-status").textContent = draftMessage;
-  const missing = [["name", "a run name"], ["familiarId", "a familiar ID"], ["instanceId", "a Coven instance ID"], ["objective", "an objective"], ["datasetId", "a dataset"], ["student", "a base/student model"]].filter(([key]) => !ui.draft[key].trim()).map(([, label]) => label);
+  document.querySelector("#preview-model").textContent = ui.draft.student ? modelName(ui.draft.student) : "Not chosen";
+  document.querySelector("#preview-examples").textContent = dataset ? num(dataset.records) : "Not chosen";
+  const identitiesRequired = ui.draft.workflow === "cli" || Boolean(ui.draft.familiarId || ui.draft.instanceId);
+  for (const name of ["familiarId", "instanceId"]) {
+    const control = form.elements.namedItem(name);
+    control.required = identitiesRequired;
+    control.closest(".field").querySelector(".field-requirement").textContent = identitiesRequired ? "Required" : "Optional";
+  }
+  const missing = [["name", "a run name"], ...(identitiesRequired ? [["familiarId", "a familiar ID"], ["instanceId", "a Coven instance ID"]] : []), ["objective", "an objective"], ["datasetId", "a dataset"], ["student", "a base/student model"]].filter(([key]) => !ui.draft[key].trim()).map(([, label]) => label);
   const ready = !missing.length && [...form.querySelectorAll("input, select, textarea")].every((control) => control.validity.valid);
-  const message = incompatible ? "Choose a teacher-generated dataset for response distillation." : teacherControl?.validity.customError ? teacherControl.validationMessage : missing.length ? `Add ${missing.join(", ")}.` : ready ? "Ready to save a planned run. Launch training from the run page." : "Review the dataset, teacher and configuration fields before saving.";
+  const message = incompatible ? "Choose a teacher-generated dataset for response distillation." : teacherControl?.validity.customError ? teacherControl.validationMessage : missing.length ? `Add ${missing.join(", ")}.` : ready ? "Ready to save your recipe. Training has not started." : "Review the highlighted fields and advanced settings before saving.";
   const readiness = document.querySelector("#recipe-readiness");
   if (readiness.textContent !== message) readiness.textContent = message;
 }
@@ -468,7 +533,7 @@ function stepEstimate() {
   const recipe = numericRecipe(ui.draft);
   if (!dataset || recipe.batchSize < 1 || recipe.accumulation < 1 || recipe.epochs < 1) return "Select a dataset to estimate steps.";
   const steps = estimatedSteps(recipe, dataset);
-  return Number.isFinite(steps) ? `~${num(steps)} optimizer steps · effective batch ${num(recipe.batchSize * recipe.accumulation)} · single device` : "Enter valid parameters to estimate steps.";
+  return Number.isFinite(steps) ? `${num(steps)} planned learning updates · ${num(recipe.epochs)} passes through the training data` : "Enter valid parameters to estimate updates.";
 }
 
 function numericRecipe(draft) {
@@ -479,7 +544,7 @@ function numericRecipe(draft) {
 
 function artifactTable(artifacts) {
   return table(["Model / artifact", "Format", "Source run", "Local path", ""], artifacts.map((artifact) => [
-    `<a class="record-link" id="artifact-name-${artifact.id}" href="#/checkpoints/${artifact.id}">${esc(artifact.name)}</a><small>${artifact.lineage ? `${esc(artifact.lineage.instanceId)} / ${esc(artifact.lineage.familiarId)} · imported training result` : `Registered ${formatDate(artifact.createdAt)}`}</small>${artifact.lineage ? `<small>Holdout loss: ${artifact.lineage.baseLoss.toFixed(4)} base → ${artifact.lineage.adapterLoss.toFixed(4)} adapter · not a final benchmark</small>` : ""}`,
+    `<a class="record-link" id="artifact-name-${artifact.id}" href="#/checkpoints/${artifact.id}">${esc(artifact.name)}</a><small>${artifact.lineage ? `${esc(artifact.lineage.instanceId)} / ${esc(artifact.lineage.familiarId)} · CLI training report` : artifact.id === `artifact-${byId(workspace.runs, artifact.runId).localJobId}` ? "Managed trainer output" : "Manual file reference"}</small>${artifact.lineage ? `<small>Holdout loss: ${artifact.lineage.baseLoss.toFixed(4)} base → ${artifact.lineage.adapterLoss.toFixed(4)} adapter · not a final benchmark</small>` : ""}`,
     `<span class="tag">${esc(artifact.kind.toUpperCase())}</span>`, runLink(byId(workspace.runs, artifact.runId)),
     `<code class="path">${esc(artifact.path)}</code>`,
     button("Manifest", "artifact-manifest", "download", "small", `data-id="${artifact.id}" aria-describedby="artifact-name-${artifact.id}"`),
@@ -489,9 +554,9 @@ function artifactTable(artifacts) {
 function modelsPage() {
   const artifacts = workspace.artifacts.filter((artifact) => ui.modelKind === "all" || artifact.kind === ui.modelKind);
   return `${header("Model library", workspace.runs.length ? `${button("Import training result", "import-training-result", "upload")}${button("Register artifact", "new-artifact", "plus")}` : link("Create a training recipe", "#/playground", "plus"), "The adapters, checkpoints, and local models we are making our own.")}
-    <div class="notice">${icon("models")} This is an artifact registry. Paths are recorded references; files are not uploaded, converted, or verified by the browser.</div>
+    <div class="notice">${icon("models")} Managed training adds its adapter here automatically. Other outputs can be imported or registered manually. An adapter still needs its base model; a library entry is not approval to deploy it.</div>
     <div class="filter-tabs" role="group" aria-label="Artifact format">${[["all", "All artifacts"], ["adapter", "LoRA adapters"], ["checkpoint", "Checkpoints"], ["merged", "Merged models"], ["gguf", "GGUF"]].map(([kind, label]) => `<button data-action="model-filter" data-kind="${kind}" class="${ui.modelKind === kind ? "active" : ""}" aria-pressed="${ui.modelKind === kind}">${label}</button>`).join("")}</div>
-    ${artifacts.length ? artifactTable(artifacts) : empty("A place for our own models.", workspace.artifacts.length ? "No artifacts match this format." : "Register the local output of a training run, then attach benchmark results to compare candidates.", workspace.artifacts.length ? button("Show all artifacts", "model-filter", "", "", 'data-kind="all"') : workspace.runs.length ? button("Register a local artifact", "new-artifact", "plus") : link("Plan the first experiment", "#/playground", "arrow"), "models")}`;
+    ${artifacts.length ? artifactTable(artifacts) : empty("No saved output here yet.", workspace.artifacts.length ? "No artifacts match this format." : "Finish a managed training run and its adapter will appear here. For terminal training, import the completed result.json.", workspace.artifacts.length ? button("Show all artifacts", "model-filter", "", "", 'data-kind="all"') : workspace.runs.length ? link("View training runs", "#/sessions", "runs") : link("Plan the first experiment", "#/playground", "arrow"), "models")}`;
 }
 
 function evaluationTable(evaluations) {
@@ -510,8 +575,11 @@ function artifactDetail(id) {
   const run = byId(workspace.runs, artifact.runId);
   const dataset = byId(workspace.datasets, run.recipe.datasetId);
   const evaluations = workspace.evaluations.filter((item) => item.artifactId === id);
+  const managed = artifact.id === `artifact-${run.localJobId}` && run.status === "completed";
   return `<a class="breadcrumb" href="#/checkpoints">Model library / ${esc(artifact.name)}</a>${header(esc(artifact.name), `${button("Manifest", "artifact-manifest", "download", "", `data-id="${id}"`)}${button("Record evaluation", "new-evaluation", "plus", "primary", `data-id="${id}"`)}`, `${artifact.kind.toUpperCase()} · registered ${formatDate(artifact.createdAt)}`)}
-    <section class="card"><h2>Artifact lineage</h2><dl class="facts"><dt>Local path</dt><dd><code>${esc(artifact.path)}</code></dd><dt>Source run</dt><dd>${runLink(run)}</dd><dt>Base model</dt><dd>${esc(run.recipe.student)}</dd><dt>Dataset</dt><dd><a class="record-link" href="#/datasets/${dataset.id}">${esc(dataset.name)}</a></dd><dt>Fingerprint</dt><dd><code>${dataset.sha256}</code></dd><dt>Notes</dt><dd class="prose-notes">${esc(artifact.notes) || "No artifact notes recorded."}</dd></dl><p class="help">Registered reference only. File existence, compatibility and model weights are not verified by this browser.</p></section>
+    <section class="card"><span class="eyebrow">REVIEW BEFORE USE</span><h2>${evaluations.length ? "Results are recorded. Review the evidence." : "Saved does not mean evaluated."}</h2><p>${artifact.kind === "adapter" ? "This adapter contains learned changes, not the complete model. Load it alongside the same compatible base model in your local runner." : "Check this output's format and requirements in a compatible local runner before using it."}</p>
+      <ol class="next-steps"><li><strong>Try fresh examples.</strong> Use examples excluded from training and holdout. Mamase does not run inference on this page.</li><li><strong>Compare fairly.</strong> Give the base model and adapted model the same prompts and settings. Read the answers, not just a score.</li><li><strong>Record what happened.</strong> Save the benchmark version, sample count and conditions. Training alone does not approve a model or change the coven's runtime.</li></ol></section>
+    <section class="card"><h2>Files and source experiment</h2><dl class="facts"><dt>${artifact.kind === "adapter" ? "Adapter folder" : "Local path"}</dt><dd><code>${esc(artifact.path)}</code></dd><dt>Base model</dt><dd><code>${esc(run.recipe.student)}</code></dd><dt>Source run</dt><dd>${runLink(run)}</dd><dt>Dataset</dt><dd><a class="record-link" href="#/datasets/${dataset.id}">${esc(dataset.name)}</a></dd><dt>Registration</dt><dd>${managed ? "The local trainer finalized its files before automatic registration." : artifact.lineage ? "Imported from a CLI training result, with recorded fingerprints." : "Manually recorded file reference; contents were not checked."}</dd><dt>Notes</dt><dd class="prose-notes">${esc(artifact.notes) || "No artifact notes recorded."}</dd></dl><p class="help">The browser does not recheck these files now. Keep model files separately: workspace backups and the downloadable manifest contain references, not model weights.</p><details class="disclosure"><summary>Dataset fingerprint</summary><code>${dataset.sha256}</code></details></section>
     <section class="card"><div class="section-heading"><h2>Recorded evaluations</h2>${link("Compare evaluations", "#/evaluations", "arrow", "small quiet")}</div>${evaluations.length ? evaluationTable(evaluations) : '<p>No evaluations have been recorded for this artifact yet.</p>'}</section>`;
 }
 
@@ -534,13 +602,13 @@ function comparisonPanel() {
 }
 
 function evaluationsPage() {
-  return `${header("Evaluations", workspace.artifacts.length ? `${button("Import paired report", "import-evaluation", "upload", "primary")}${button("Record evaluation", "new-evaluation", "plus")}` : link("Register a model first", "#/checkpoints", "models", "primary"), "Measure the candidate against its own base. Keep familiar identity and authority separate.")}
-    <div class="notice">${icon("evaluations")} String-rule passes are narrow regression evidence, not proof of semantic correctness, identity fidelity, or permission to deploy. Manual scores remain separate from paired reports.</div>
-    <section class="card"><div class="section-heading"><h2>Run an independent suite</h2>${button("Suite template", "example-suite", "download", "small")}</div>
-      <p>Import the completed run's <code>run-report.json</code>, then its <code>result.json</code> in Model library. Customize a versioned suite with task, identity, consent, and tool-boundary cases excluded from training and holdout. Replace <code>YOUR_FAMILIAR_NAME</code> in the template; its tiny string checks are examples, not a readiness benchmark. Compare both models locally:</p>
+  return `${header("Evaluations", workspace.artifacts.length ? `${button("Record evaluation", "new-evaluation", "plus", "primary")}${button("Import paired report", "import-evaluation", "upload")}` : link("Open model library", "#/checkpoints", "models", "primary"), "Collect evidence before choosing a model. This page records results; it does not run a benchmark.")}
+    <section class="card"><h2>Start with a fair comparison</h2><p>Test the base model and its adapter on the same fresh examples with the same settings. Record the benchmark version, sample count and conditions below. Loss from training is not an evaluation score.</p><p class="help">A rule-check pass is narrow evidence, not proof of correct or safe answers. Review regressions and raw outputs. Nothing on this page authorizes deployment.</p></section>
+    ${comparisonPanel()}${workspace.evaluations.length ? evaluationTable(workspace.evaluations) : empty("No evaluation results recorded.", "Run a benchmark in your local tools, then record its results. For identity-bound terminal bundles, you can also import a paired evaluation report.", link("Choose an output to review", "#/checkpoints", "arrow"), "evaluations")}
+    <details class="card disclosure"><summary>Advanced: paired evaluation for terminal bundles <span>PEFT CLI outputs only, not managed MLX adapters</span></summary><div class="section-heading"><h2>Run an independent suite</h2>${button("Suite template", "example-suite", "download", "small")}</div>
+      <p>For identity-bound CLI runs, import <code>run-report.json</code>, then <code>result.json</code> in Model library. Customize a versioned suite with task, identity, consent, and tool-boundary cases excluded from training and holdout. Replace <code>YOUR_FAMILIAR_NAME</code> in the template; its tiny string checks are examples, not a readiness benchmark. Compare both models locally:</p>
       <pre>.venv/bin/python training/evaluate.py --bundle .lab/experiment --suite /path/suite.json --out .lab/eval-001</pre>
-      <p class="help">Import <code>.lab/eval-001/evaluation-report.json</code> here. Mamase checks its recorded scores and lineage; it does not rerun inference in the browser. Only summaries are saved here. Full prompts and responses stay in your private report. Compare different experiments only with identical suite fingerprints and decoding settings.</p></section>
-    ${comparisonPanel()}${workspace.evaluations.length ? evaluationTable(workspace.evaluations) : empty("Better models need honest measurements.", "Run the independent suite locally and import its paired report, or record results from your own benchmark tools.", link("Open model library", "#/checkpoints", "arrow"), "evaluations")}`;
+      <p class="help">Import <code>.lab/eval-001/evaluation-report.json</code> here. Only summaries are saved; full prompts and responses stay in your private report. Compare different experiments only with identical suite fingerprints and decoding settings.</p></details>`;
 }
 
 function resourcesPage() {
@@ -548,7 +616,7 @@ function resourcesPage() {
     <div class="resource-grid"><article class="card"><span class="eyebrow">01 · Curate</span><h2>Start with evidence, not volume.</h2><p>Import JSONL with <code>messages</code> or <code>prompt</code> / <code>response</code> records. Track licenses, consent, provenance, and the teacher ID. Do not train on private material without permission.</p><p>Set aside a holdout before training. The preparation CLI writes deterministic, disjoint splits and rejects duplicate prompts. Keep a separate final evaluation suite out of both splits.</p>${button("Download example JSONL", "example-dataset", "download")}</article>
     <article class="card"><span class="eyebrow">02 · Distill</span><h2>Pass the teacher's responses on.</h2><p>Generate responses with a teacher outside Mamase. Review and filter them, then import them as teacher-generated examples. Response distillation here means supervised LoRA fine-tuning on those responses.</p><p>It is not online inference, hidden chain-of-thought extraction, or logit/KL distillation. A teacher label alone does not generate data.</p>${link("Configure a recipe", "#/playground", "arrow")}</article>
     <article class="card"><span class="eyebrow">Offline preflight</span><h2>Check before loading weights.</h2><p>For identity-bound PEFT training, export the recipe and run <code>npm run lab -- prepare</code>. Install <code>training/requirements.txt</code> in <code>.venv</code>, then check the prepared bundle without loading weights:</p><pre>.venv/bin/python training/preflight.py --bundle .lab/experiment --model /path/local-model --device cpu</pre><p>The JSON separates <code>errors</code>, <code>warnings</code> and verified <code>facts</code>; <code>ready: false</code> exits 1. It checks source integrity, local model inventory, dependency/device and adapter constraints, tokenizer/template compatibility, and context/token budgets. No trainer, model weights, identity writes or output files are created. It is not a run report or an OOM guarantee, and the browser does not inspect hardware.</p><p>Review the report before explicitly running <code>training/train.py</code> with the same model/device. PEFT supports LoRA, rsLoRA, DoRA, and CUDA QLoRA. Managed Apple-silicon MLX jobs instead use <code>training/requirements-mlx.txt</code> in <code>.venv-training</code> and their own LoRA/data semantics; this preflight does not validate their jobs, memory or identity binding. A managed runtime-availability probe is not a model preflight.</p><a class="subtle-link" href="https://huggingface.co/docs/peft/main/en/package_reference/lora" target="_blank" rel="noreferrer">PEFT adapter techniques ${icon("external")}</a></article>
-    <article class="card"><span class="eyebrow">03 · Train</span><h2>Keep execution on your terms.</h2><p>Export the recipe and use <code>npm run lab -- prepare</code> to check dataset fingerprints, bind familiar identity, and write disjoint splits. Then explicitly run <code>training/train.py</code> with a local model. LoRA, rsLoRA, DoRA, and CUDA QLoRA are supported.</p><p>The trainer saves adapters, actual progress, and base/adapter holdout loss locally. It makes no teacher API calls or automatic model downloads. Import its report from the run page.</p><p>On Apple Silicon, the separate managed MLX-LM path can launch from a saved run with a local MLX-compatible model and the original dataset. Install its optional runtime with <code>python3.12 -m venv .venv-training</code> and <code>.venv-training/bin/python -m pip install -r training/requirements-mlx.txt</code>. Only explicit launch/cancel controls operate that process.</p><a class="subtle-link" href="https://huggingface.co/docs/peft/main/en/package_reference/lora" target="_blank" rel="noreferrer">PEFT adapter techniques ${icon("external")}</a></article>
+    <article class="card"><span class="eyebrow">03 · Train</span><h2>Keep execution on your terms.</h2><p>On Apple Silicon, launch a managed MLX-LM LoRA job from a saved run using a local model directory and the original dataset. Install its isolated runtime with <code>python3.12 -m venv .venv-training</code> and <code>.venv-training/bin/python -m pip install -r training/requirements-mlx.txt</code>. Logs, losses and finalized adapters arrive automatically.</p><p>For canonical familiar identity binding, rsLoRA, DoRA or CUDA QLoRA, export the recipe and use <code>npm run lab -- prepare</code>, followed by <code>training/train.py</code>. Import its progress and training result from the run page. Neither workflow downloads models or calls a teacher API.</p><a class="subtle-link" href="https://github.com/ml-explore/mlx-lm" target="_blank" rel="noreferrer">MLX-LM documentation ${icon("external")}</a></article>
     <article class="card"><span class="eyebrow">04 · Evaluate &amp; keep</span><h2>A candidate must earn its place.</h2><p>Import the completed training result to bind the actual adapter and its holdout loss. Run <code>training/evaluate.py</code> on an independent, versioned task/identity/consent/tool-boundary suite. Import its report for base/adapter comparisons and regressions.</p><p>Rule checks are not semantic certification. Review the private outputs and require explicit operator approval before any runtime change. Model manifests and browser backups retain summaries and lineage, never prompts or model weights.</p>${link("Evaluations", "#/evaluations", "arrow")}</article></div>`;
 }
 
@@ -560,7 +628,7 @@ function settingsPage() {
   return `${header("Workspace settings", "", "A local home for the coven's experiments.")}
     <div class="settings-grid">${appearanceSettings()}
     <section class="card"><h2>Workspace identity</h2><form data-form="workspace">${field("Workspace name", "workspaceName", workspace.name, { attrs: 'maxlength="80"' })}<button class="button primary" type="submit">Save name</button><p class="form-error" role="alert" hidden></p></form></section>
-    <section class="card"><h2>Backups &amp; portability</h2><p>Recipes, dataset fingerprints, recorded results, and artifact references are saved in this browser. No cloud sync or accounts are configured.</p><div class="actions">${button("Export workspace", "export-workspace", "download")}${button("Restore backup", "restore-workspace", "upload")}</div><p class="help">Restoring replaces this workspace after confirmation. Dataset contents and model weights are never included.</p></section>
+    <section class="card"><h2>Backups &amp; portability</h2><p>Recipes, dataset fingerprints, recorded results, and artifact references are saved in this browser. No cloud sync or accounts are configured.</p><div class="actions">${button("Export workspace", "export-workspace", "download")}${button("Restore backup", "restore-workspace", "upload")}</div><p class="help">Exports use a versioned backup envelope. Restore previews the source format and collection counts before replacement; legacy v1 backups remain supported. Appearance settings, dataset contents and model weights are not included.</p></section>
     <section class="card"><h2>Execution boundary</h2><dl class="facts"><dt>Trainer</dt><dd>Local MLX-LM (optional) or explicit PEFT CLI</dd><dt>Inference</dt><dd>No runtime endpoint connected</dd><dt>Storage</dt><dd>Browser workspace; managed jobs and training bundles on local disk</dd><dt>Workspace size</dt><dd id="workspace-size">${formatBytes(new TextEncoder().encode(JSON.stringify(workspace)).length)} / 4 MB</dd></dl><p>Managed jobs persist their input, split files, logs and adapters separately. Check runtime availability from a saved run. There are no fabricated jobs or benchmark scores.</p></section>
     <section class="card"><h2>Reset workspace</h2><p>Remove this browser's saved metadata and start fresh. Your datasets and local model files are not touched.</p>${button("Reset local workspace", "reset-workspace", "", "danger")}</section></div>`;
 }
@@ -569,6 +637,9 @@ const pages = { home: homePage, projects: projectsPage, datasets: datasetsPage, 
 
 function render() {
   const { page, id } = route();
+  const viewKey = `${page}/${id || ""}`;
+  const expanded = app.dataset.viewKey === viewKey ? [...app.querySelectorAll("details[id][open]")].map((element) => element.id) : [];
+  app.dataset.viewKey = viewKey;
   if (page === "sessions" && !id) {
     const { query, status, program, sort, runPage } = route();
     Object.assign(ui, { query, status, program, sort, runPage });
@@ -585,8 +656,9 @@ function render() {
   app.innerHTML = `<div class="shell ${ui.menu ? "menu-open" : ""} ${ui.collapsed ? "collapsed" : ""}">
     <a class="skip-link" href="#main">Skip to content</a>${sidebar(page)}
     <button class="menu-scrim" type="button" data-action="close-menu" aria-label="Close navigation" ${ui.menu ? "" : "hidden"}></button>
-    <div class="mobile-header"><button type="button" class="icon-button" data-action="toggle-menu" aria-controls="navigation" aria-expanded="${ui.menu}" aria-label="Open navigation">${icon("panel")}</button><a class="brand" href="#/home">mamase.</a><span class="workspace-tag">LOCAL LAB</span>${workspace ? `<button type="button" class="icon-button mobile-search" data-action="search" aria-label="Search workspace">${icon("search")}</button>` : ""}</div>
+    <div class="mobile-header"><button type="button" class="icon-button" data-action="toggle-menu" aria-controls="navigation" aria-expanded="${ui.menu}" aria-label="Open navigation">${icon("panel")}</button><a class="brand" href="#/home">mamase.</a><span class="workspace-tag">${hosted ? "HOSTED" : "LOCAL LAB"}</span>${workspace ? `<button type="button" class="icon-button mobile-search" data-action="search" aria-label="Search workspace">${icon("search")}</button>` : ""}</div>
     <main class="main ${page === "home" && !storageError ? "main-home" : ""}" id="main" tabindex="-1"><section id="workspace-alert" class="notice workspace-alert" role="alert" hidden></section>${content}</main></div>`;
+  for (const id of expanded) { const details = document.getElementById(id); if (details instanceof HTMLDetailsElement) details.open = true; }
   updateSidebarAccess();
   updateStorageNotice();
   syncRunCount();
@@ -624,12 +696,16 @@ function updateStorageNotice() {
   if (ui.conflict && !notice.childElementCount) notice.innerHTML = `<div><strong>This workspace changed in another tab.</strong><p>Your open forms have been kept. Reload the latest data before saving to avoid overwriting changes.</p><div class="actions">${button("Export open workspace", "export-workspace", "download", "small")}${button("Reload workspace", "reload-workspace", "", "small")}</div></div>`;
 }
 
-function persist(next, expectedSource) {
+function assertWorkspaceSource(expectedSource) {
   if (localStorage.getItem(STORAGE_KEY) !== expectedSource) {
     ui.conflict = true;
     updateStorageNotice();
     throw new Error("This workspace changed while you were editing. Reload before saving to avoid overwriting those changes.");
   }
+}
+
+function persist(next, expectedSource) {
+  assertWorkspaceSource(expectedSource);
   workspace = saveWorkspace(localStorage, next);
   savedSource = localStorage.getItem(STORAGE_KEY);
   storageError = "";
@@ -681,8 +757,41 @@ function download(filename, content, type = "application/json") {
 }
 const downloadJson = (name, content) => download(name, JSON.stringify(content, null, 2));
 
-function importDialog(title, form, description, context = {}) {
-  openModal(title, `<p class="muted">${description}</p>${field("JSON file", "file", "", { type: "file", attrs: 'accept=".json,application/json"' })}${formFooter("Import")}`, form, context);
+function importDialog(title, form, description, context = {}, label = "Import") {
+  openModal(title, `<p class="muted">${description}</p>${field("JSON file", "file", "", { type: "file", attrs: 'accept=".json,application/json"' })}${formFooter(label)}`, form, context);
+}
+
+function progressReportPreview(preview, report, expectedSource) {
+  const { additions, duplicates, conflicts } = preview;
+  openModal("Review progress report", `
+    <p id="report-summary" role="status">${num(additions.length)} new · ${num(duplicates.length)} duplicates · ${num(conflicts.length)} conflicts</p>
+    <p>No changes have been saved. Duplicates match recorded evidence or repeat an observation in this file. Original timestamps and journal order are preserved.</p>
+    ${conflicts.length ? `<p class="warning">The entire import is blocked. Correct the source report or use a separate run; existing evidence cannot be overwritten.</p><ul>${conflicts.slice(0, 20).map(({ index, message }) => `<li>Observation ${index + 1}: ${esc(message)}</li>`).join("")}</ul>${conflicts.length > 20 ? "<p>Showing the first 20 conflicts.</p>" : ""}` : additions.length ? "<p>Confirm to append only the new observations below.</p>" : "<p>This report contains no new observations. Keeping the existing history will not write to storage, even for a closed run.</p>"}
+    ${additions.length ? `${table(["Report row", "Recorded", "Status", "Step", "Loss / validation", "Notes"], additions.slice(0, 20).map(({ index, update }) => [index + 1, esc(update.recordedAt), badge(update.status), `${update.step} / ${update.totalSteps}`, `${update.loss ?? "—"} / ${update.evalLoss ?? "—"}`, esc(update.note) || "—"]), "Proposed progress observations")}${additions.length > 20 ? `<p class="help">Showing the first 20 of ${num(additions.length)} proposed additions.</p>` : ""}` : ""}
+    <p class="help">If storage is full, export a backup and free space before retrying. If another tab saved changes, reload the latest workspace and preview the report again.</p>
+    <div class="actions">${button("Export open workspace", "export-workspace", "download", "small")}${button("Reload workspace", "reload-workspace", "", "small")}</div>
+    ${conflicts.length ? `<div class="modal-footer">${button("Cancel", "close-dialog", "", "quiet")}${button("Choose another report", "import-report", "upload", "primary", `data-id="${preview.runId}"`)}</div>` : formFooter(additions.length ? "Import new observations" : "Keep existing history")}`,
+  conflicts.length ? "" : "confirm-report", { runId: preview.runId, report, expectedSource });
+  const title = dialog.querySelector("#dialog-title");
+  title.tabIndex = -1;
+  title.focus();
+}
+
+function workspaceRestorePreview(backup, filename, expectedSource) {
+  const collections = ["programs", "datasets", "runs", "artifacts", "evaluations"];
+  openModal("Review workspace restore", `
+    <p id="restore-summary" role="status">No changes have been saved. This replaces all current workspace metadata, not individual records.</p>
+    <dl class="facts"><dt>Source file</dt><dd>${esc(filename)}</dd><dt>Backup format</dt><dd>${esc(backup.format)}</dd><dt>Workspace version</dt><dd>${backup.workspace.version}</dd><dt>Exported at</dt><dd>${backup.exportedAt ? esc(backup.exportedAt) : "Not recorded in a legacy backup"}</dd><dt>Current workspace</dt><dd>${esc(workspace?.name || "Unavailable: stored data needs recovery")}</dd><dt>Replacement workspace</dt><dd>${esc(backup.workspace.name)}</dd></dl>
+    ${backup.migration ? '<p class="help">Legacy workspace v1 will be validated and restored as workspace v1. The next export uses the versioned backup envelope; existing lineage and comparisons are retained.</p>' : ""}
+    ${table(["Collection", "Current", "Backup"], collections.map((key) => [esc(key), workspace ? num(workspace[key].length) : "Unavailable", num(backup.workspace[key].length)]), "Workspace restore collection counts")}
+    <p class="warning">Current browser metadata will be replaced. Appearance settings and files on disk are unchanged. This does not cancel or delete managed training jobs.</p>
+    <p class="help">Export recovery data first. If storage is full, free space and retry this confirmation. If another tab changes the workspace, reload and preview again.</p>
+    <div class="actions">${workspace ? button("Export open workspace", "export-workspace", "download", "small") : button("Download stored data", "raw-backup", "download", "small")}${button("Reload workspace", "reload-workspace", "", "small")}</div>
+    <label class="check-label"><input name="confirm" type="checkbox" required> I understand this replaces the browser's saved workspace.</label>${formFooter("Restore workspace")}`,
+  "confirm-restore", { backup, expectedSource });
+  const title = dialog.querySelector("#dialog-title");
+  title.tabIndex = -1;
+  title.focus();
 }
 
 function searchResults(query) {
@@ -723,7 +832,7 @@ const actions = {
   "replace-draft": () => { draftBlocked = false; useDraft(modalContext.draft); },
   "duplicate-run": (element) => {
     const run = byId(workspace.runs, element.dataset.id);
-    requestDraft({ ...Object.fromEntries(Object.entries(run.recipe).map(([key, value]) => [key, String(value)])), name: `${run.name.slice(0, 90)} · copy`, outputPath: run.recipe.outputPath.length <= 495 ? `${run.recipe.outputPath}-copy` : "" });
+    requestDraft({ ...defaults(), ...Object.fromEntries(Object.entries(run.recipe).map(([key, value]) => [key, String(value)])), workflow: trainingWorkflow(run), name: `${run.name.slice(0, 90)} · copy`, outputPath: run.recipe.outputPath.length <= 495 ? `${run.recipe.outputPath}-copy` : "" });
   },
   "use-dataset": (element) => {
     const dataset = byId(workspace.datasets, element.dataset.id);
@@ -740,20 +849,43 @@ const actions = {
   "confirm-reload": () => location.reload(),
   "local-refresh": (element) => { void training.watch(byId(workspace.runs, element.dataset.id), true); },
   "local-sync": flushTrainingUpdates,
+  "run-details": () => {
+    const details = document.querySelector("#run-technical");
+    details.open = true;
+    details.querySelector(".trainer-log").open = true;
+    details.querySelector("summary").focus();
+    details.scrollIntoView({ block: "start", behavior: "instant" });
+  },
+  workflow: (element) => {
+    const value = element.dataset.workflow;
+    assert(["managed", "cli"].includes(value), "Choose a training workflow.");
+    const changedTechnique = value === "managed" && ui.draft.adapter !== "lora";
+    ui.draft.workflow = value;
+    if (value === "managed") ui.draft.adapter = "lora";
+    saveDraft();
+    render();
+    document.querySelector(`[data-workflow="${value}"]`).focus();
+    if (changedTechnique) notify("Train on this Mac uses LoRA. Your other settings have been kept.");
+  },
   "local-launch": (element) => {
     const run = byId(workspace.runs, element.dataset.id);
     const dataset = byId(workspace.datasets, run.recipe.datasetId);
     assert(run.status === "planned" && !run.localJobId, "Duplicate this recipe to start a new local attempt.");
-    openModal("Launch local MLX training", `<p>This starts a real process on this Mac. Keep the Mamase server running; closing the browser does not cancel the job.</p><dl class="facts"><dt>Saved model</dt><dd><code>${esc(run.recipe.student)}</code></dd><dt>Dataset</dt><dd>${esc(dataset.name)}</dd><dt>Fingerprint</dt><dd><code>${dataset.sha256}</code></dd></dl><p class="help">The saved base/student model must point to an existing local MLX-compatible model directory. No models or custom code are downloaded. Only one managed job runs at a time.</p>
-      ${field("Original JSONL file", "file", "", { type: "file", attrs: 'accept=".jsonl,.ndjson,application/x-ndjson"', hint: "Select the exact file imported for this dataset. Its size, SHA-256, format and example count are checked again." })}
-      <label class="check-label"><input type="checkbox" name="confirmManagedOutput" required> I authorize local training and a private copy of this dataset. Use a new managed output directory instead of overwriting the external recipe output path.</label>
-      <p class="help">Original data, split files, logs and adapters remain in <code>.mamase/training/</code> (or the configured training directory). Review model licenses and available memory before launching.</p>${formFooter("Launch local job")}`, "local-launch", { runId: run.id });
+    const recipeIssue = managedRecipeIssue(run.recipe);
+    assert(!recipeIssue, recipeIssue);
+    openModal("Review before starting training", `<p>Start a real training process on this Mac. The base model stays unchanged; learned changes are saved as a new adapter.</p>
+      <div class="launch-summary"><div><small>Model</small><strong>${esc(modelName(run.recipe.student))}</strong></div><div><small>Examples</small><strong>${num(splitCounts(dataset).train)} train / ${num(splitCounts(dataset).holdout)} holdout</strong></div><div><small>Planned work</small><strong>${num(run.totalSteps)} learning updates</strong></div></div>
+      ${field("Original JSONL file", "file", "", { type: "file", attrs: 'accept=".jsonl,.ndjson,application/x-ndjson"', hint: `Choose <strong>${esc(dataset.filename)}</strong> (${formatBytes(dataset.bytes)}). Its contents must match the file you imported. A renamed or edited replacement may not match.` })}
+      <label class="check-label"><input type="checkbox" name="confirmManagedOutput" required> Start training and keep a private local copy of these examples, logs and output. Do not overwrite existing model files.</label>
+      <p class="help">You can close the browser, but keep the Mamase server running. No model is downloaded. Nothing is deployed automatically.</p>
+      <details class="disclosure"><summary>File locations and fingerprint</summary><dl class="facts"><dt>Base model folder</dt><dd><code>${esc(run.recipe.student)}</code></dd><dt>Dataset SHA-256</dt><dd><code>${dataset.sha256}</code></dd><dt>Output</dt><dd>A new job folder inside <code>${esc(training.available?.outputRoot || ".mamase/training")}</code></dd></dl>${run.recipe.familiarId ? '<p class="help">Familiar IDs are labels here; this workflow does not load the canonical identity bundle.</p>' : ""}</details>
+      ${formFooter("Start training")}`, "local-launch", { runId: run.id });
   },
   "local-cancel": (element) => openModal("Cancel local training?", `<p>The local trainer process will be stopped. Partial files are retained for inspection but will not be registered as a completed adapter.</p>${formFooter("Cancel local job")}`, "local-cancel", { jobId: element.dataset.id }),
   "new-program": () => programModal(),
   "edit-program": (element) => programModal(byId(workspace.programs, element.dataset.id)),
   "import-dataset": () => openModal("Import a dataset", `
-    <p class="muted">JSONL, up to 20 MB. One conversation or prompt/response pair per line. Contents are validated in your browser and are not saved.</p>
+    <p class="muted">Choose a JSONL file, up to 20 MB: one conversation or prompt/response pair per line. This step saves its description, not a training job. Keep the original file for later.</p>
     ${field("Dataset name", "name", "", { attrs: 'maxlength="100" placeholder="Coven reasoning examples"' })}
     ${field("JSONL file", "file", "", { type: "file", attrs: 'accept=".jsonl,.ndjson,application/x-ndjson"' })}
     ${select("Example source", "kind", "supervised", [["supervised", "Our supervised examples"], ["teacher", "Pre-generated teacher responses"]])}
@@ -796,7 +928,7 @@ const actions = {
   },
   "import-report": (element) => {
     assert(!byId(workspace.runs, element.dataset.id).localJobId && !training.jobs.has(element.dataset.id), "Managed local jobs record their own progress.");
-    importDialog("Import progress report", "report", "Import a mamase.run-report.v1 JSON file. Updates must be chronological, use this run ID, and cannot move completed steps backwards.", { runId: element.dataset.id });
+    importDialog("Import progress report", "report", "Choose a mamase.run-report.v1 JSON file (up to 4 MB). Preview new observations, duplicates and conflicts before saving. Exact repeats are safe, including on closed runs; history is never rewritten.", { runId: element.dataset.id }, "Preview report");
   },
   "import-training-result": (element) => importDialog("Import training result", "training-result", "Choose result.json from a completed local training bundle. Import its run-report.json first. This registers the actual adapter path, source fingerprints, and base/adapter holdout loss; it never promotes a model.", { runId: element.dataset.id }),
   "import-evaluation": () => importDialog("Import paired evaluation", "paired-evaluation", "Choose evaluation-report.json from the local evaluator (up to 20 MB). Import the matching training result first. Scores are recomputed from the report's string checks; only summaries and fingerprints are saved, not its prompts or responses."),
@@ -843,8 +975,8 @@ const actions = {
       ${field("Conditions & notes", "notes", "", { textarea: true, required: false, attrs: 'rows="2" maxlength="2000" placeholder="Split, seed, prompt, decoding settings, hardware..."', hint: "Needed for comparisons: identify the sample set, scoring protocol, prompt, seed and decoding settings." })}${formFooter("Save evaluation")}`, "evaluation");
   },
   "export-runs": () => download("coven-training-runs.csv", runsCsv(selectRuns(workspace.runs, ui)), "text/csv"),
-  "export-workspace": () => downloadJson("coven-workspace.json", workspace),
-  "restore-workspace": () => openModal("Restore a workspace backup", `<p class="warning">This replaces the current workspace. Export your current data first. Datasets and model files on disk are not affected.</p>${field("Workspace JSON backup", "file", "", { type: "file", attrs: 'accept=".json,application/json"' })}<label class="check-label"><input name="confirm" type="checkbox" required> I understand this replaces the browser's saved workspace.</label>${formFooter("Restore workspace")}`, "restore"),
+  "export-workspace": () => download("coven-workspace.json", exportWorkspaceBackup(workspace, now())),
+  "restore-workspace": () => openModal("Restore a workspace backup", `<p>Choose a versioned Mamase backup or a legacy workspace v1 JSON file. Preview its source and collection counts before confirming replacement. The workspace payload must fit the 4 MB storage budget.</p>${field("Workspace JSON backup", "file", "", { type: "file", attrs: 'accept=".json,application/json"' })}${formFooter("Preview backup")}`, "restore"),
   "reset-workspace": () => openModal("Reset local workspace", `<p class="warning">All recorded programs, dataset metadata, runs, artifacts, and evaluations in this browser will be removed. Export a backup first.</p>${field("Type RESET to confirm", "confirmation")}${formFooter("Reset workspace")}`, "reset"),
   "raw-backup": () => { const raw = localStorage.getItem(STORAGE_KEY); assert(raw !== null, "No stored data is available to download."); download("mamase-recovery.json", raw); },
   "example-dataset": () => download("coven-example.jsonl", [
@@ -874,7 +1006,7 @@ async function submitForm(form) {
   const input = Object.fromEntries(new FormData(form));
   const type = form.dataset.form;
   const context = { ...modalContext };
-  const expectedSource = savedSource;
+  const expectedSource = ["confirm-report", "confirm-restore"].includes(type) ? context.expectedSource : savedSource;
   if (type === "local-launch") {
     const run = structuredClone(byId(workspace.runs, context.runId));
     const dataset = structuredClone(byId(workspace.datasets, run.recipe.datasetId));
@@ -915,7 +1047,7 @@ async function submitForm(form) {
     const run = createRun({ id: newId("run"), name: input.name, recipe: numericRecipe({ ...ui.draft, ...input }), createdAt: now() }, next);
     next.runs.push(run);
     destination = `#/sessions/${run.id}`;
-    message = "Planned run saved. No training process was started.";
+    message = "Recipe saved. Review the next step; training has not started.";
   } else if (type === "progress") {
     assert(!byId(next.runs, context.runId).localJobId && !training.jobs.has(context.runId), "Managed local jobs record their own progress.");
     const index = next.runs.findIndex((run) => run.id === context.runId);
@@ -925,11 +1057,23 @@ async function submitForm(form) {
     assert(!byId(next.runs, context.runId).localJobId && !training.jobs.has(context.runId), "Managed local jobs record their own progress.");
     const { source } = await readFile(form, MAX_WORKSPACE_BYTES);
     const report = JSON.parse(source);
-    assert(report.schema === "mamase.run-report.v1" && report.runId === context.runId, "Expected a mamase.run-report.v1 report for this run.");
-    assert(Array.isArray(report.updates) && report.updates.length > 0 && report.updates.length <= 10000, "Report needs 1–10,000 progress updates.");
-    const index = next.runs.findIndex((run) => run.id === report.runId);
-    for (const update of report.updates) next.runs[index] = recordProgress(next.runs[index], update);
-    message = `${report.updates.length} progress observations imported.`;
+    const preview = previewProgressReport(byId(next.runs, context.runId), report);
+    assert(form.isConnected && dialog.open, "The form was closed before saving. No changes were made.");
+    assertWorkspaceSource(expectedSource);
+    progressReportPreview(preview, report, expectedSource);
+    return;
+  } else if (type === "confirm-report") {
+    assert(!training.jobs.has(context.runId), "Managed local jobs record their own progress.");
+    const preview = previewProgressReport(byId(workspace.runs, context.runId), context.report);
+    next = importProgressReport(workspace, context.report);
+    if (!preview.additions.length) {
+      assert(form.isConnected && dialog.open, "The form was closed before saving. No changes were made.");
+      assertWorkspaceSource(expectedSource);
+      closeModal();
+      notify(`Already recorded: ${num(preview.duplicates.length)} duplicate observations. No changes were saved.`);
+      return;
+    }
+    message = `${num(preview.additions.length)} new observations imported; ${num(preview.duplicates.length)} duplicates skipped.`;
   } else if (type === "artifact") {
     next.artifacts.push(validateArtifact({ ...input, id: newId("artifact"), createdAt: now() }, next));
     message = "Artifact reference registered. Local files were not changed.";
@@ -948,9 +1092,15 @@ async function submitForm(form) {
     next.name = input.workspaceName;
     message = "Workspace name saved.";
   } else if (type === "restore") {
+    const { file, source } = await readFile(form, MAX_BACKUP_BYTES);
+    const backup = parseWorkspaceBackup(source);
+    assert(form.isConnected && dialog.open, "The form was closed before saving. No changes were made.");
+    assertWorkspaceSource(expectedSource);
+    workspaceRestorePreview(backup, file.name, expectedSource);
+    return;
+  } else if (type === "confirm-restore") {
     assert(input.confirm === "on", "Confirm that you want to replace the workspace.");
-    const { source } = await readFile(form, MAX_WORKSPACE_BYTES);
-    next = validateWorkspace(JSON.parse(source));
+    next = context.backup.workspace;
     message = "Workspace restored.";
     destination = "#/home";
   } else if (type === "reset") {
@@ -963,7 +1113,7 @@ async function submitForm(form) {
   }
   assert(form.isConnected && (form.closest("dialog") === null || dialog.open), "The form was closed before saving. No changes were made.");
   persist(next, expectedSource);
-  if (type === "recipe" || type === "reset" || type === "restore") {
+  if (type === "recipe" || type === "reset" || type === "confirm-restore") {
     try { clearDraft(); } catch (error) {
       ui.draft = defaults();
       draftBlocked = true;
@@ -977,7 +1127,7 @@ async function submitForm(form) {
     if (ui.draft.method === "distillation" && dataset.kind === "teacher") ui.draft.teacher = dataset.teacher;
     saveDraft();
   }
-  if (type === "reset" || type === "restore") { ui.program = "all"; ui.status = "all"; ui.query = ""; training.forget(); pendingTraining.clear(); trainingSyncErrors.clear(); }
+  if (type === "reset" || type === "confirm-restore") { ui.program = "all"; ui.status = "all"; ui.query = ""; training.forget(); pendingTraining.clear(); trainingSyncErrors.clear(); }
   closeModal();
   if (destination && location.hash !== destination) location.hash = destination; else render();
   if (type === "dataset" && context.fromLab) document.querySelector("#field-datasetId")?.focus();
@@ -1052,7 +1202,10 @@ document.addEventListener("input", (event) => {
   if (element.name === "workspaceSearch") dialog.querySelector("#dialog-search-results").innerHTML = searchResults(element.value);
 });
 
-document.addEventListener("invalid", (event) => event.target.setAttribute("aria-invalid", "true"), true);
+document.addEventListener("invalid", (event) => {
+  event.target.setAttribute("aria-invalid", "true");
+  for (let details = event.target.closest("details"); details; details = details.parentElement.closest("details")) details.open = true;
+}, true);
 
 document.addEventListener("change", (event) => {
   if (event.target.name === "program-filter") ui.program = event.target.value;

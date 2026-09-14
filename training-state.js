@@ -1,5 +1,10 @@
 import { assert, validateArtifact, validateWorkspace } from "./workspace.js";
 
+export function managedRecipeIssue(recipe) {
+  if (recipe.workflow === "cli") return "This recipe uses terminal training. Duplicate it and choose Train on this Mac to use the managed trainer.";
+  return (recipe.adapter ?? "lora") === "lora" ? "" : "Managed MLX supports LoRA only. Use the identity-bound CLI for rsLoRA, DoRA or QLoRA.";
+}
+
 export function trainingIdentity(run, dataset) {
   return JSON.stringify({ id: run.id, name: run.name, createdAt: run.createdAt, recipe: run.recipe, dataset });
 }

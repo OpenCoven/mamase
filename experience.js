@@ -83,11 +83,14 @@ export function readRecipeDraft(storage, defaults) {
   const value = JSON.parse(source);
   assert(value?.version === 1 && value.draft && !Array.isArray(value.draft), "Unsupported recipe draft.");
   const keys = Object.keys(defaults);
-  const addedFields = new Set(["adapter", "familiarId", "instanceId"]);
+  const addedFields = new Set(["adapter", "familiarId", "instanceId", "workflow"]);
   assert(Object.keys(value.draft).every((key) => keys.includes(key)) && keys.every((key) =>
     (!Object.hasOwn(value.draft, key) && addedFields.has(key)) ||
     (typeof value.draft[key] === "string" && value.draft[key].length <= 2000)
   ), "Saved recipe draft has invalid fields.");
   assert(["lora", "distillation"].includes(value.draft.method), "Saved recipe draft has an invalid method.");
-  return Object.fromEntries(keys.map((key) => [key, Object.hasOwn(value.draft, key) ? value.draft[key] : defaults[key]]));
+  if (value.draft.workflow !== undefined) assert(["managed", "cli"].includes(value.draft.workflow), "Saved recipe draft has an invalid workflow.");
+  const draft = Object.fromEntries(keys.map((key) => [key, Object.hasOwn(value.draft, key) ? value.draft[key] : defaults[key]]));
+  if (keys.includes("workflow") && value.draft.workflow === undefined && draft.adapter !== "lora") draft.workflow = "cli";
+  return draft;
 }
