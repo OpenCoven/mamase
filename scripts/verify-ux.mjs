@@ -338,16 +338,23 @@ try {
     datasetSha256: hash("a"), holdoutSha256: hash("d"), optimizerSteps: 2,
     evaluation: { metric: "completion-token-weighted-negative-log-likelihood", samples: 10, baseLoss: 2, adapterLoss: 1.5, delta: -0.5 },
     trainableParameters: 100, totalParameters: 1000, promotion: "not-authorized",
+    familiarContext: {
+      schema: "mamase.familiar-context-summary.v1", sha256: hash("a"), scope: "selected-sources",
+      familiarId: "cody", instanceId: "test-coven", lane: "coding", role: "Synthetic code familiar",
+      promptSha256: hash("b"), sourceRoles: ["identity", "soul", "role"],
+    },
   };
   await pairedPage.getByRole("button", { name: "Import training result", exact: true }).click();
   await importJson(trainingResult);
   await pairedPage.waitForURL("**/#/checkpoints");
   await pairedPage.getByText("/synthetic/bundle/adapter", { exact: true }).waitFor();
   await pairedPage.getByText(/Holdout loss: 2.0000 base/).waitFor();
+  await pairedPage.getByText(/Selected sources \(3\)/).waitFor();
   const pairedReport = {
     schema: "mamase.evaluation-report.v1", runId: "run-1", createdAt: recordedAt,
     resultSha256: createHash("sha256").update(JSON.stringify(trainingResult)).digest("hex"),
     bundleSha256: hash("c"), datasetSha256: hash("a"), familiar: trainingResult.familiar,
+    familiarContext: trainingResult.familiarContext,
     adapterPath: trainingResult.adapter.path, suite: { name: "Synthetic browser regressions", version: "1", sha256: hash("f") },
     decoding: { doSample: false, numBeams: 1, maxNewTokens: 16, seed: 42 }, device: "cpu", promotion: "not-authorized",
     cases: ["task", "identity", "consent", "tool-boundary"].map((category, index) => ({
@@ -363,6 +370,10 @@ try {
   await importJson({ ...pairedReport, summary: { ...pairedReport.summary, adapterPassed: 4 } });
   await pairedPage.locator("#dialog .form-error").waitFor({ state: "visible" });
   assert.deepEqual(await stored(pairedPage), beforeInvalid);
+  await importJson({ ...pairedReport, familiarContext: { ...pairedReport.familiarContext, sha256: hash("f") } });
+  await pairedPage.locator("#dialog .form-error").waitFor({ state: "visible" });
+  assert.match(await pairedPage.locator("#dialog .form-error").textContent(), /familiar context/i);
+  assert.deepEqual(await stored(pairedPage), beforeInvalid);
   await importJson(pairedReport);
   await pairedPage.locator("#dialog").waitFor({ state: "hidden" });
   await pairedPage.getByText("2 → 2 / 4", { exact: true }).waitFor();
@@ -370,12 +381,18 @@ try {
   await pairedPage.locator('[data-action="evaluation-details"]').click();
   await pairedPage.locator("#dialog").getByText("tool-boundary", { exact: true }).waitFor();
   await pairedPage.locator("#dialog").getByText("Suite SHA-256", { exact: true }).waitFor();
+  await pairedPage.locator("#dialog").getByText(/Familiar context: Selected sources/).waitFor();
+  for (const width of [320, 760, 1440]) {
+    await pairedPage.setViewportSize({ width, height: 720 });
+    await bounds(pairedPage);
+  }
   await pairedPage.keyboard.press("Escape");
   await go(pairedPage, "settings");
   const pairedBackup = await downloaded(pairedPage, pairedPage.getByRole("button", { name: "Export workspace", exact: true }));
   assert.ok(!pairedBackup.includes("private synthetic") && !pairedBackup.includes('"cases"') && !pairedBackup.includes('"response"'));
   assert.equal(JSON.parse(pairedBackup).schema, "mamase.workspace-backup.v1");
   assert.equal(JSON.parse(pairedBackup).workspace.evaluations[0].comparison.regressions, 1);
+  assert.deepEqual(JSON.parse(pairedBackup).workspace.evaluations[0].comparison.familiarContext, trainingResult.familiarContext);
   const backupWorkspace = await stored(pairedPage);
   await pairedPage.getByRole("group", { name: "Appearance mode", exact: true }).getByRole("button", { name: "Light", exact: true }).click();
   const chooseBackup = async (source) => {

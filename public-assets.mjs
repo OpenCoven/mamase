@@ -10,6 +10,7 @@ export const publicAssets = new Map([
   ["/experience.js", ["experience.js", "text/javascript"]],
   ["/validation.js", ["validation.js", "text/javascript"]],
   ["/results.js", ["results.js", "text/javascript"]],
+  ["/context-summary.js", ["context-summary.js", "text/javascript"]],
   ["/backups.js", ["backups.js", "text/javascript"]],
   ["/training-state.js", ["training-state.js", "text/javascript"]],
   ["/training-guide.js", ["training-guide.js", "text/javascript"]],

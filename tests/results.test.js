@@ -5,11 +5,18 @@ import {
   validateWorkspace, saveWorkspace, loadWorkspace,
 } from "../workspace.js";
 import { exportWorkspaceBackup, parseWorkspaceBackup } from "../backups.js";
+import { familiarContextLabel } from "../context-summary.js";
+import { compareEvaluations } from "../experience.js";
 
 const timestamp = "2026-09-13T18:00:00.000Z";
 const hash = (letter) => letter.repeat(64);
 const resultMetadata = { id: "artifact-1", sha256: hash("b"), createdAt: timestamp };
 const evalMetadata = { id: "eval-1", sha256: hash("e"), createdAt: timestamp };
+const familiarContext = {
+  schema: "mamase.familiar-context-summary.v1", sha256: hash("a"), scope: "selected-sources",
+  familiarId: "cody", instanceId: "test-coven", lane: "coding", role: "Code familiar.",
+  promptSha256: hash("b"), sourceRoles: ["identity", "soul", "role"],
+};
 
 function fixture() {
   const workspace = createWorkspace();
@@ -67,6 +74,63 @@ test("training result import binds actual adapter output, identity, and holdout 
   assert.equal(imported.artifacts[0].lineage.adapterLoss, 1.5);
   assert.equal(imported.artifacts[0].lineage.promotion, "not-authorized");
   assert.throws(() => importTrainingResult(imported, result, { ...resultMetadata, id: "another" }), /already imported/);
+});
+
+test("selected familiar context persists only as a bounded summary and cannot cross evidence bindings", () => {
+  const { workspace, result, report } = fixture();
+  result.familiarContext = structuredClone(familiarContext);
+  report.familiarContext = structuredClone(familiarContext);
+  const artifacts = importTrainingResult(workspace, result, resultMetadata);
+  assert.deepEqual(artifacts.artifacts[0].lineage.familiarContext, familiarContext);
+  const imported = importEvaluationReport(artifacts, report, evalMetadata);
+  assert.deepEqual(imported.evaluations[0].comparison.familiarContext, familiarContext);
+  const restored = parseWorkspaceBackup(exportWorkspaceBackup(imported, timestamp)).workspace;
+  assert.deepEqual(restored, imported);
+  assert.match(familiarContextLabel(restored.artifacts[0].lineage), /Selected sources/);
+  for (const change of [
+    (value) => { delete value.familiarContext; },
+    (value) => { value.familiarContext.sha256 = hash("f"); },
+    (value) => { value.familiarContext.promptSha256 = hash("f"); },
+    (value) => { value.familiarContext.role = "Another role"; },
+    (value) => { value.familiarContext.sourceRoles = ["identity", "soul"]; },
+    (value) => { value.familiarContext.sources = [{ path: "/private/ROLE.md", content: "Private source text" }]; },
+  ]) {
+    const bad = structuredClone(report);
+    change(bad);
+    assert.throws(() => importEvaluationReport(artifacts, bad, evalMetadata), /context|Context/);
+    assert.equal(artifacts.evaluations.length, 0);
+  }
+  const forged = structuredClone(imported);
+  forged.evaluations[0].comparison.familiarContext.sha256 = hash("f");
+  assert.throws(() => validateWorkspace(forged), /context|Context/);
+  const comparison = compareEvaluations(imported.evaluations[0], {
+    ...imported.evaluations[0], id: "another-evaluation",
+    comparison: { ...imported.evaluations[0].comparison, familiarContext: { ...familiarContext, sha256: hash("f") } },
+  });
+  assert.equal(comparison.compatible, false);
+  assert.ok(comparison.reasons.some((reason) => /context/i.test(reason)));
+  const legacyComparison = structuredClone(imported.evaluations[0]);
+  legacyComparison.id = "legacy-evaluation";
+  delete legacyComparison.comparison.familiarContext;
+  assert.equal(compareEvaluations(imported.evaluations[0], legacyComparison).compatible, false);
+});
+
+test("legacy and unbound artifacts never acquire a stronger familiar context classification", () => {
+  const { workspace, result, report } = fixture();
+  const imported = importTrainingResult(workspace, result, resultMetadata);
+  assert.equal(familiarContextLabel(imported.artifacts[0].lineage), "Legacy identity-files-only");
+  assert.equal(familiarContextLabel(undefined), "Unbound context");
+  report.familiarContext = familiarContext;
+  assert.throws(() => importEvaluationReport(imported, report, evalMetadata), /context|Context/);
+  for (const value of [
+    { ...familiarContext, familiarId: "another" },
+    { ...familiarContext, scope: "full-runtime-parity" },
+    { ...familiarContext, sourceRoles: ["skill", "identity", "soul"] },
+    { ...familiarContext, path: "/private/identity" },
+  ]) {
+    assert.throws(() => importTrainingResult(workspace, { ...result, familiarContext: value }, resultMetadata), /context|Context/);
+  }
+  assert.equal(JSON.stringify(imported).includes("familiarContext"), false);
 });
 
 test("training result mismatches and non-completed runs are rejected atomically", () => {
