@@ -1078,6 +1078,41 @@ are ignored by Git. Bundles contain identity and training data: keep them privat
 and do not commit or publish them. Fonts and artwork are local; browser
 documentation links open only when clicked.
 
+### Headless workspace operations for agents
+
+`npm run ops` exposes the same domain validators the browser uses through a
+versioned JSON command interface, so an agent can plan experiments and import
+evidence without editing `localStorage` or reimplementing rules. It operates on
+an **explicit private workspace file** (`mamase.workspace-file.v1`, mode 0600);
+browser storage stays the default source of truth and is never read or synced.
+The handoff in either direction is the existing backup envelope.
+
+```bash
+npm run ops -- catalog                                    # operations, contract versions, exit codes
+npm run ops -- init --workspace .lab/agent/workspace.json
+npm run ops -- inspect --workspace .lab/agent/workspace.json          # includes revision.after
+npm run ops -- add-dataset --workspace ... --expected-revision <sha256> \
+  --file examples.jsonl --name "Curated set" --kind supervised --holdout 20 --provenance "..." --id dataset-1
+npm run ops -- create-recipe --workspace ... --expected-revision <sha256> --input plan.json   # { id?, name, recipe }
+npm run ops -- export-recipe --workspace ... --run run-1 --out recipe.json
+npm run ops -- import-progress|import-result|import-evaluation --workspace ... --expected-revision <sha256> --file report.json
+npm run ops -- export-backup --workspace ... --out backup.json        # import in Settings
+npm run ops -- import-backup --workspace ... --expected-revision <sha256> --file backup.json
+```
+
+Every command prints one `mamase.operation-receipt.v1` (or the requested
+contract) and exits `0` for **changed**/**unchanged**, `2` for **blocked**, `1`
+for **failed**. Mutating operations require `--expected-revision`, the SHA-256 of
+the file reported by `inspect`; a stale revision, a concurrent `.lock`, or any
+domain conflict exits without writing. Writes are atomic renames of a bounded
+(4 MB) serialization. Dataset bytes are read only from the `--file` you name and
+only the fingerprint, counts and declared metadata are recorded. Replays with the
+same bytes or record ID return `unchanged`; the same ID with different content, or
+the same bytes under a different explicit `--id`, are `blocked` conflicts.
+Progress imports reuse the browser's preview: duplicates are counted, conflicts
+block, and existing evidence is never rewritten. Errors carry a stable `code` and a
+content-free message. Nothing here starts training or grants authorization.
+
 ## Development checks
 
 Application work is tracked in the [roadmap](https://github.com/OpenCoven/mamase/issues/1)
