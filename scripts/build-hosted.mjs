@@ -1,24 +1,30 @@
 import assert from "node:assert/strict";
-import { copyFile, cp, lstat, mkdir, readFile, rm, writeFile } from "node:fs/promises";
+import { cp, lstat, mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { fileURLToPath } from "node:url";
 import { join } from "node:path";
 import { publicAssets } from "../public-assets.mjs";
+import { execFileSync } from "node:child_process";
 
 const project = fileURLToPath(new URL("../", import.meta.url));
 const output = join(project, "dist");
-await rm(output, { recursive: true, force: true });
-await mkdir(output);
+const assets = new Map();
 for (const name of new Set([...publicAssets.values()].map(([name]) => name))) {
   const source = join(project, name);
   const info = await lstat(source);
   assert.ok(info.isFile() && !info.isSymbolicLink(), `Public asset must be a regular file: ${name}`);
+  let content = await readFile(source);
+  if (name.endsWith(".js")) execFileSync(process.execPath, ["--check", "--input-type=module"], { input: content, stdio: "pipe" });
   if (name === "index.html") {
-    const html = await readFile(source, "utf8");
+    const html = content.toString("utf8");
     const marker = 'name="mamase-runtime" content="local"';
     assert.ok(html.includes(marker), "Missing runtime marker in index.html");
-    await writeFile(join(output, name), html.replace(marker, 'name="mamase-runtime" content="hosted"'));
-  } else await copyFile(source, join(output, name));
+    content = Buffer.from(html.replace(marker, 'name="mamase-runtime" content="hosted"'));
+  }
+  assets.set(name, content);
 }
+await rm(output, { recursive: true, force: true });
+await mkdir(output);
+for (const [name, content] of assets) await writeFile(join(output, name), content);
 await writeFile(join(output, "training-capabilities.json"), JSON.stringify({
   enabled: false, available: false, hosted: true, backend: null,
   message: "This hosted workspace cannot run or monitor local training. Run Mamase on your Mac and use workspace export/import to move your saved recipes.",

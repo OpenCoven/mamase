@@ -1,10 +1,16 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { readFile, readdir } from "node:fs/promises";
+import { copyFile, mkdir, mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
+import { join } from "node:path";
+import { tmpdir } from "node:os";
+import { createServer } from "node:http";
+import { once } from "node:events";
+import { chromium } from "playwright";
 import { publicAssets } from "../public-assets.mjs";
 import { TrainingClient } from "../training-client.js";
 import { runGuidance } from "../training-guide.js";
+import { createWorkspace, createRun, recordProgress } from "../workspace.js";
 
 test("hosted builds contain only public assets and no serverless function", async () => {
   execFileSync(process.execPath, ["scripts/build-hosted.mjs"]);
@@ -42,5 +48,89 @@ test("hosted recipes explain the local handoff instead of offering server instal
   const guide = runGuidance({ status: "planned", recipe: { workflow: "managed" } }, { hosted: true, available: false });
   assert.equal(guide.phase, "hosted");
   assert.equal(guide.action, "backup");
-  assert.match(guide.description, /export|import/i);
+  assert.match(guide.description, /export/i);
+  assert.match(guide.description, /Restore backup/);
+  assert.match(guide.description, /replaces/);
+  const savedJob = runGuidance({ status: "running", localJobId: "job", recipe: {} }, { hosted: true });
+  assert.equal(savedJob.phase, "hosted");
+  assert.match(savedJob.title, /not a live connection/);
+  assert.match(savedJob.description, /cannot monitor/);
+});
+
+test("invalid browser JavaScript fails before replacing a previous hosted build", async () => {
+  const root = await mkdtemp(join(tmpdir(), "mamase-build-"));
+  try {
+    await mkdir(join(root, "scripts"));
+    await mkdir(join(root, "dist"));
+    for (const name of ["scripts/build-hosted.mjs", "public-assets.mjs", ...new Set([...publicAssets.values()].map(([name]) => name))]) {
+      await copyFile(name, join(root, name));
+    }
+    await writeFile(join(root, "dist/previous.txt"), "Keep the last build.");
+    await writeFile(join(root, "app.js"), `${"<".repeat(7)} conflict\n`);
+    assert.throws(() => execFileSync(process.execPath, [join(root, "scripts/build-hosted.mjs")], { stdio: "pipe" }), /SyntaxError/);
+    assert.equal(await readFile(join(root, "dist/previous.txt"), "utf8"), "Keep the last build.");
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("the built hosted interface boots, explains the handoff and never calls job APIs", async () => {
+  const files = new Map();
+  for (const [path, [name, mime]] of publicAssets) files.set(path, [await readFile(`dist/${name}`), mime]);
+  files.set("/api/training/capabilities", [await readFile("dist/training-capabilities.json"), "application/json"]);
+  const config = JSON.parse(await readFile("vercel.json", "utf8"));
+  const headers = Object.fromEntries(config.headers[0].headers.map(({ key, value }) => [key, value]));
+  const server = createServer((req, res) => {
+    const file = files.get(req.url);
+    res.writeHead(file ? 200 : 404, { ...headers, "Content-Type": file?.[1] || "text/plain" });
+    res.end(file?.[0] || "Not found");
+  });
+  server.listen(0, "127.0.0.1");
+  await once(server, "listening");
+  let browser;
+  try {
+    browser = await chromium.launch();
+    const base = `http://127.0.0.1:${server.address().port}`;
+    const workspace = createWorkspace();
+    const createdAt = "2026-09-14T00:00:00.000Z";
+    workspace.datasets.push({ id: "data", name: "Examples", filename: "data.jsonl", bytes: 100, records: 6, format: "prompt-response", kind: "supervised", teacher: "", provenance: "Original", holdout: 20, sha256: "a".repeat(64), createdAt });
+    workspace.runs.push(createRun({ id: "recipe", name: "Coven adapter", createdAt, recipe: { workflow: "managed", method: "lora", programId: "coven", datasetId: "data", student: "./models/local", teacher: "", rank: 4, alpha: 8, learningRate: .001, epochs: 1, batchSize: 1, accumulation: 1, maxSequence: 128, objective: "Learn examples.", outputPath: "./outputs/local" } }, workspace));
+    workspace.runs.push(recordProgress({ ...workspace.runs[0], id: "saved-job", localJobId: "job" }, { status: "running", step: 0, totalSteps: workspace.runs[0].totalSteps, loss: null, evalLoss: null, note: "Recorded locally.", recordedAt: createdAt }));
+    const page = await browser.newPage();
+    const errors = [], apiCalls = [];
+    page.on("pageerror", (error) => errors.push(error.message));
+    page.on("console", (message) => { if (message.type() === "error") errors.push(message.text()); });
+    page.on("request", (request) => { if (request.url().includes("/api/")) apiCalls.push(new URL(request.url()).pathname); });
+    await page.addInitScript((value) => localStorage.setItem("mamase.coven-lab.v1", JSON.stringify(value)), workspace);
+    for (const theme of ["dark", "light"]) {
+      await page.emulateMedia({ colorScheme: theme });
+      for (const width of [1440, 768, 390, 320]) {
+        await page.setViewportSize({ width, height: 900 });
+        for (const path of ["sessions/recipe", "sessions/saved-job", "playground", "settings"]) {
+          await page.goto(`${base}/#/${path}`);
+          await page.locator("#main h1").waitFor();
+          if (path.startsWith("sessions/")) {
+            await page.locator('#local-training-panel[data-phase="hosted"]').waitFor();
+            assert.equal(await page.getByRole("button", { name: "Review & start training", exact: true }).count(), 0);
+            assert.equal(await page.getByRole("button", { name: "Export workspace", exact: true }).count(), 1);
+            assert.equal(await page.locator("#local-training-panel .run-warning").count(), 0);
+          } else await page.locator(path === "playground" ? "#recipe-form" : "#workspace-size").waitFor();
+          assert.equal(await page.evaluate(() => document.documentElement.scrollWidth), width, `${theme} ${width} ${path}`);
+          if (process.env.MAMASE_SCREENSHOTS && [1440, 390].includes(width)) {
+            await mkdir(process.env.MAMASE_SCREENSHOTS, { recursive: true });
+            await page.screenshot({ path: join(process.env.MAMASE_SCREENSHOTS, `hosted-${theme}-${width}-${path.replace("/", "-")}.png`), fullPage: true, animations: "disabled" });
+          }
+        }
+      }
+    }
+    assert.ok(apiCalls.length);
+    assert.ok(apiCalls.every((path) => path === "/api/training/capabilities"), JSON.stringify(apiCalls));
+    assert.deepEqual(errors, []);
+    for (const path of ["/server.mjs", "/.mamase/training/owner.json", "/.env", "/training/mlx_runner.py"]) {
+      assert.equal((await fetch(`${base}${path}`)).status, 404);
+    }
+  } finally {
+    await browser?.close();
+    await new Promise((resolve) => server.close(resolve));
+  }
 });

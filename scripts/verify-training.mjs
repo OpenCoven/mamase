@@ -151,7 +151,18 @@ try {
   assert.deepEqual(errors, []);
   if (process.env.MAMASE_SCREENSHOTS) {
     await mkdir(process.env.MAMASE_SCREENSHOTS, { recursive: true });
-    await page.screenshot({ path: join(process.env.MAMASE_SCREENSHOTS, protocol ? "training-protocol.png" : "training-real-mlx.png"), fullPage: true });
+    await page.screenshot({ path: join(process.env.MAMASE_SCREENSHOTS, protocol ? "training-protocol.png" : "training-real-mlx.png"), fullPage: true, animations: "disabled" });
+    const viewport = page.viewportSize();
+    for (const theme of ["dark", "light"]) {
+      await page.emulateMedia({ colorScheme: theme });
+      for (const width of [320, 390, 768]) {
+        await page.setViewportSize({ width, height: 900 });
+        assert.equal(await page.evaluate(() => document.documentElement.scrollWidth), width);
+        await page.screenshot({ path: join(process.env.MAMASE_SCREENSHOTS, `training-${protocol ? "protocol" : "real-mlx"}-${theme}-${width}.png`), fullPage: true, animations: "disabled" });
+      }
+    }
+    await page.setViewportSize(viewport);
+    await page.emulateMedia({ colorScheme: "dark" });
   }
   await page.getByRole("link", { name: "Review adapter", exact: true }).click();
   await page.getByRole("heading", { name: "Saved does not mean evaluated.", exact: true }).waitFor();

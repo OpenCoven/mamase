@@ -361,10 +361,15 @@ progress::-moz-progress-bar { background: var(--indigo); border-radius: 999px; }
 .run-status-row { display: flex; align-items: center; flex-wrap: wrap; gap: 15px; font-size: 11px; }
 .run-status-row code { font-size: 10px; color: var(--muted); }
 .detail-grid { display: grid; grid-template-columns: 1.6fr 1fr; gap: 22px; }
-.loss-chart { display: block; width: 100%; margin-top: 30px; }
-.loss-chart text { font: 10px sans-serif; fill: var(--muted); }
+.loss-plot { position: relative; margin-top: 30px; padding-left: 48px; }
+.loss-chart { display: block; width: 100%; }
+.loss-y-axis { position: absolute; top: 7.9%; bottom: 10.5%; left: 0; width: 42px; font-size: 11px; color: var(--muted); text-align: right; }
+.loss-y-axis span { position: absolute; top: 0; right: 0; transform: translateY(-50%); }
+.loss-y-axis span:nth-child(2) { top: 50%; }
+.loss-y-axis span:last-child { top: 100%; }
+.loss-x-axis { display: flex; justify-content: space-between; gap: 12px; margin: 6px 0 0 48px; font-size: 11px; color: var(--muted); }
 .loss-chart line { stroke: var(--line); }
-.loss-chart polyline { stroke: var(--indigo); }
+.loss-chart polyline { stroke: var(--indigo); vector-effect: non-scaling-stroke; }
 .loss-chart circle { fill: var(--indigo); }
 .loss-chart .validation-loss { stroke: #a14a78; }
 .loss-chart polyline.validation-loss { stroke-dasharray: 6 5; }
