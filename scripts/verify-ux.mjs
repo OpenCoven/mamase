@@ -9,6 +9,7 @@ import { createAuthApi } from "../auth-api.mjs";
 import { createWorkspace, createRun, recordProgress, STORAGE_KEY } from "../workspace.js";
 import { DRAFT_KEY } from "../experience.js";
 import { MAX_BACKUP_BYTES } from "../backups.js";
+import { contrastRatio, writeFailureEvidence } from "./ux-evidence.mjs";
 
 const server = createAppServer({ auth: createAuthApi({ env: {} }) });
 server.listen(0, "127.0.0.1");
@@ -21,6 +22,17 @@ const external = [];
 let browser;
 let currentPage;
 let layouts = 0;
+let contrastChecks = 0;
+const newContext = async (options = {}) => {
+  const context = await browser.newContext({ ...options, serviceWorkers: "block" });
+  await context.route("**/*", (route) => {
+    const url = new URL(route.request().url());
+    if (url.origin === base || url.protocol === "blob:") return route.continue();
+    external.push("Blocked non-loopback request");
+    return route.abort("blockedbyclient");
+  });
+  return context;
+};
 const capture = async (page, name) => {
   if (screenshots) await page.screenshot({ path: join(screenshots, `${name}.png`), fullPage: true });
 };
@@ -64,6 +76,68 @@ const bounds = async (page, home = false) => {
   layouts++;
 };
 
+const contrast = async (page) => {
+  const pairs = await page.evaluate(() => {
+    const root = getComputedStyle(document.documentElement);
+    const probe = document.createElement("span");
+    document.body.append(probe);
+    const color = (token) => {
+      probe.style.color = root.getPropertyValue(token);
+      return getComputedStyle(probe).color;
+    };
+    const pairs = [
+      ["body", "--ink", "--page"], ["help", "--muted", "--wash"],
+      ["secondary", "--secondary", "--surface"], ["placeholder", "--placeholder", "--surface"],
+      ["regression", "--danger-ink", "--surface"], ["warning", "--warning-ink", "--surface"],
+      ["focus", "--focus", "--page", 3], ["focus surface", "--focus", "--surface", 3],
+    ].map(([label, fg, bg, minimum = 4.5]) => ({ label, fg: color(fg), bg: color(bg), minimum }));
+    probe.remove();
+    for (const element of document.querySelectorAll(".badge, .button.primary")) {
+      if (!element.checkVisibility()) continue;
+      const style = getComputedStyle(element);
+      pairs.push({ label: element.className, fg: style.color, bg: style.backgroundColor, minimum: 4.5 });
+    }
+    return pairs;
+  });
+  for (const { label, fg, bg, minimum } of pairs) {
+    assert.ok(contrastRatio(fg, bg) >= minimum, `${label}: ${fg} on ${bg} must meet ${minimum}:1`);
+    contrastChecks++;
+  }
+};
+
+const keyboardActivate = async (page, target) => {
+  await target.waitFor({ state: "visible" });
+  for (let index = 0; index < 120; index++) {
+    if (await target.evaluate((element) => element === document.activeElement)) {
+      // Wide data tables are keyboard-scrollable regions; Tab alone may expose only part of a cell.
+      for (let scroll = 0; scroll < 30; scroll++) {
+        const direction = await target.evaluate((element) => {
+          const region = element.closest(".table-scroll");
+          if (!region) return null;
+          const box = element.getBoundingClientRect();
+          const clip = region.getBoundingClientRect();
+          return box.right > clip.right - 6 ? "ArrowRight" : box.left < clip.left + 6 ? "ArrowLeft" : null;
+        });
+        if (!direction) break;
+        await page.keyboard.press(direction, { delay: 100 });
+      }
+      await page.waitForFunction(() => {
+        const box = document.activeElement.getBoundingClientRect();
+        return box.x >= 0 && box.y >= 0 && box.right <= innerWidth + 1 && box.bottom <= innerHeight + 1;
+      }, null, { timeout: 2000 });
+      const box = await target.boundingBox();
+      const viewport = page.viewportSize();
+      assert.ok(box && box.x >= 0 && box.y >= 0 && box.x + box.width <= viewport.width + 1 &&
+        box.y + box.height <= viewport.height + 1, `Keyboard action must scroll fully into the viewport: ${JSON.stringify({ box, viewport })}`);
+      assert.equal(await target.evaluate((element) => getComputedStyle(element).outlineStyle), "solid");
+      await page.keyboard.press("Enter");
+      return;
+    }
+    await page.keyboard.press("Tab");
+  }
+  assert.fail("Core action was unreachable by Tab");
+};
+
 function fixture() {
   const workspace = createWorkspace();
   const createdAt = new Date().toISOString();
@@ -92,10 +166,11 @@ function fixture() {
 
 try {
   browser = await chromium.launch({ headless: true });
-  const fresh = await browser.newContext({ viewport: { width: 390, height: 844 }, colorScheme: "dark", hasTouch: true });
+  const fresh = await newContext({ viewport: { width: 390, height: 844 }, colorScheme: "dark", hasTouch: true });
   const page = await fresh.newPage();
   watch(page);
   await go(page, "settings");
+  if (process.argv.includes("--failure-fixture")) assert.fail("Deliberate synthetic failure for evidence verification");
   assert.equal(await page.locator(".sidebar [data-theme-value]").count(), 0);
   assert.equal(await page.locator("html").getAttribute("data-theme-preference"), "system");
   const appearance = page.getByRole("group", { name: "Appearance mode", exact: true });
@@ -210,7 +285,7 @@ try {
   pairedData.runs = [pairedData.runs[1]];
   pairedData.artifacts = [];
   pairedData.evaluations = [];
-  const pairedContext = await browser.newContext({ viewport: { width: 1440, height: 900 } });
+  const pairedContext = await newContext({ viewport: { width: 1440, height: 900 } });
   await pairedContext.addInitScript((data) => {
     if (!localStorage.getItem("mamase.coven-lab.v1")) localStorage.setItem("mamase.coven-lab.v1", JSON.stringify(data));
   }, pairedData);
@@ -363,10 +438,80 @@ try {
   await importJson({ ...pairedReport, summary: { ...pairedReport.summary, adapterPassed: 4 } });
   await pairedPage.locator("#dialog .form-error").waitFor({ state: "visible" });
   assert.deepEqual(await stored(pairedPage), beforeInvalid);
+  await pairedPage.keyboard.press("Escape");
+  for (const method of ["text", "arrayBuffer"]) {
+    await pairedPage.getByRole("button", { name: "Import paired report", exact: true }).click();
+    await pairedPage.evaluate((method) => {
+      window.originalPairedRead = File.prototype[method];
+      File.prototype[method] = function() {
+        return new Promise((resolve, reject) => { window.releasePairedRead = () => window.originalPairedRead.call(this).then(resolve, reject); });
+      };
+    }, method);
+    await importJson(pairedReport);
+    await pairedPage.waitForFunction(() => typeof window.releasePairedRead === "function");
+    assert.equal(await reportModal.locator("form").getAttribute("aria-busy"), "true");
+    await pairedPage.keyboard.press("Escape");
+    assert.equal(await pairedPage.getByRole("button", { name: "Import paired report", exact: true }).evaluate((element) => element === document.activeElement), true);
+    // Reopening must not allow the previous detached form to save or close the new dialog.
+    await pairedPage.getByRole("button", { name: "Import paired report", exact: true }).click();
+    await pairedPage.evaluate((method) => {
+      File.prototype[method] = window.originalPairedRead;
+      window.releasePairedRead();
+      delete window.releasePairedRead;
+    }, method);
+    await pairedPage.locator("#toast").getByText(/form was closed.*No changes were made/).waitFor();
+    assert.equal(await pairedPage.locator("#toast").getAttribute("role"), "alert");
+    assert.equal(await pairedPage.locator("#toast").getAttribute("aria-live"), "assertive");
+    assert.deepEqual(await stored(pairedPage), beforeInvalid, `Interrupted paired ${method} read must preserve exact workspace`);
+    assert.equal(await reportModal.isVisible(), true);
+    assert.equal(await reportModal.locator('[type="submit"]').isEnabled(), true);
+    await pairedPage.keyboard.press("Escape");
+  }
+  await pairedPage.getByRole("button", { name: "Import paired report", exact: true }).click();
   await importJson(pairedReport);
   await pairedPage.locator("#dialog").waitFor({ state: "hidden" });
   await pairedPage.getByText("2 → 2 / 4", { exact: true }).waitFor();
   await pairedPage.getByText("1 regressed", { exact: true }).waitFor();
+  const beforeKeyboardJourneys = await stored(pairedPage);
+  for (const [preference, system] of [["light", "dark"], ["dark", "light"], ["system", "light"], ["system", "dark"]]) {
+    await go(pairedPage, "settings");
+    await pairedPage.emulateMedia({ colorScheme: system });
+    await pairedPage.getByRole("group", { name: "Appearance mode", exact: true })
+      .getByRole("button", { name: preference[0].toUpperCase() + preference.slice(1), exact: true }).click();
+    await pairedPage.waitForFunction((theme) => document.documentElement.dataset.theme === theme, preference === "system" ? system : preference);
+    await go(pairedPage, "evaluations");
+    await pairedPage.getByText("1 regressed", { exact: true }).waitFor();
+    assert.match(await pairedPage.locator("main").ariaSnapshot(), /1 regressed/);
+    await contrast(pairedPage);
+    for (const [width, height] of [[320, 568], [760, 800], [1440, 900], [844, 390]]) {
+      await pairedPage.setViewportSize({ width, height });
+      await bounds(pairedPage);
+      await keyboardActivate(pairedPage, pairedPage.getByRole("button", { name: "Import paired report", exact: true }));
+      await reportModal.getByLabel("JSON file", { exact: true }).waitFor();
+      await keyboardActivate(pairedPage, reportModal.getByRole("button", { name: "Close dialog", exact: true }));
+      await keyboardActivate(pairedPage, pairedPage.locator('[data-action="evaluation-details"]'));
+      await reportModal.getByText("tool-boundary", { exact: true }).waitFor();
+      await pairedPage.keyboard.press("Escape");
+      await go(pairedPage, "settings");
+      const download = pairedPage.waitForEvent("download");
+      await keyboardActivate(pairedPage, pairedPage.getByRole("button", { name: "Export workspace", exact: true }));
+      await download;
+      await go(pairedPage, "sessions/run-1");
+      await keyboardActivate(pairedPage, pairedPage.getByRole("button", { name: "Import report", exact: true }));
+      await pairedPage.keyboard.press("Escape");
+      await go(pairedPage, "checkpoints");
+      await keyboardActivate(pairedPage, pairedPage.getByRole("button", { name: "Import training result", exact: true }));
+      await pairedPage.keyboard.press("Escape");
+      await go(pairedPage, "playground");
+      await keyboardActivate(pairedPage, pairedPage.getByRole("button", { name: "Import dataset", exact: true }));
+      await pairedPage.keyboard.press("Escape");
+      await keyboardActivate(pairedPage, pairedPage.getByRole("button", { name: "Save recipe & review", exact: true }));
+      assert.match(pairedPage.url(), /#\/playground$/, "Invalid recipe cannot save; its action remains reachable");
+      await go(pairedPage, "evaluations");
+    }
+  }
+  assert.deepEqual(await stored(pairedPage), beforeKeyboardJourneys, "Keyboard review and cancelled core actions must not mutate evidence");
+  await pairedPage.setViewportSize({ width: 1440, height: 900 });
   await pairedPage.locator('[data-action="evaluation-details"]').click();
   await pairedPage.locator("#dialog").getByText("tool-boundary", { exact: true }).waitFor();
   await pairedPage.locator("#dialog").getByText("Suite SHA-256", { exact: true }).waitFor();
@@ -484,7 +629,7 @@ try {
   assert.equal(await pairedPage.locator("html").getAttribute("data-theme-preference"), "light");
   await pairedContext.close();
 
-  const populated = await browser.newContext({ viewport: { width: 1440, height: 900 }, colorScheme: "dark" });
+  const populated = await newContext({ viewport: { width: 1440, height: 900 }, colorScheme: "dark" });
   await populated.addInitScript((workspace) => {
     if (!localStorage.getItem("mamase.coven-lab.v1")) localStorage.setItem("mamase.coven-lab.v1", JSON.stringify(workspace));
   }, fixture());
@@ -603,11 +748,18 @@ try {
 
   for (const theme of ["dark", "light"]) {
     await lab.emulateMedia({ colorScheme: theme });
-    for (const [width, height] of [[1440, 900], [1024, 768], [390, 844], [320, 640], [320, 568], [844, 390]]) {
+    for (const [width, height] of [[1440, 900], [1024, 768], [760, 800], [390, 844], [320, 640], [320, 568], [844, 390]]) {
       await lab.setViewportSize({ width, height });
       for (const path of ["home", "projects", "datasets/teacher-data", "sessions", "sessions/run-0", "checkpoints/artifact-0", "playground", "evaluations", "resources", "settings"]) {
         await go(lab, path);
         await bounds(lab, path === "home");
+        if (path === "sessions") {
+          const badges = lab.locator(".badge");
+          assert.ok(await badges.count() > 0);
+          for (const text of await badges.allTextContents()) assert.match(text, /planned|running|completed|paused|failed/i);
+          assert.match(await lab.locator("main").ariaSnapshot(), /running|planned/);
+          await contrast(lab);
+        }
         if (path === "home" && height > 620) assert.equal(await lab.evaluate(() => document.documentElement.scrollHeight), height);
       }
       if (width === 320 && height === 568) {
@@ -640,6 +792,36 @@ try {
   assert.ok(await lab.locator("#workspace-alert").isHidden());
   await other.close();
   await populated.close();
+  const statusData = fixture();
+  statusData.runs = statusData.runs.slice(0, 10);
+  for (const [index, status] of ["paused", "completed", "failed", "cancelled"].entries()) {
+    const run = statusData.runs[(index + 1) * 2];
+    statusData.runs[(index + 1) * 2] = recordProgress(run, {
+      status, step: status === "completed" ? run.totalSteps : run.step, totalSteps: run.totalSteps,
+      loss: null, evalLoss: null, note: "Synthetic status accessibility fixture.",
+      recordedAt: new Date(Date.parse(run.updatedAt) + 1).toISOString(),
+    });
+  }
+  const statusContext = await newContext({ viewport: { width: 760, height: 800 } });
+  await statusContext.addInitScript((data) => localStorage.setItem("mamase.coven-lab.v1", JSON.stringify(data)), statusData);
+  const statusPage = await statusContext.newPage();
+  watch(statusPage);
+  for (const [preference, system] of [["light", "dark"], ["dark", "light"], ["system", "light"], ["system", "dark"]]) {
+    await go(statusPage, "settings");
+    await statusPage.emulateMedia({ colorScheme: system });
+    await statusPage.getByRole("group", { name: "Appearance mode", exact: true })
+      .getByRole("button", { name: preference[0].toUpperCase() + preference.slice(1), exact: true }).click();
+    await statusPage.waitForFunction((theme) => document.documentElement.dataset.theme === theme, preference === "system" ? system : preference);
+    await go(statusPage, "sessions");
+    for (const status of ["planned", "running", "paused", "completed", "failed", "cancelled"]) {
+      assert.ok(await statusPage.locator(`.badge.status-${status}`).count() > 0);
+      for (const text of await statusPage.locator(`.badge.status-${status}`).allTextContents()) assert.equal(text.trim(), status);
+      assert.ok((await statusPage.locator("main").ariaSnapshot()).includes(status));
+    }
+    await contrast(statusPage);
+    await bounds(statusPage);
+  }
+  await statusContext.close();
   const longContent = fixture();
   longContent.name = "W".repeat(80);
   longContent.programs[0].name = "P".repeat(100);
@@ -653,7 +835,7 @@ try {
   }
   for (const artifact of longContent.artifacts) { artifact.name = "A".repeat(100); artifact.notes = "N".repeat(2000); }
   for (const theme of ["dark", "light"]) {
-    const context = await browser.newContext({ viewport: { width: 320, height: 640 }, colorScheme: theme });
+    const context = await newContext({ viewport: { width: 320, height: 640 }, colorScheme: theme });
     await context.addInitScript((data) => localStorage.setItem("mamase.coven-lab.v1", JSON.stringify(data)), longContent);
     const page = await context.newPage();
     watch(page);
@@ -665,8 +847,12 @@ try {
   }
   assert.deepEqual(errors, []);
   assert.deepEqual(external, []);
-  console.log(`UX end-to-end passed: ${layouts} responsive layouts, read-only preflight instructions, recoverable drafts, report previews and no-op replay, atomic import/restore recovery, versioned and legacy private-summary backups, independent appearance, paired-report lineage and regression review, matching CSV exports, guarded comparisons and loss accessibility.`);
+  console.log(`UX end-to-end passed: ${layouts} responsive layouts, ${contrastChecks} contrast assertions, light/dark/system non-color cues and keyboard core actions, interrupted paired text/digest recovery, read-only preflight instructions, recoverable drafts, report previews and no-op replay, atomic import/restore recovery, versioned and legacy private-summary backups, independent appearance, paired-report lineage and regression review, matching CSV exports, guarded comparisons and loss accessibility. Human assistive-technology review was NOT executed.`);
 } catch (error) {
+  if (process.env.MAMASE_UX_EVIDENCE) {
+    try { await writeFailureEvidence(process.env.MAMASE_UX_EVIDENCE, currentPage, layouts); }
+    catch (evidenceError) { console.error(`Synthetic failure evidence could not be written: ${evidenceError.message}`); }
+  }
   if (currentPage && !currentPage.isClosed()) await capture(currentPage, "failure");
   throw error;
 } finally {

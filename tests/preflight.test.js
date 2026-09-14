@@ -1,11 +1,11 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { existsSync } from "node:fs";
 import { spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
+import { trainingTestMode } from "../scripts/training-test-mode.mjs";
 
 const root = fileURLToPath(new URL("../", import.meta.url));
-const python = process.env.MAMASE_TRAINING_PYTHON || fileURLToPath(new URL("../.venv/bin/python", import.meta.url));
+const { python, skip } = trainingTestMode();
 
 function run(executable, args) {
   const result = spawnSync(executable, ["-B", "tests/preflight_checks.py", ...args], {
@@ -20,7 +20,7 @@ test("offline preflight validates sources, inventory and failure reports with st
 });
 
 test("offline preflight checks real local tokenizer and PEFT APIs without weights, training or writes", {
-  skip: !existsSync(python) && "Set MAMASE_TRAINING_PYTHON to an existing PEFT environment; stdlib coverage always runs.",
+  skip,
 }, () => {
   run(python, ["--real"]);
 });

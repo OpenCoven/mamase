@@ -102,5 +102,69 @@ gh issue list --repo OpenCoven/mamase --label status:blocked
 gh issue list --repo OpenCoven/mamase --milestone "Reliable local experiments v1"
 ```
 
+## Automation and required checks
+
+`.github/workflows/validation.yml` runs the same `scripts/validate.mjs` commands
+as the [complete local gate](../README.md#reproducible-validation), on PRs,
+pushes to `main`, and manual dispatch. Expected check names are stable:
+
+| Check | Executed scope |
+| --- | --- |
+| `Node 22 / workspace` | Full existing Node suite; two explicitly excluded optional ML cases |
+| `Node 24 / workspace` | Same suite on Node 24, including local WorkOS/auth/hosted fixtures |
+| `Python 3.14 / CPU adapters` | Python 3.14.7, exact pinned requirements, actual CPU adapters/evaluator/preflight, zero skips |
+| `Chromium / UX and protocol` | Existing `verify-ux.mjs` plus `verify-training.mjs --protocol-fixture`; no real MLX claim |
+
+Permissions are `contents: read`; checkout does not retain credentials. Jobs
+have 15/30-minute limits; newer runs cancel superseded runs for the same PR/ref.
+No secrets, real model downloads, provider accounts, or private fixtures are
+needed. Install dependencies from the committed lockfiles/pins; there is no
+cache of familiar data or model outputs.
+
+Only a failed browser job uploads evidence, retained for three days: the gate
+summary, a small synthetic failure JSON, and at most one CSS-resolution
+viewport PNG capped at 2 MiB. The artifact paths are an explicit allowlist.
+No traces, HAR, DOM/storage dumps, console logs, datasets, identity files,
+cases/reports, `.lab`, `.mamase`, general workspaces, environments or caches
+are uploaded. The runner uses new synthetic browser contexts, disables service
+workers and blocks non-loopback requests before transmission. Legacy optional
+`MAMASE_SCREENSHOTS` captures are local-only and are not passed through the gate
+or included in CI uploads.
+
+A maintainer must first observe all four genuine PR checks, review failure
+behavior/evidence, then manually select their exact check names in the intended
+branch protection/ruleset if required. This implementation does not change
+protections. Billing/provider refusal remains an operator-owned external
+blocker; a successful local gate neither bypasses that policy nor supplies
+hosted review approval. Missing dependency/interpreter and intentional browser
+failure paths are reproducible in `node --test tests/automation.test.js`.
+
+## Accessibility evidence and limits
+
+The existing browser runner checks light, dark, and system-following-light/dark
+modes. It measures WCAG relative-luminance contrast (4.5:1 normal text/status
+samples, 3:1 focus tokens), opaque computed badge/button colors and key palette
+pairs. It checks visible text and Chromium accessibility-tree names for all
+six run states and paired regressions, rather than relying on colored dots.
+These samples are not a complete WCAG audit of every pixel, gradient,
+transparency, hover/disabled state, or browser.
+
+At 320px, 760px, desktop and short landscape sizes, synthetic journeys use Tab,
+arrow scrolling in wide table regions, Enter and Escape to reach dataset,
+recipe, report, training-result, paired-review and export actions. They check
+focus outlines, dialog dismissal/focus return and recoverable errors. Delaying
+both `File.text()` and `File.arrayBuffer()` during paired imports, closing and
+reopening the dialog, then releasing the old read must leave the exact prior
+workspace intact; a subsequent retry succeeds.
+
+Playwright keyboard events and accessibility snapshots **are not a human
+keyboard-only or screen-reader review**. No VoiceOver, NVDA, JAWS, TalkBack,
+speech/braille output, switch access, real mobile assistive technology, or
+human announcement timing review is claimed. Before declaring assistive-tech
+acceptance, record OS/browser/AT versions, use only the keyboard to navigate,
+check wide-table scrolling and dialog focus trapping/return, listen to live
+error/status announcements, and recover from the delayed-import case without
+losing data. Screenshots alone do not establish accessibility.
+
 Issue forms and the PR template activate after these files reach the default
 branch. Creating labels and issues alone does not activate local templates.
