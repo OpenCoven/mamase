@@ -7,6 +7,7 @@ import { join, resolve } from "node:path";
 import { chromium } from "playwright";
 import { LocalTrainer } from "../local-training.mjs";
 import { createAppServer } from "../server.mjs";
+import { createAuthApi } from "../auth-api.mjs";
 import { STORAGE_KEY, validateWorkspace } from "../workspace.js";
 
 const protocol = process.argv.includes("--protocol-fixture");
@@ -35,7 +36,7 @@ try {
     root: join(root, "jobs"), python,
     ...(protocol ? { runner: resolve("tests/fixtures/training-worker.py"), probeArgs: ["-c", "print('Protocol fixture ready')"] } : {}),
   });
-  server = createAppServer({ training: trainer });
+  server = createAppServer({ training: trainer, auth: createAuthApi({ env: {} }) });
   server.listen(0, "127.0.0.1");
   await once(server, "listening");
   const base = `http://127.0.0.1:${server.address().port}`;

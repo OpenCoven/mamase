@@ -18,6 +18,7 @@ export class AuthClient {
 
   refresh() {
     if (this.pending) return this.pending;
+    if (this.busy) return Promise.resolve();
     this.pending = this.load().finally(() => { this.pending = null; });
     return this.pending;
   }
@@ -49,6 +50,7 @@ export class AuthClient {
     this.busy = true;
     this.onChange();
     try {
+      if (this.pending) await this.pending;
       const { logoutUrl } = await this.request("logout", { method: "POST", headers: { "X-Mamase-Auth": "1" } });
       const destination = new URL(logoutUrl);
       if (destination.protocol !== "https:" && destination.origin !== location.origin) throw new Error("Invalid sign-out destination. Retry account connection.");

@@ -3,9 +3,12 @@
   "version": "1.0.0",
   "private": true,
   "type": "module",
+  "engines": {
+    "node": ">=22.11.0"
+  },
   "scripts": {
-    "dev": "node server.mjs",
-    "start": "node server.mjs",
+    "dev": "node --env-file-if-exists=.env.local server.mjs",
+    "start": "node --env-file-if-exists=.env.local server.mjs",
     "build:hosted": "node scripts/build-hosted.mjs",
     "lab": "node lab.mjs",
     "test": "node --test",
@@ -14,5 +17,8 @@
   },
   "devDependencies": {
     "playwright": "1.62.0"
+  },
+  "dependencies": {
+    "@workos-inc/node": "10.13.0"
   }
 }

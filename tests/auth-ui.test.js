@@ -4,9 +4,10 @@ import { once } from "node:events";
 import { chromium } from "playwright";
 import { createAppServer } from "../server.mjs";
 import { createWorkspace, STORAGE_KEY } from "../workspace.js";
+import { createAuthApi } from "../auth-api.mjs";
 
 async function browserFixture(context, auth) {
-  const server = createAppServer({ ...(auth ? { auth } : {}) });
+  const server = createAppServer({ auth: auth || createAuthApi({ env: {} }) });
   server.listen(0, "127.0.0.1");
   await once(server, "listening");
   context.after(() => new Promise((resolve) => server.close(resolve)));

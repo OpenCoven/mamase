@@ -5,11 +5,12 @@ import { join } from "node:path";
 import { chromium } from "playwright";
 import { createHash } from "node:crypto";
 import { createAppServer } from "../server.mjs";
+import { createAuthApi } from "../auth-api.mjs";
 import { createWorkspace, createRun, recordProgress, STORAGE_KEY } from "../workspace.js";
 import { DRAFT_KEY } from "../experience.js";
 import { MAX_BACKUP_BYTES } from "../backups.js";
 
-const server = createAppServer();
+const server = createAppServer({ auth: createAuthApi({ env: {} }) });
 server.listen(0, "127.0.0.1");
 await once(server, "listening");
 const base = `http://127.0.0.1:${server.address().port}`;

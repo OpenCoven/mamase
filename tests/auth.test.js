@@ -41,7 +41,7 @@ async function fixture(context, overrides = {}) {
     WORKOS_REDIRECT_URI: `${base}/api/auth/callback`,
     ...overrides.env,
   };
-  handler = createAuthApi({ env, provider, clock: () => time, log: (value) => calls.logs.push(value) });
+  handler = createAuthApi({ env, provider: overrides.realProvider ? null : provider, clock: () => time, log: (value) => calls.logs.push(value) });
   return { base, provider, calls, user, advance: (milliseconds) => { time += milliseconds; } };
 }
 
@@ -61,7 +61,7 @@ async function finish(base, flow, options = {}) {
 }
 
 test("an unconfigured account API reports its setup state without disabling the workspace", async (context) => {
-  const server = createAppServer();
+  const server = createAppServer({ auth: createAuthApi({ env: {} }) });
   server.listen(0, "127.0.0.1");
   await once(server, "listening");
   context.after(() => new Promise((resolve) => server.close(resolve)));
@@ -79,7 +79,7 @@ test("an unconfigured account API reports its setup state without disabling the 
 });
 
 test("unconfigured sign-in fails explicitly instead of redirecting to a pretend provider", async (context) => {
-  const server = createAppServer();
+  const server = createAppServer({ auth: createAuthApi({ env: {} }) });
   server.listen(0, "127.0.0.1");
   await once(server, "listening");
   context.after(() => new Promise((resolve) => server.close(resolve)));
@@ -209,6 +209,7 @@ test("cancelled callbacks and provider rejection never erase an existing account
   const cancelled = await fetch(`${base}/api/auth/callback?error=access_denied&state=${flow.state}`, {
     redirect: "manual", headers: { Cookie: `${flow.cookie}; mamase_session=existing-session` },
   });
+
   assert.match(cancelled.headers.get("location"), /auth_error=cancelled/);
   assert.ok(!cancelled.headers.getSetCookie().some((value) => value.startsWith("mamase_session=")));
   provider.exchange = async () => { throw new Error("private-provider-response"); };
@@ -216,4 +217,15 @@ test("cancelled callbacks and provider rejection never erase an existing account
   assert.match(failed.headers.get("location"), /auth_error=exchange_failed/);
   assert.ok(!failed.headers.getSetCookie().some((value) => value.startsWith("mamase_session=")));
   assert.ok(!JSON.stringify(calls.logs).includes("private-provider-response"));
+});
+
+test("the real WorkOS SDK creates the hosted provider-picker URL without exposing a secret", async (context) => {
+  const { base } = await fixture(context, { realProvider: true });
+  const { location } = await begin(base);
+  assert.equal(location.hostname, "api.workos.com");
+  assert.equal(location.searchParams.get("provider"), "authkit");
+  assert.equal(location.searchParams.get("client_id"), "client_synthetic_fixture");
+  assert.equal(location.searchParams.get("redirect_uri"), `${base}/api/auth/callback`);
+  assert.equal(location.searchParams.get("code_challenge_method"), "S256");
+  assert.ok(!location.href.includes("sk_test_synthetic_fixture"));
 });

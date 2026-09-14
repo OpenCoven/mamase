@@ -7,8 +7,9 @@ familiar identity or proof of improvement.
 
 ## Run locally
 
-The browser workspace requires Node.js 20 or later, with no runtime dependencies
-or build step. Identity-bound CLI training uses Python 3.10+ and
+Use Node.js 24, or Node.js 22.11 or later. The browser itself needs no build step;
+the server uses the pinned WorkOS SDK for optional account sign-in.
+Identity-bound CLI training uses Python 3.10+ and
 `training/requirements.txt`. Optional managed MLX training uses an isolated
 Python 3.12 environment and `training/requirements-mlx.txt` on Apple Silicon.
 
@@ -17,6 +18,7 @@ separate runtimes and artifact formats; installing the MLX requirements does
 not provide PyTorch/PEFT.
 
 ```sh
+npm install
 npm start
 ```
 
@@ -26,7 +28,8 @@ different port.
 
 ## Hosted on Vercel
 
-Vercel serves the **browser workspace only**, not the local Node/Python trainer.
+Vercel serves the browser workspace and four small account functions, **not the
+local Node/Python trainer**.
 The project must use the static configuration in `vercel.json`, not Vercel's
 Node framework preset. That preset treats `app.js` as a server entry point and
 crashes with `ReferenceError: document is not defined`.
@@ -35,7 +38,11 @@ crashes with `ReferenceError: document is not defined`.
 public asset list into `dist/`. Training code, environments, model weights,
 datasets, job files and secrets are not published. The hosted capability response
 disables job discovery and process commands; the UI explains the local handoff.
-There are no Vercel Functions in this deployment.
+Only `/api/auth/login`, `/api/auth/callback`, `/api/auth/session` and
+`/api/auth/logout` run as Vercel Functions. The prebuilt release includes their
+server code and production SDK dependency inside private function directories;
+browser assets, local trainer code and credentials are not bundled into those
+functions. The browser application is never a server entry point.
 
 To train, start Mamase locally on an Apple Silicon Mac. Export a workspace backup
 from the hosted site and restore it in the local app, then select the original
@@ -48,6 +55,65 @@ For an authenticated, prebuilt Vercel release:
 npm run build:hosted -- --prebuilt
 vercel deploy --prebuilt
 ```
+
+## WorkOS sign-in
+
+Mamase uses **WorkOS AuthKit's hosted provider picker** for GitHub, Google and
+any other sign-in methods enabled for the WorkOS environment. Creating these
+routes does not enable a provider in the WorkOS dashboard.
+
+**Sign-in identifies a person; it does not add cloud sync, memberships, or
+per-account isolation of this browser's workspace.** Signing out does not
+delete workspace records, drafts or model files, and does not stop training.
+Use separate browser profiles on shared devices. Local training retains its
+loopback, Origin and command-token protections independently of account login.
+
+For local development, copy `.env.example` to `.env.local` and fill the values
+there. `npm start` and `npm run dev` load that ignored file. On Vercel, set the
+same variables in the intended deployment environment, then redeploy:
+
+| Variable | Value |
+| --- | --- |
+| `WORKOS_API_KEY` | The WorkOS environment's secret API key; server-only. |
+| `WORKOS_CLIENT_ID` | The matching WorkOS client ID. |
+| `WORKOS_COOKIE_PASSWORD` | A stable random secret of at least 32 characters; generate with `openssl rand -base64 32`. |
+| `WORKOS_REDIRECT_URI` | `https://mamase.ai/api/auth/callback` in production; `http://127.0.0.1:4173/api/auth/callback` locally. |
+
+Register these URLs in the matching WorkOS environment:
+
+| Setting | Production | Local development |
+| --- | --- | --- |
+| Redirect URI | `https://mamase.ai/api/auth/callback` | `http://127.0.0.1:4173/api/auth/callback` |
+| Sign-in URI | `https://mamase.ai/api/auth/login` | `http://127.0.0.1:4173/api/auth/login` |
+| Allowed/default sign-out URI | `https://mamase.ai/` | `http://127.0.0.1:4173/` |
+
+Use the exact configured origin when signing in. `localhost`, `127.0.0.1`,
+preview URLs and production aliases have separate cookies and browser records.
+Use a separate WorkOS staging environment for development; do not send
+production credentials to arbitrary preview deployments.
+
+Enable [Google](https://workos.com/docs/integrations/google-oauth) and
+[GitHub](https://workos.com/docs/integrations/github-oauth) in WorkOS. Shared
+provider credentials are available **for staging only**; production requires
+your own provider application credentials and consent/publishing settings.
+The provider applications' OAuth callback is the **WorkOS-supplied URL**, not
+Mamase's callback above. Provider secrets stay in WorkOS, not the browser or
+repository. Additional enabled AuthKit providers need no Mamase code change.
+
+The integration uses S256 PKCE, a ten-minute encrypted browser-bound state
+cookie, and sealed HttpOnly session cookies. HTTPS uses host-only `__Host-`
+cookies with `Secure; SameSite=Lax`. Session cookies are retained for up to seven
+days and renewed after SDK refresh; WorkOS's own session limits still apply.
+Auth responses are never cached. Temporary refresh failures preserve the
+existing cookie rather than pretending the user signed out. WorkOS validates
+JWTs using JWKS; revocation is not instant introspection of every valid JWT.
+Logout uses a same-origin POST and navigates through WorkOS to end its session.
+Sealed cookie values over 3,800 encoded bytes are rejected explicitly.
+
+No WorkOS settings means an explicit **sign-in not configured** state, not a
+fake identity or a broken offline workspace. No API keys, refresh tokens or
+access tokens are returned by the account-status endpoint or included in
+workspace backups.
 
 ## Workflow
 
@@ -630,8 +696,9 @@ preferences, recipe drafts, original dataset contents, identity snapshots, model
 weights, and per-case report prompts/responses. Restoring does not cancel or delete
 managed jobs or files on disk, and does not change the selected appearance mode.
 
-There is no hosted training, inference endpoint, cloud sync, billing, account
-system, or fabricated training progress. Managed training runs locally through
+There is no hosted training, inference endpoint, cloud sync, billing,
+or fabricated training progress. Optional WorkOS accounts identify users but
+do not move workspace data to a server. Managed training runs locally through
 MLX-LM; its output files are checked at finalization. Other artifact paths remain
 references; the explicit CLI saves real adapters and fingerprints as well.
 The browser does not merge adapters, quantize weights, or export model binaries.

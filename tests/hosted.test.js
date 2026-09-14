@@ -111,6 +111,9 @@ test("prebuilt releases isolate four account functions from browser and training
       import {createServer} from 'node:http';
       import {once} from 'node:events';
       import handler from './api/auth/session.js';
+      import {createWorkOSProvider} from './workos-provider.mjs';
+      const provider=createWorkOSProvider({apiKey:'sk_test_fixture',clientId:'client_fixture',cookiePassword:'synthetic-cookie-password-for-tests-only',redirectUri:'https://mamase.example/api/auth/callback',origin:'https://mamase.example'});
+      if(new URL(provider.authorizationUrl({state:'fixture',codeChallenge:'fixture'})).searchParams.get('provider')!=='authkit') throw new Error('WorkOS SDK missing from the isolated bundle');
       const server=createServer(handler);server.listen(0,'127.0.0.1');await once(server,'listening');
       try { const r=await fetch('http://127.0.0.1:'+server.address().port+'/api/auth/session'); console.log(JSON.stringify({status:r.status,body:await r.json()})); }
       finally { await new Promise(resolve=>server.close(resolve)); }

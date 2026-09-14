@@ -228,6 +228,9 @@ export function createAuthApi({ env = process.env, provider = null, clock = Date
       }
     } catch (error) {
       if (!(error instanceof AuthError)) log({ event: "workos_request_failed", stage: action });
+      if (!response.headersSent && Number.isFinite(error.retryAfter) && error.retryAfter >= 0) {
+        response.setHeader("Retry-After", String(Math.min(3600, Math.ceil(error.retryAfter))));
+      }
       if (!response.headersSent) json(response, error instanceof AuthError ? error.status : 502, {
         error: error instanceof AuthError ? error.message : "Account service unavailable. Try again.",
       });
