@@ -1,0 +1,91 @@
+name: Validation
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: validation-${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  node:
+    name: Node ${{ matrix.node }} / workspace
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        node: [22, 24]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node }}
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.14.7'
+      - run: npm ci --no-audit --no-fund
+      - run: npx --no-install playwright install --with-deps chromium
+      - run: npm run validate -- node
+
+  cpu:
+    name: Python 3.14 / CPU adapters
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.14.7'
+      - run: npm ci --no-audit --no-fund
+      - name: Install pinned CPU runtime in its own environment
+        run: |
+          python -m venv .venv
+          .venv/bin/python -m pip install --no-cache-dir -r training/requirements.txt
+      - name: Require actual synthetic adapters, evaluator and preflight
+        env:
+          MAMASE_TRAINING_PYTHON: ${{ github.workspace }}/.venv/bin/python
+        run: npm run validate -- cpu
+
+  browser:
+    name: Chromium / UX and protocol
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.14.7'
+      - run: npm ci --no-audit --no-fund
+      - run: npx --no-install playwright install --with-deps chromium
+      - run: npm run validate -- browser
+      - name: Upload only bounded synthetic failure evidence
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: synthetic-browser-failure
+          path: |
+            .validation/run-*/summary.json
+            .validation/run-*/browser/failure.json
+            .validation/run-*/browser/failure.png
+          retention-days: 3
+          if-no-files-found: ignore
+          include-hidden-files: true
