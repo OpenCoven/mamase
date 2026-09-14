@@ -11,6 +11,7 @@
     "start": "node --env-file-if-exists=.env.local server.mjs",
     "build:hosted": "node scripts/build-hosted.mjs",
     "lab": "node lab.mjs",
+    "ops": "node ops.mjs",
     "test": "node --test",
     "test:e2e": "node scripts/verify-ux.mjs",
     "test:training": "node scripts/verify-training.mjs",
