@@ -187,9 +187,10 @@ class ExposureJournal:
         return self
 
     def record(self, suite, suite_hash, at, lineage=None, lineage_hash=None):
-        if self.path is None or suite["schema"] == "mamase.eval-suite.v1":
+        legacy = suite["schema"] == "mamase.eval-suite.v1"
+        if self.path is None or (legacy and not lineage):
             return
-        events = merge_events(self.value["events"], suite["history"]["events"])
+        events = merge_events(self.value["events"], [] if legacy else suite["history"]["events"])
         if lineage:
             for use in ("training", "tuning"):
                 known = {family for event in events if event["use"] == use for family in event["familyIds"]}
@@ -199,16 +200,18 @@ class ExposureJournal:
                         "use": use, "familyIds": families[offset:offset + 200], "suiteSha256": suite_hash,
                         "recordedAt": at, "provenance": f"Declared task-lineage inventory {lineage_hash}; retained at evaluation attempt, not authenticated proof.",
                     })
-        event = {
-            "use": suite["intendedUse"], "familyIds": sorted({case["familyId"] for case in suite["cases"]}),
-            "suiteSha256": suite_hash, "recordedAt": at,
-            "provenance": "Local evaluator attempt reserved before inference; interruption does not erase exposure.",
-        }
+        # Legacy suites lack case families, but supplied inventory exposure is still known.
+        if not legacy:
+            events.append({
+                "use": suite["intendedUse"], "familyIds": sorted({case["familyId"] for case in suite["cases"]}),
+                "suiteSha256": suite_hash, "recordedAt": at,
+                "provenance": "Local evaluator attempt reserved before inference; interruption does not erase exposure.",
+            })
         # Persist before inference: a failed/abandoned tuning attempt still exposes the family.
         current_hash = hashlib.sha256(self.path.read_bytes()).hexdigest() if self.path.exists() else None
         require(current_hash == self.sha256, "Exposure history changed while it was locked; refusing to overwrite.")
-        require(len(events) < 2000, "Exposure journal is full; no evaluation was run.")
-        updated = {**self.value, "events": [*events, event]}
+        require(len(events) <= 2000, "Exposure journal is full; no evaluation was run.")
+        updated = {**self.value, "events": events}
         serialized = (json.dumps(updated, indent=2, allow_nan=False) + "\n").encode("utf-8")
         require(len(serialized) <= 4 * 1024 * 1024,
                 "Exposure journal exceeds 4 MiB; no evaluation was run and the original history was preserved. Retain it and prepare a separately reviewed archival inventory.")

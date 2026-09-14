@@ -117,6 +117,34 @@ class SuiteContracts(unittest.TestCase):
         self.assertEqual(result["governance"]["independence"], "unverified")
         self.assertEqual(result["governance"]["trainingLineage"]["coverage"], "partial")
 
+    def test_legacy_attempt_retains_supplied_exposure_for_later_candidates(self):
+        old = {"schema": "mamase.eval-suite.v1", "name": "Legacy", "version": "1",
+               "cases": [{key: row[key] for key in ("id", "category", "prompt", "checks")} for row in SUITE["cases"]]}
+        validate_suite(old, ROWS)
+        for use in ("training", "tuning"):
+            with self.subTest(use=use), TemporaryDirectory() as directory:
+                path = Path(directory) / "history.json"
+                path.write_text(json.dumps({"schema": "mamase.eval-history.v1", "status": "complete-declared", "events": []}))
+                inventory = lineage()
+                inventory["groups"][0].update(familyId="fixture-alpha", use=use)
+                validate_lineage(inventory, RESULT)
+                with ExposureJournal(path, read_json) as journal:
+                    journal.record(old, "c" * 64, AT, inventory, "d" * 64)
+                    self.assertEqual(suite_summary(old, "c" * 64, journal.value, inventory, "d" * 64)["governance"]["independence"], "unverified")
+                recorded = read_json(path)[0]["events"]
+                self.assertEqual(len(recorded), 1)
+                self.assertEqual(recorded[0]["use"], use)
+                self.assertEqual(recorded[0]["familyIds"], ["fixture-alpha"])
+                other_result = {"bundleSha256": "e" * 64, "datasetSha256": "f" * 64}
+                other_inventory = {**lineage(), **other_result}
+                validate_lineage(other_inventory, other_result)
+                with ExposureJournal(path, read_json) as journal:
+                    following = final_suite()
+                    journal.record(following, "e" * 64, AT, other_inventory, "f" * 64)
+                    summary = suite_summary(following, "e" * 64, journal.value, other_inventory, "f" * 64)["governance"]
+                    self.assertEqual(summary["independence"], "known-exposure")
+                    self.assertEqual(summary["knownExposedFamilyIds"], ["fixture-alpha"])
+
     def test_schema_evolution_missing_rubrics_invalid_ids_and_history(self):
         mutations = [
             lambda s: s.update(schema="mamase.eval-suite.v3"),

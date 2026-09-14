@@ -1,6 +1,7 @@
 import { assert, text, date, id, digest } from "./validation.js";
 import { evaluationFromReport } from "./results.js";
 import { validateFamiliarContext } from "./context-summary.js";
+import { validateSuiteSummary } from "./evaluation-suites.js";
 
 export const REVIEW_STATES = ["approved", "rejected", "needs-more-evidence"];
 export const TASK_STATES = ["unknown", "completed", "incomplete", "blocked"];
@@ -57,7 +58,7 @@ function binding(evaluation) {
     reportSha256: c.reportSha256, resultSha256: c.resultSha256,
     bundleSha256: c.bundleSha256, datasetSha256: c.datasetSha256,
     adapterPath: c.adapterPath, familiarId: c.familiarId, instanceId: c.instanceId,
-    suite: { name: c.suite.name, version: c.suite.version, sha256: c.suite.sha256 },
+    suite: validateSuiteSummary(c.suite, c.samples),
     decoding: { ...c.decoding }, samples: c.samples, device: c.device,
     ...(c.familiarContext === undefined ? {} : { familiarContext: validateFamiliarContext(c.familiarContext, c) }),
   };

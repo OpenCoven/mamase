@@ -785,7 +785,10 @@ candidates**. The journal uses `mamase.eval-history.v1` with `status` and
 `events`; a missing file is created with `status: "unknown"`. Known suite-history
 events and supplied training/tuning family inventories are retained, and the
 current attempt is recorded **before inference**, so an interruption does not
-erase exposure. The report fingerprints the exact updated journal separately
+erase exposure. A legacy v1 evaluation also retains any explicitly supplied
+training/tuning inventory in that journal; it does not invent legacy case
+families or strengthen the legacy independence classification.
+The report fingerprints the exact updated journal separately
 from the exact suite file. Repeated final attempts stay visible as history;
 development/training/tuning exposure can never be cleared by renaming a suite
 while using that journal. The browser also reports known exposure from other
@@ -889,7 +892,10 @@ reviewer, rationale, limitations, timestamp, `approved`/`rejected`/
 `needs-more-evidence`, exact report and lineage binding, and categorical
 annotations for every case. Case fingerprints hash the UTF-8 JSON serialization
 of each parsed case; the raw report hash additionally binds exact file bytes
-and any optional context. Rule outcomes and denominators cannot be edited by
+and any optional context. The opinion also binds the complete validated suite
+summary, including governance declarations, task-lineage and journal
+fingerprints; changing those cannot retain approval during backup recovery.
+Rule outcomes and denominators cannot be edited by
 annotations. `approved` means a human opinion with `authorization: "none"`,
 never deploy/promote/identity/tool approval. Reviewer labels are not signed.
 

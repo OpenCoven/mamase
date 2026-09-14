@@ -4,7 +4,7 @@ import { reviewFixture, at, hash } from "./fixtures/evaluation-fixture.js";
 import { prepareReview, recordHumanDecision, readReviewFile } from "../human-review.js";
 import { reviewAnnotations, reviewBody } from "../review-view.js";
 import { validateWorkspace, saveWorkspace } from "../workspace.js";
-import { exportWorkspaceBackup, parseWorkspaceBackup } from "../backups.js";
+import { BACKUP_SCHEMA, exportWorkspaceBackup, parseWorkspaceBackup } from "../backups.js";
 
 function decision(review, state = "approved") {
   const fields = Object.fromEntries(review.cases.flatMap((_, index) => ["base", "adapter"].flatMap((model) => [
@@ -98,6 +98,42 @@ test("selected context is visible during review and remains bound through backup
   changed.evaluations[0].comparison.familiarContext.sha256 = hash("changed-context");
   assert.throws(() => validateWorkspace(changed), /Human decision evidence changed/);
   await assert.rejects(prepareReview(changed, "synthetic-evaluation", report, hash(source)), /context/i);
+});
+
+test("saved opinions bind suite governance, task lineage and exposure journals", async () => {
+  const { workspace, report, source } = reviewFixture();
+  const review = await prepareReview(workspace, "synthetic-evaluation", report, hash(source));
+  const saved = recordHumanDecision(workspace, review, decision(review));
+  for (const mutate of [
+    (s) => { s.governance.permission = "A different valid permission declaration."; },
+    (s) => { s.governance.trainingLineage = { coverage: "partial", sha256: hash("changed inventory") }; },
+    (s) => { s.historySha256 = hash("changed journal"); s.governance.journalStatus = "unknown"; },
+    (s) => { s.governance.reviewer = "A different declared reviewer"; },
+    (s) => { s.governance.rubrics.task = "A different task rubric."; },
+  ]) {
+    const changed = structuredClone(saved);
+    mutate(changed.evaluations[0].comparison.suite);
+    const unreviewed = structuredClone(changed);
+    delete unreviewed.evaluations[0].reviews;
+    assert.doesNotThrow(() => validateWorkspace(unreviewed), "The altered summary itself is valid.");
+    assert.throws(() => validateWorkspace(changed), /Human decision evidence changed/);
+    for (const backup of [changed, { schema: BACKUP_SCHEMA, exportedAt: at, workspace: changed }]) {
+      assert.throws(() => parseWorkspaceBackup(JSON.stringify(backup)), /Human decision evidence changed/);
+    }
+  }
+});
+
+test("legacy suite identities remain reviewable without inventing governance", async () => {
+  const { workspace, report } = reviewFixture();
+  const { name, version, sha256 } = report.suite;
+  report.suite = { name, version, sha256 };
+  const reportSha256 = hash(JSON.stringify(report));
+  workspace.evaluations[0].comparison.suite = { ...report.suite };
+  workspace.evaluations[0].comparison.reportSha256 = reportSha256;
+  const review = await prepareReview(workspace, "synthetic-evaluation", report, reportSha256);
+  const saved = recordHumanDecision(workspace, review, decision(review));
+  assert.deepEqual(saved.evaluations[0].reviews[0].evidence.suite, report.suite);
+  assert.deepEqual(parseWorkspaceBackup(exportWorkspaceBackup(saved, at)).workspace, saved);
 });
 
 test("annotations cannot forge case associations, drop denominators or add execution receipts", async () => {
