@@ -39,9 +39,24 @@ test("hosted clients never request job endpoints or issue training commands", as
   };
   await client.watch({ id: "run", localJobId: "job" });
   assert.equal(client.loading.size, 0);
+  assert.equal(client.errors.size, 0, "Expected hosted limitations are guidance, not failed training");
   await assert.rejects(client.launch({ workspace: { runs: [{ id: "run" }] } }), /local Mamase/);
   await assert.rejects(client.cancel("job"), /local Mamase/);
   assert.deepEqual(calls, ["capabilities"]);
+});
+
+test("disabled local trainers and failed hosted capability requests remain actionable errors", async () => {
+  const client = new TrainingClient({ onJob: () => assert.fail("No job should be requested"), onStatus: () => {} });
+  client.request = async () => ({ enabled: false, available: false, message: "Local training is not configured." });
+  await client.watch({ id: "local" });
+  assert.equal(client.errors.get("local"), "Local training is not configured.");
+  client.request = async () => ({ enabled: false, available: false, hosted: true, message: "Use the local app to train." });
+  await client.watch({ id: "hosted" }, true);
+  assert.equal(client.errors.has("hosted"), false);
+  client.request = async () => { throw new Error("Capabilities could not be loaded."); };
+  await client.watch({ id: "hosted" }, true);
+  assert.equal(client.errors.get("hosted"), "Capabilities could not be loaded.");
+  assert.equal(client.loading.size, 0);
 });
 
 test("hosted recipes explain the local handoff instead of offering server installation or launch", () => {

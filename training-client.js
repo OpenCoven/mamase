@@ -42,8 +42,9 @@ export class TrainingClient {
     try {
       const capability = await this.capability(refresh);
       this.errors.delete(run.id);
-      if (!capability.enabled) this.errors.set(run.id, capability.message);
-      else {
+      if (!capability.enabled) {
+        if (capability.hosted !== true) this.errors.set(run.id, capability.message);
+      } else {
         const result = await this.request(`runs/${encodeURIComponent(run.id)}`);
         if (result.job) this.accept(result.job);
         else if (run.localJobId) this.errors.set(run.id, "This run's managed job is not available on this server. Keep its recorded history; restore the original training directory or duplicate the recipe for a new attempt.");
