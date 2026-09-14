@@ -6,7 +6,8 @@ import { tmpdir } from "node:os";
 import { spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { catalog, OPERATIONS, runOperation, CATALOG_SCHEMA, RECEIPT_SCHEMA, WORKSPACE_FILE_SCHEMA } from "../ops.mjs";
-import { parseWorkspaceBackup } from "../backups.js";
+import { exportWorkspaceBackup, parseWorkspaceBackup } from "../backups.js";
+import { createWorkspace } from "../workspace.js";
 import { sha256 } from "../familiar-context.mjs";
 
 const root = fileURLToPath(new URL("../", import.meta.url));
@@ -38,6 +39,8 @@ test("operation catalog is versioned and self-describing", () => {
   const help = spawnSync(process.execPath, [join(root, "ops.mjs"), "--help"], { encoding: "utf8", cwd: root });
   assert.equal(help.status, 0);
   assert.match(help.stdout, /^Usage: npm run ops/);
+  const malformed = cli("inspect", "--workspace", "x.json", "--expected_revision", "typo");
+  assert.deepEqual([malformed.code, malformed.output.outcome, malformed.output.error.code], [1, "failed", "invalid-arguments"]);
   const unknown = cli("nope", "--workspace", "x.json");
   assert.equal(unknown.code, 1);
   assert.deepEqual(unknown.output.error, { code: "unknown-operation", message: "Unknown operation. Run catalog for the supported list." });
@@ -136,6 +139,9 @@ test("headless workspace operations create, inspect, import and hand off through
   const second = cli("import-progress", "--workspace", workspace, "--expected-revision", current, "--file", progressPath);
   assert.deepEqual([second.output.outcome, second.output.additions, second.output.duplicates, second.output.status], ["changed", 1, 1, "completed"]);
   current = await revision();
+  await writeFile(recipePath, JSON.stringify({ id: "run-1", name: "Planned run", recipe }));
+  const replayed = cli("create-recipe", "--workspace", workspace, "--expected-revision", current, "--input", recipePath);
+  assert.deepEqual([replayed.output.outcome, replayed.output.status], ["unchanged", "completed"], "identical plans stay unchanged after progress");
   const duplicate = cli("import-progress", "--workspace", workspace, "--expected-revision", current, "--file", progressPath);
   assert.deepEqual([duplicate.code, duplicate.output.outcome, duplicate.output.duplicates], [0, "unchanged", 2]);
   await writeFile(progressPath, JSON.stringify({ schema: "mamase.run-report.v1", runId: "run-1", updates: [{ ...updates[1], loss: 0.5 }] }));
@@ -207,6 +213,23 @@ test("headless workspace operations create, inspect, import and hand off through
   assert.equal(unsupported.code, 1);
   assert.match(unsupported.output.error.message, /Unsupported backup schema/);
   assert.equal((await runOperation("inspect", { workspace: other })).revision.after, restored.output.revision.after);
+
+  const large = (() => {
+    const bulk = createWorkspace();
+    for (let index = 0; index < 6000; index++) {
+      bulk.datasets.push({ id: `dataset-bulk-${index}`, name: `Bulk ${index}`, filename: "bulk.jsonl", records: 10, bytes: 1000, format: "prompt-response", kind: "supervised", teacher: "",
+        provenance: "Synthetic bulk fixture used to exercise the storage bound.".padEnd(300, "."), holdout: 20, sha256: sha256(Buffer.from(String(index))), createdAt: later(0) });
+    }
+    return bulk;
+  })();
+  const largeBytes = Buffer.byteLength(JSON.stringify(large));
+  assert.ok(largeBytes > 3 * 1024 * 1024 && largeBytes <= 4 * 1024 * 1024, `fixture is ${largeBytes} bytes`);
+  const largePath = join(directory, "large-backup.json");
+  await writeFile(largePath, exportWorkspaceBackup(large, later(0)));
+  const bulkWorkspace = join(directory, "bulk.json");
+  const bulkRevision = cli("init", "--workspace", bulkWorkspace).output.revision.after;
+  assert.equal(cli("import-backup", "--workspace", bulkWorkspace, "--expected-revision", bulkRevision, "--file", largePath).output.outcome, "changed");
+  assert.equal(cli("inspect", "--workspace", bulkWorkspace).output.workspace.datasets.length, 6000, "a written workspace near the limit stays readable");
 
   const lock = await open(`${workspace}.lock`, "wx");
   await writeFile(recipePath, JSON.stringify({ id: "run-2", name: "Blocked by lock", recipe }));

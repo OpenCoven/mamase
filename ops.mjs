@@ -81,11 +81,14 @@ export async function readWorkspaceFile(path) {
 function serializeWorkspace(workspace) {
   const valid = validateWorkspace(workspace);
   assert(Buffer.byteLength(JSON.stringify(valid)) <= MAX_WORKSPACE_BYTES, "Workspace exceeds 4 MB. Export a backup before archiving older data.");
-  return Buffer.from(`${JSON.stringify({ schema: WORKSPACE_FILE_SCHEMA, workspace: valid }, null, 2)}\n`);
+  // Compact serialization keeps the written file inside the bound that readWorkspaceFile enforces.
+  const bytes = Buffer.from(`${JSON.stringify({ schema: WORKSPACE_FILE_SCHEMA, workspace: valid })}\n`);
+  assert(bytes.length <= MAX_WORKSPACE_BYTES + 1024, "Workspace file exceeds its storage limit.");
+  return bytes;
 }
 
 // Exclusive lock, re-read under lock, compare with the expected revision, then atomic rename. Stale or concurrent edits never mutate.
-async function writeWorkspaceFile(path, workspace, expectedRevision, { create = false } = {}) {
+async function writeWorkspaceFile(path, workspace, expectedRevision, { create = false, snapshot = null } = {}) {
   const target = resolve(path);
   const lockPath = `${target}.lock`;
   let lock;
@@ -103,7 +106,7 @@ async function writeWorkspaceFile(path, workspace, expectedRevision, { create = 
       const current = await readWorkspaceFile(target);
       before = current.revision;
       assert(typeof expectedRevision === "string" && /^[a-f0-9]{64}$/.test(expectedRevision), "--expected-revision must be the SHA-256 revision reported by inspect.");
-      if (before !== expectedRevision) throw blocked("stale-revision", "The workspace changed since it was inspected. Inspect again and retry with the current revision.");
+      if (before !== expectedRevision || (snapshot !== null && before !== snapshot)) throw blocked("stale-revision", "The workspace changed since it was inspected. Inspect again and retry with the current revision.");
     }
     const bytes = serializeWorkspace(workspace);
     const temporary = `${target}.${randomUUID()}.tmp`;
@@ -158,8 +161,13 @@ export async function runOperation(name, options = {}) {
 
   const { workspace, revision } = await readWorkspaceFile(path);
   const expected = options["expected-revision"];
+  if (operation.mutates) {
+    assert(typeof expected === "string" && /^[a-f0-9]{64}$/.test(expected), "--expected-revision must be the SHA-256 revision reported by inspect.");
+    // Reject stale expectations before reading inputs, and pin the commit to the snapshot this operation was computed from.
+    if (expected !== revision) throw blocked("stale-revision", "The workspace changed since it was inspected. Inspect again and retry with the current revision.");
+  }
   const commit = async (next, details) => {
-    const written = await writeWorkspaceFile(path, next, expected);
+    const written = await writeWorkspaceFile(path, next, expected, { snapshot: revision });
     return receipt(name, "changed", written, details);
   };
   const unchanged = (details) => receipt(name, "unchanged", { before: revision, after: revision }, details);
@@ -218,7 +226,8 @@ export async function runOperation(name, options = {}) {
     const run = createRun({ id, name: value.name, recipe: value.recipe, createdAt }, workspace);
     const existing = workspace.runs.find((item) => item.id === id);
     if (existing) {
-      if (same({ ...existing, createdAt, updatedAt: createdAt }, run)) return unchanged({ run: existing.id, duplicate: "identical planned run already exists" });
+      const plan = (item) => ({ id: item.id, name: item.name, recipe: item.recipe, totalSteps: item.totalSteps, localJobId: item.localJobId });
+      if (same(plan(existing), plan(run))) return unchanged({ run: existing.id, status: existing.status, duplicate: "identical planned run already exists" });
       throw blocked("run-conflict", "A run with this ID already exists with different contents. Existing evidence will not be overwritten.");
     }
     return commit({ ...workspace, runs: [...workspace.runs, run] }, { run: run.id, status: run.status, totalSteps: run.totalSteps });
@@ -262,14 +271,21 @@ Run catalog for the versioned contract. Output is always one JSON document. Exit
 Nothing here starts training, reads browser storage, or synchronizes with the UI; hand off through export-backup / import-backup.`;
 
 export async function main(argv) {
-  const { values, positionals } = parseArgs({
-    args: argv, allowPositionals: true,
-    options: {
-      workspace: { type: "string" }, "expected-revision": { type: "string" }, file: { type: "string" }, input: { type: "string" },
-      out: { type: "string" }, run: { type: "string" }, record: { type: "string" }, id: { type: "string" }, name: { type: "string" },
-      kind: { type: "string" }, holdout: { type: "string" }, provenance: { type: "string" }, teacher: { type: "string" }, help: { type: "boolean" },
-    },
-  });
+  let values, positionals;
+  try {
+    ({ values, positionals } = parseArgs({
+      args: argv, allowPositionals: true,
+      options: {
+        workspace: { type: "string" }, "expected-revision": { type: "string" }, file: { type: "string" }, input: { type: "string" },
+        out: { type: "string" }, run: { type: "string" }, record: { type: "string" }, id: { type: "string" }, name: { type: "string" },
+        kind: { type: "string" }, holdout: { type: "string" }, provenance: { type: "string" }, teacher: { type: "string" }, help: { type: "boolean" },
+      },
+    }));
+  } catch (error) {
+    if (!error.code?.startsWith("ERR_PARSE_ARGS")) throw error;
+    console.log(JSON.stringify(receipt(argv.find((value) => !value.startsWith("--")) ?? null, "failed", null, { error: { code: "invalid-arguments", message: "Unrecognized or malformed command-line option. Run --help for usage." } }), null, 2));
+    return 1;
+  }
   if (values.help || positionals.length !== 1) {
     console.log(usage);
     return values.help ? 0 : 1;
