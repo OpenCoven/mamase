@@ -5,6 +5,7 @@ import {
   validateRecipe, validateWorkspace, saveWorkspace, loadWorkspace, validateArtifact, validateEvaluation,
   exportRecipe, runsCsv, escapeHtml,
 } from "../workspace.js";
+import * as reports from "../workspace.js";
 
 const timestamp = "2026-09-13T15:00:00.000Z";
 const dataset = {
@@ -115,6 +116,133 @@ test("bad progress is rejected rather than faked or clamped", () => {
   }
   const failed = recordProgress(running, event({ status: "failed" }));
   assert.throws(() => recordProgress(failed, event({ status: "failed" })), /closed/);
+});
+
+const report = (updates, runId = "run-1") => ({ schema: "mamase.run-report.v1", runId, updates });
+
+test("cumulative progress previews additions without changing the workspace", () => {
+  const workspace = fixture();
+  const before = JSON.stringify(workspace);
+  const input = report([event(), event({ step: 20, recordedAt: "2026-09-13T17:00:00.000Z" })]);
+  const preview = reports.previewProgressReport(workspace.runs[0], input);
+  assert.equal(preview.additions.length, 2);
+  assert.equal(preview.duplicates.length, 0);
+  assert.deepEqual(preview.conflicts, []);
+  assert.equal(JSON.stringify(workspace), before);
+  const next = reports.importProgressReport(workspace, input);
+  assert.deepEqual(next.runs[0].history, input.updates);
+  assert.equal(JSON.stringify(workspace), before);
+});
+
+test("repeated reports and strict extensions preserve recorded observations", () => {
+  const first = event();
+  const second = event({ step: 20, recordedAt: "2026-09-13T17:00:00.000Z" });
+  const workspace = reports.importProgressReport(fixture(), report([first]));
+  const before = JSON.stringify(workspace);
+  assert.equal(reports.importProgressReport(workspace, report([first])), workspace);
+  const preview = reports.previewProgressReport(workspace.runs[0], report([first, second]));
+  assert.equal(preview.duplicates.length, 1);
+  assert.equal(preview.additions.length, 1);
+  const next = reports.importProgressReport(workspace, report([first, second]));
+  assert.deepEqual(next.runs[0].history, [first, second]);
+  assert.equal(reports.importProgressReport(next, report([first])), next);
+  assert.equal(JSON.stringify(workspace), before);
+});
+
+test("same-step observations need distinct identities, not guessed loss reconciliation", () => {
+  const first = event();
+  const second = event({ evalLoss: 0.9, recordedAt: "2026-09-13T16:01:00.000Z" });
+  const paused = event({ status: "paused", recordedAt: second.recordedAt });
+  const workspace = reports.importProgressReport(fixture(), report([first, second, paused]));
+  assert.deepEqual(workspace.runs[0].history, [first, second, paused]);
+  assert.throws(() => reports.importProgressReport(workspace, report([first, paused, second])), /journal order/);
+  const competing = report([first, { ...second, evalLoss: 0.8 }]);
+  const before = JSON.stringify(workspace);
+  const preview = reports.previewProgressReport(workspace.runs[0], competing);
+  assert.equal(preview.duplicates.length, 1);
+  assert.match(preview.conflicts[0].message, /evalLoss/);
+  assert.equal(preview.run, workspace.runs[0]);
+  assert.throws(() => reports.importProgressReport(workspace, competing), /conflict/i);
+  assert.equal(JSON.stringify(workspace), before);
+});
+
+test("progress identity is independent of JSON key order and timestamp spelling", () => {
+  const first = event({ loss: 0 });
+  const workspace = reports.importProgressReport(fixture(), report([first]));
+  const equivalent = Object.fromEntries(Object.entries({ ...first, recordedAt: "2026-09-13T18:00:00+02:00" }).reverse());
+  assert.equal(reports.importProgressReport(workspace, report([equivalent])), workspace);
+  assert.equal(workspace.runs[0].history[0].recordedAt, first.recordedAt);
+  assert.throws(() => reports.importProgressReport(workspace, report([{ ...first, loss: null }])), /conflict/i);
+});
+
+test("closed histories allow exact replays but cannot be extended or altered", () => {
+  for (const status of ["completed", "failed", "cancelled"]) {
+    const input = report([event(), event({ status, step: status === "completed" ? 69 : 10, recordedAt: "2026-09-13T17:00:00.000Z" })]);
+    const workspace = reports.importProgressReport(fixture(), input);
+    const before = JSON.stringify(workspace);
+    assert.equal(reports.importProgressReport(workspace, input), workspace);
+    assert.throws(() => reports.importProgressReport(workspace, report([...input.updates, { ...input.updates[1], recordedAt: "2026-09-13T18:00:00.000Z" }])), /closed/);
+    assert.throws(() => reports.importProgressReport(workspace, report([input.updates[0], { ...input.updates[1], note: "Changed evidence" }])), /conflict/i);
+    assert.equal(JSON.stringify(workspace), before);
+  }
+});
+
+test("unordered, missing historical and cross-run evidence fails atomically", () => {
+  const first = event();
+  const second = event({ step: 20, recordedAt: "2026-09-13T17:00:00.000Z" });
+  const workspace = reports.importProgressReport(fixture(), report([first, second]));
+  const before = JSON.stringify(workspace);
+  for (const input of [
+    report([second, first]),
+    report([event({ step: 15, recordedAt: "2026-09-13T16:30:00.000Z" })]),
+    report([first], "another-run"),
+    report([second, event({ step: 21, recordedAt: "2026-09-13T18:00:00.000Z" }), event({ step: 19, recordedAt: "2026-09-13T19:00:00.000Z" })]),
+    report([{ ...second, loss: -1 }]),
+    report([]),
+  ]) {
+    assert.throws(() => reports.importProgressReport(workspace, input));
+    assert.equal(JSON.stringify(workspace), before);
+  }
+});
+
+test("duplicate entries in a file do not add duplicate history", () => {
+  const first = event();
+  const second = event({ step: 20 });
+  const input = report([first, first, second, second]);
+  const preview = reports.previewProgressReport(fixture().runs[0], input);
+  assert.equal(preview.additions.length, 2);
+  assert.equal(preview.duplicates.length, 2);
+  assert.deepEqual(preview.conflicts, []);
+  assert.deepEqual(reports.importProgressReport(fixture(), input).runs[0].history, [first, second]);
+});
+
+test("legacy repeated observations remain replayable without rewriting their history", () => {
+  const workspace = fixture();
+  for (const update of [event(), event({ note: "Another manual observation" }), event()]) {
+    workspace.runs[0] = recordProgress(workspace.runs[0], update);
+  }
+  assert.equal(reports.importProgressReport(workspace, report(workspace.runs[0].history)), workspace);
+});
+
+test("managed progress cannot be replaced by an external report", () => {
+  const workspace = fixture();
+  workspace.runs[0].localJobId = "job-1";
+  assert.throws(() => reports.importProgressReport(workspace, report([event()])), /Managed/);
+});
+
+test("a full journal still permits duplicate-only reports but cannot grow past its limit", () => {
+  const workspace = fixture();
+  const history = Array.from({ length: 10000 }, (_, step) => event({
+    step, totalSteps: 10001, recordedAt: new Date(Date.parse("2026-09-13T16:00:00.000Z") + step).toISOString(),
+  }));
+  const last = history.at(-1);
+  workspace.runs[0] = { ...workspace.runs[0], status: last.status, step: last.step, totalSteps: last.totalSteps, updatedAt: last.recordedAt, history };
+  assert.deepEqual(validateWorkspace(workspace), workspace);
+  assert.equal(reports.importProgressReport(workspace, report([last])), workspace);
+  const update = { ...last, step: 10000, recordedAt: "2026-09-13T17:00:00.000Z" };
+  const before = JSON.stringify(workspace);
+  assert.throws(() => reports.importProgressReport(workspace, report([last, update])), /history limit/);
+  assert.equal(JSON.stringify(workspace), before);
 });
 
 test("artifacts and evaluations preserve relationships and bounded scores", () => {

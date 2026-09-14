@@ -299,8 +299,8 @@ every familiar. This runner uses Transformers + PEFT directly, not TRL.
 The bundle receives:
 
 - `adapter/`: reloadable adapter weights and tokenizer, not a replacement base.
-- `run-report.json`: observed optimizer steps/loss and final state, importable
-  from the matching UI run's progress journal **after the process exits**.
+- `run-report.json`: cumulative observed optimizer steps/loss and current state,
+  importable from the matching UI run's progress journal.
 - `result.json`: exact lineage, file fingerprints, library versions, trainable
   parameter count, device, and completion-token-weighted base/adapter holdout
   negative log-likelihood on the same examples. A negative loss delta is lower
@@ -310,10 +310,32 @@ Import `run-report.json` into its run's progress journal first. Once the run is
 completed, choose **Import training result** on that run or in Model library
 and select `result.json`. This registers the actual adapter path, not the
 recipe's `outputPath` hint, and retains its identity/dataset binding and
-holdout loss. Imports reject mismatched runs, identities, datasets, step
-counts, or duplicate files instead of partially updating the workspace.
-Do not repeatedly import a cumulative report into a partially updated UI run.
-Fresh experiments require fresh UI runs and bundles.
+holdout loss. Training-result and paired-evaluation imports reject mismatched
+lineage or duplicate files instead of partially updating the workspace.
+
+Progress reports use a read-only **Preview report** followed by confirmation.
+The preview counts new observations, duplicates, and conflicts, and displays up
+to 20 proposed additions/conflicts. Strict cumulative extensions append only new
+observations. Exact repeated evidence is a visible no-op with no storage write,
+including on completed, failed, or cancelled runs.
+
+An observation is identified within its run by status, optimizer step, and
+timestamp instant. Its total steps, losses, and note must match to count as a
+duplicate. Same-step measurements at later times and status transitions remain
+distinct. The original timestamp spelling and journal order are preserved;
+JSON key order and equivalent timezone spellings do not change the identity.
+Unknown historical observations are never inserted behind the recorded journal,
+and competing measurements never replace existing evidence. Any conflict blocks
+the entire import; use the original report or a separate run rather than editing
+closed history.
+
+Cancelling either stage leaves storage unchanged. Quota failures keep the
+preview available for retry and backup export. Confirmation checks the same
+workspace snapshot used for preview; concurrent-tab changes require reloading
+and previewing again. Managed MLX histories remain server-owned and reconcile
+through the existing local-job sync, not external report imports.
+
+Fresh experiments still require fresh UI runs and bundles.
 Failed runs have a nonzero process exit and a failed report when execution
 has started; preflight errors do not pretend to have started training.
 An interrupted/killed process can leave a lock or nonterminal report: preserve

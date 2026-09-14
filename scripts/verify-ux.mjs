@@ -212,23 +212,118 @@ try {
   const pairedPage = await pairedContext.newPage();
   watch(pairedPage);
   await go(pairedPage, "sessions/run-1");
-  const importJson = async (data) => {
+  const importJson = async (data, label = "Import") => {
     const modal = pairedPage.locator("#dialog");
     await modal.getByLabel("JSON file", { exact: true }).setInputFiles({
       name: "synthetic-report.json", mimeType: "application/json", buffer: Buffer.from(JSON.stringify(data)),
     });
-    await modal.getByRole("button", { name: "Import", exact: true }).click();
+    await modal.getByRole("button", { name: label, exact: true }).click();
   };
   const recordedAt = new Date().toISOString();
+  const progressUpdates = [
+    { status: "running", step: 0, totalSteps: 2, loss: null, evalLoss: 2, note: "Synthetic browser fixture", recordedAt },
+    { status: "running", step: 1, totalSteps: 2, loss: 1.8, evalLoss: null, note: "Synthetic browser fixture", recordedAt: new Date(Date.parse(recordedAt) + 1).toISOString() },
+    { status: "completed", step: 2, totalSteps: 2, loss: 1, evalLoss: 1.5, note: "Synthetic browser fixture", recordedAt: new Date(Date.parse(recordedAt) + 2).toISOString() },
+  ];
+  const progressReport = (updates) => ({ schema: "mamase.run-report.v1", runId: "run-1", updates });
+  const previewReport = async (updates) => {
+    await pairedPage.getByRole("button", { name: "Import report", exact: true }).click();
+    await importJson(progressReport(updates), "Preview report");
+    await pairedPage.locator("#dialog-report-summary").waitFor();
+  };
+  const reportModal = pairedPage.locator("#dialog");
+  const untouched = await stored(pairedPage);
+  await previewReport(progressUpdates.slice(0, 1));
+  assert.match(await reportModal.locator("#dialog-report-summary").textContent(), /1 new.*0 duplicates.*0 conflicts/);
+  assert.equal(await pairedPage.evaluate(() => document.activeElement.id), "dialog-title");
+  await pairedPage.setViewportSize({ width: 390, height: 844 });
+  await bounds(pairedPage);
+  assert.deepEqual(await stored(pairedPage), untouched, "Preview must not persist observations");
+  await pairedPage.keyboard.press("Escape");
+  await pairedPage.setViewportSize({ width: 1440, height: 900 });
+  assert.deepEqual(await stored(pairedPage), untouched, "Cancelling a preview must leave storage unchanged");
+
   await pairedPage.getByRole("button", { name: "Import report", exact: true }).click();
-  await importJson({
-    schema: "mamase.run-report.v1", runId: "run-1",
-    updates: [
-      { status: "running", step: 0, totalSteps: 2, loss: null, evalLoss: 2, note: "Synthetic browser fixture", recordedAt },
-      { status: "completed", step: 2, totalSteps: 2, loss: 1, evalLoss: 1.5, note: "Synthetic browser fixture", recordedAt },
-    ],
+  await pairedPage.evaluate(() => {
+    window.originalReportText = File.prototype.text;
+    File.prototype.text = function() {
+      return new Promise((resolve, reject) => { window.releaseReport = () => window.originalReportText.call(this).then(resolve, reject); });
+    };
   });
-  await pairedPage.locator("#dialog").waitFor({ state: "hidden" });
+  await importJson(progressReport(progressUpdates.slice(0, 1)), "Preview report");
+  await pairedPage.waitForFunction(() => typeof window.releaseReport === "function");
+  await pairedPage.keyboard.press("Escape");
+  await pairedPage.evaluate(() => { File.prototype.text = window.originalReportText; window.releaseReport(); });
+  await pairedPage.locator("#toast").getByText(/form was closed/).waitFor();
+  assert.deepEqual(await stored(pairedPage), untouched, "An aborted file read must not reopen a preview or save");
+  assert.equal(await reportModal.isVisible(), false);
+
+  await previewReport(progressUpdates.slice(0, 1));
+  await reportModal.getByRole("button", { name: "Import new observations", exact: true }).click();
+  await reportModal.waitFor({ state: "hidden" });
+  const partialReport = await stored(pairedPage);
+  assert.deepEqual(partialReport.runs[0].history, progressUpdates.slice(0, 1));
+  await pairedPage.evaluate(() => {
+    window.originalReportSetItem = Storage.prototype.setItem;
+    window.reportWriteAttempts = 0;
+    Storage.prototype.setItem = function(key, value) {
+      if (key === "mamase.coven-lab.v1") {
+        window.reportWriteAttempts++;
+        throw new DOMException("Synthetic full storage", "QuotaExceededError");
+      }
+      return window.originalReportSetItem.call(this, key, value);
+    };
+  });
+  await previewReport(progressUpdates.slice(0, 1));
+  assert.match(await reportModal.locator("#dialog-report-summary").textContent(), /0 new.*1 duplicates.*0 conflicts/);
+  await reportModal.getByRole("button", { name: "Keep existing history", exact: true }).click();
+  await reportModal.waitFor({ state: "hidden" });
+  assert.equal(await pairedPage.evaluate(() => window.reportWriteAttempts), 0, "Duplicate-only imports must not write storage");
+  assert.deepEqual(await stored(pairedPage), partialReport);
+
+  await previewReport(progressUpdates.slice(0, 2));
+  assert.match(await reportModal.locator("#dialog-report-summary").textContent(), /1 new.*1 duplicates.*0 conflicts/);
+  await reportModal.getByRole("button", { name: "Import new observations", exact: true }).click();
+  await reportModal.getByText(/Browser storage is full/).waitFor();
+  assert.deepEqual(await stored(pairedPage), partialReport, "Quota failures must preserve the partial journal");
+  assert.ok(await reportModal.getByRole("button", { name: "Export open workspace", exact: true }).isVisible());
+  await pairedPage.evaluate(() => { Storage.prototype.setItem = window.originalReportSetItem; });
+  await reportModal.getByRole("button", { name: "Import new observations", exact: true }).click();
+  await reportModal.waitFor({ state: "hidden" });
+  assert.deepEqual((await stored(pairedPage)).runs[0].history, progressUpdates.slice(0, 2));
+
+  await previewReport(progressUpdates);
+  const otherTab = await pairedContext.newPage();
+  await go(otherTab, "settings");
+  await otherTab.evaluate((key) => {
+    const latest = JSON.parse(localStorage.getItem(key));
+    latest.name = "Concurrent report workspace";
+    localStorage.setItem(key, JSON.stringify(latest));
+  }, STORAGE_KEY);
+  const concurrentReport = await stored(pairedPage);
+  await reportModal.getByRole("button", { name: "Import new observations", exact: true }).click();
+  await reportModal.getByText(/workspace changed while you were editing/).waitFor();
+  assert.deepEqual(await stored(pairedPage), concurrentReport, "Confirmation must use the preview's original snapshot");
+  await reportModal.getByRole("button", { name: "Reload workspace", exact: true }).click();
+  await reportModal.getByRole("button", { name: "Reload latest data", exact: true }).click();
+  await reportModal.waitFor({ state: "hidden" });
+  await otherTab.close();
+  await previewReport(progressUpdates);
+  assert.match(await reportModal.locator("#dialog-report-summary").textContent(), /1 new.*2 duplicates.*0 conflicts/);
+  await reportModal.getByRole("button", { name: "Import new observations", exact: true }).click();
+  await reportModal.waitFor({ state: "hidden" });
+  const completedReport = await stored(pairedPage);
+  assert.equal(completedReport.name, "Concurrent report workspace");
+  assert.deepEqual(completedReport.runs[0].history, progressUpdates);
+  await previewReport([progressUpdates[0], { ...progressUpdates[1], loss: 0.5 }, progressUpdates[2]]);
+  assert.match(await reportModal.locator("#dialog-report-summary").textContent(), /0 new.*2 duplicates.*1 conflicts/);
+  assert.equal(await reportModal.getByRole("button", { name: "Import new observations", exact: true }).count(), 0);
+  assert.deepEqual(await stored(pairedPage), completedReport, "Competing closed-run evidence must not replace history");
+  await pairedPage.keyboard.press("Escape");
+  await previewReport(progressUpdates);
+  await reportModal.getByRole("button", { name: "Keep existing history", exact: true }).click();
+  await reportModal.waitFor({ state: "hidden" });
+  assert.deepEqual(await stored(pairedPage), completedReport, "Closed-run replays must be visible no-ops");
   const hash = (letter) => letter.repeat(64);
   const trainingResult = {
     schema: "mamase.training-result.v1", runId: "run-1", bundleSha256: hash("c"),
@@ -438,7 +533,7 @@ try {
   }
   assert.deepEqual(errors, []);
   assert.deepEqual(external, []);
-  console.log(`UX end-to-end passed: ${layouts} responsive layouts, recoverable drafts, atomic imports, paired-report lineage and regression review, private-summary backups, matching CSV exports, guarded comparisons, loss accessibility and conflict recovery.`);
+  console.log(`UX end-to-end passed: ${layouts} responsive layouts, recoverable drafts, report previews and no-op replay, atomic imports with abort/quota/concurrency recovery, paired-report lineage and regression review, private-summary backups, matching CSV exports, guarded comparisons and loss accessibility.`);
 } catch (error) {
   if (currentPage && !currentPage.isClosed()) await capture(currentPage, "failure");
   throw error;

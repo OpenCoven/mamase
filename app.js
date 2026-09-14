@@ -3,7 +3,7 @@ import {
   createWorkspace, loadWorkspace, saveWorkspace, validateWorkspace, parseDataset,
   validateDataset, splitCounts, createRun, recordProgress, validateArtifact,
   validateEvaluation, exportRecipe, escapeHtml as esc, runsCsv, estimatedSteps,
-  importTrainingResult, importEvaluationReport,
+  importTrainingResult, importEvaluationReport, previewProgressReport, importProgressReport,
 } from "./workspace.js";
 import { icon, button, link, field, select, badge, empty, table, formatDate, formatBytes, progress, lossChart, distillationArt } from "./ui.js";
 import { DRAFT_KEY, RUN_PAGE_SIZE, parseRoute, runUrl, selectRuns, searchWorkspace, compareEvaluations, readRecipeDraft } from "./experience.js";
@@ -241,8 +241,8 @@ function runDetail(id) {
 npm run lab -- prepare --recipe /path/recipe.json --dataset /path/examples.jsonl --identity-dir /path/familiar --out .lab/experiment</pre>
       <p>After inspecting the bundle, use a compatible local safetensors model:</p>
       <pre>.venv/bin/python training/train.py --bundle .lab/experiment --model /path/local-model</pre>
-      <p class="help">Once training exits, import <code>run-report.json</code> below, then import <code>result.json</code> to register the actual adapter path and holdout comparison. Run a separate versioned suite with <code>training/evaluate.py</code> and import its paired report from Evaluations. Nothing promotes the adapter.</p></section>
-    <section class="card"><div class="section-heading"><h2>Progress journal</h2><div class="actions">${button("Report template", "report-template", "code", "small", `data-id="${run.id}"`)}${closed ? "" : button("Import report", "import-report", "upload", "small", `data-id="${run.id}"`)}</div></div>
+      <p class="help">Preview <code>run-report.json</code> below before confirming its new observations. Cumulative reports can be imported again: identical evidence is skipped, while conflicts never overwrite history. Once training completes, import <code>result.json</code> to register the actual adapter path and holdout comparison. Run a separate versioned suite with <code>training/evaluate.py</code> and import its paired report from Evaluations. Nothing promotes the adapter.</p></section>
+    <section class="card"><div class="section-heading"><h2>Progress journal</h2><div class="actions">${button("Report template", "report-template", "code", "small", `data-id="${run.id}"`)}${run.localJobId ? "" : button("Import report", "import-report", "upload", "small", `data-id="${run.id}"`)}</div></div>
     <div id="run-journal">${runJournal(run)}</div></section>
     <section class="card"><div class="section-heading"><h2>Local model artifacts</h2><div class="actions">${run.status === "completed" && !run.localJobId ? button("Import training result", "import-training-result", "upload", "small", `data-id="${run.id}"`) : ""}${button("Register artifact", "new-artifact", "plus", "small", `data-id="${run.id}"`)}</div></div>
     <div id="run-artifacts">${runArtifacts(run)}</div></section>`;
@@ -620,12 +620,16 @@ function updateStorageNotice() {
   if (ui.conflict && !notice.childElementCount) notice.innerHTML = `<div><strong>This workspace changed in another tab.</strong><p>Your open forms have been kept. Reload the latest data before saving to avoid overwriting changes.</p><div class="actions">${button("Export open workspace", "export-workspace", "download", "small")}${button("Reload workspace", "reload-workspace", "", "small")}</div></div>`;
 }
 
-function persist(next, expectedSource) {
+function assertWorkspaceSource(expectedSource) {
   if (localStorage.getItem(STORAGE_KEY) !== expectedSource) {
     ui.conflict = true;
     updateStorageNotice();
     throw new Error("This workspace changed while you were editing. Reload before saving to avoid overwriting those changes.");
   }
+}
+
+function persist(next, expectedSource) {
+  assertWorkspaceSource(expectedSource);
   workspace = saveWorkspace(localStorage, next);
   savedSource = localStorage.getItem(STORAGE_KEY);
   storageError = "";
@@ -677,8 +681,24 @@ function download(filename, content, type = "application/json") {
 }
 const downloadJson = (name, content) => download(name, JSON.stringify(content, null, 2));
 
-function importDialog(title, form, description, context = {}) {
-  openModal(title, `<p class="muted">${description}</p>${field("JSON file", "file", "", { type: "file", attrs: 'accept=".json,application/json"' })}${formFooter("Import")}`, form, context);
+function importDialog(title, form, description, context = {}, label = "Import") {
+  openModal(title, `<p class="muted">${description}</p>${field("JSON file", "file", "", { type: "file", attrs: 'accept=".json,application/json"' })}${formFooter(label)}`, form, context);
+}
+
+function progressReportPreview(preview, report, expectedSource) {
+  const { additions, duplicates, conflicts } = preview;
+  openModal("Review progress report", `
+    <p id="report-summary" role="status">${num(additions.length)} new · ${num(duplicates.length)} duplicates · ${num(conflicts.length)} conflicts</p>
+    <p>No changes have been saved. Duplicates match recorded evidence or repeat an observation in this file. Original timestamps and journal order are preserved.</p>
+    ${conflicts.length ? `<p class="warning">The entire import is blocked. Correct the source report or use a separate run; existing evidence cannot be overwritten.</p><ul>${conflicts.slice(0, 20).map(({ index, message }) => `<li>Observation ${index + 1}: ${esc(message)}</li>`).join("")}</ul>${conflicts.length > 20 ? "<p>Showing the first 20 conflicts.</p>" : ""}` : additions.length ? "<p>Confirm to append only the new observations below.</p>" : "<p>This report contains no new observations. Keeping the existing history will not write to storage, even for a closed run.</p>"}
+    ${additions.length ? `${table(["Report row", "Recorded", "Status", "Step", "Loss / validation", "Notes"], additions.slice(0, 20).map(({ index, update }) => [index + 1, esc(update.recordedAt), badge(update.status), `${update.step} / ${update.totalSteps}`, `${update.loss ?? "—"} / ${update.evalLoss ?? "—"}`, esc(update.note) || "—"]), "Proposed progress observations")}${additions.length > 20 ? `<p class="help">Showing the first 20 of ${num(additions.length)} proposed additions.</p>` : ""}` : ""}
+    <p class="help">If storage is full, export a backup and free space before retrying. If another tab saved changes, reload the latest workspace and preview the report again.</p>
+    <div class="actions">${button("Export open workspace", "export-workspace", "download", "small")}${button("Reload workspace", "reload-workspace", "", "small")}</div>
+    ${conflicts.length ? `<div class="modal-footer">${button("Cancel", "close-dialog", "", "quiet")}${button("Choose another report", "import-report", "upload", "primary", `data-id="${preview.runId}"`)}</div>` : formFooter(additions.length ? "Import new observations" : "Keep existing history")}`,
+  conflicts.length ? "" : "confirm-report", { runId: preview.runId, report, expectedSource });
+  const title = dialog.querySelector("#dialog-title");
+  title.tabIndex = -1;
+  title.focus();
 }
 
 function searchResults(query) {
@@ -792,7 +812,7 @@ const actions = {
   },
   "import-report": (element) => {
     assert(!byId(workspace.runs, element.dataset.id).localJobId && !training.jobs.has(element.dataset.id), "Managed local jobs record their own progress.");
-    importDialog("Import progress report", "report", "Import a mamase.run-report.v1 JSON file. Updates must be chronological, use this run ID, and cannot move completed steps backwards.", { runId: element.dataset.id });
+    importDialog("Import progress report", "report", "Choose a mamase.run-report.v1 JSON file (up to 4 MB). Preview new observations, duplicates and conflicts before saving. Exact repeats are safe, including on closed runs; history is never rewritten.", { runId: element.dataset.id }, "Preview report");
   },
   "import-training-result": (element) => importDialog("Import training result", "training-result", "Choose result.json from a completed local training bundle. Import its run-report.json first. This registers the actual adapter path, source fingerprints, and base/adapter holdout loss; it never promotes a model.", { runId: element.dataset.id }),
   "import-evaluation": () => importDialog("Import paired evaluation", "paired-evaluation", "Choose evaluation-report.json from the local evaluator (up to 20 MB). Import the matching training result first. Scores are recomputed from the report's string checks; only summaries and fingerprints are saved, not its prompts or responses."),
@@ -870,7 +890,7 @@ async function submitForm(form) {
   const input = Object.fromEntries(new FormData(form));
   const type = form.dataset.form;
   const context = { ...modalContext };
-  const expectedSource = savedSource;
+  const expectedSource = type === "confirm-report" ? context.expectedSource : savedSource;
   if (type === "local-launch") {
     const run = structuredClone(byId(workspace.runs, context.runId));
     const dataset = structuredClone(byId(workspace.datasets, run.recipe.datasetId));
@@ -921,11 +941,23 @@ async function submitForm(form) {
     assert(!byId(next.runs, context.runId).localJobId && !training.jobs.has(context.runId), "Managed local jobs record their own progress.");
     const { source } = await readFile(form, MAX_WORKSPACE_BYTES);
     const report = JSON.parse(source);
-    assert(report.schema === "mamase.run-report.v1" && report.runId === context.runId, "Expected a mamase.run-report.v1 report for this run.");
-    assert(Array.isArray(report.updates) && report.updates.length > 0 && report.updates.length <= 10000, "Report needs 1–10,000 progress updates.");
-    const index = next.runs.findIndex((run) => run.id === report.runId);
-    for (const update of report.updates) next.runs[index] = recordProgress(next.runs[index], update);
-    message = `${report.updates.length} progress observations imported.`;
+    const preview = previewProgressReport(byId(next.runs, context.runId), report);
+    assert(form.isConnected && dialog.open, "The form was closed before saving. No changes were made.");
+    assertWorkspaceSource(expectedSource);
+    progressReportPreview(preview, report, expectedSource);
+    return;
+  } else if (type === "confirm-report") {
+    assert(!training.jobs.has(context.runId), "Managed local jobs record their own progress.");
+    const preview = previewProgressReport(byId(workspace.runs, context.runId), context.report);
+    next = importProgressReport(workspace, context.report);
+    if (!preview.additions.length) {
+      assert(form.isConnected && dialog.open, "The form was closed before saving. No changes were made.");
+      assertWorkspaceSource(expectedSource);
+      closeModal();
+      notify(`Already recorded: ${num(preview.duplicates.length)} duplicate observations. No changes were saved.`);
+      return;
+    }
+    message = `${num(preview.additions.length)} new observations imported; ${num(preview.duplicates.length)} duplicates skipped.`;
   } else if (type === "artifact") {
     next.artifacts.push(validateArtifact({ ...input, id: newId("artifact"), createdAt: now() }, next));
     message = "Artifact reference registered. Local files were not changed.";

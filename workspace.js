@@ -166,13 +166,86 @@ function validateProgress(input) {
   };
 }
 
+function progressConflict(run, update) {
+  if (!transitions[run.status].includes(update.status)) return `Cannot change a ${run.status} run to ${update.status}.`;
+  if (["completed", "failed", "cancelled"].includes(run.status)) return "This run is closed. Create a new recipe for another attempt.";
+  if (update.step < run.step) return "Completed steps cannot go backwards. Missing historical observations cannot be inserted into the recorded journal.";
+  if (Date.parse(update.recordedAt) < Date.parse(run.updatedAt)) return "Progress timestamps must be chronological. Existing timestamps will not be rewritten.";
+  if (run.history.length >= 10000) return "The run has reached its 10,000-observation history limit. Export a backup before starting another run.";
+  return null;
+}
+
 export function recordProgress(run, input) {
   const update = validateProgress(input);
-  assert(transitions[run.status].includes(update.status), `Cannot change a ${run.status} run to ${update.status}.`);
-  assert(!["completed", "failed", "cancelled"].includes(run.status), "This run is closed. Create a new recipe for another attempt.");
-  assert(update.step >= run.step, "Completed steps cannot go backwards.");
-  assert(Date.parse(update.recordedAt) >= Date.parse(run.updatedAt), "Progress timestamps must be chronological.");
+  const conflict = progressConflict(run, update);
+  assert(!conflict, conflict);
   return { ...run, status: update.status, step: update.step, totalSteps: update.totalSteps, updatedAt: update.recordedAt, history: [...run.history, update] };
+}
+
+const progressIdentity = (update) => JSON.stringify([update.status, update.step, Date.parse(update.recordedAt)]);
+const progressSignature = (update) => JSON.stringify({ ...update, recordedAt: Date.parse(update.recordedAt) });
+
+export function previewProgressReport(run, report) {
+  assert(report?.schema === "mamase.run-report.v1" && report.runId === run.id, "Expected a mamase.run-report.v1 report for this run.");
+  assert(!run.localJobId, "Managed local jobs record their own progress. Use server reconciliation instead.");
+  assert(Array.isArray(report.updates) && report.updates.length > 0 && report.updates.length <= 10000, "Report needs 1-10,000 progress updates.");
+  const updates = report.updates.map(validateProgress);
+  const known = new Map();
+  const identities = new Map();
+  const remember = (update, position) => {
+    const signature = progressSignature(update);
+    if (!known.has(signature)) known.set(signature, []);
+    known.get(signature).push(position);
+    identities.set(progressIdentity(update), update);
+  };
+  run.history.forEach((update, position) => remember(validateProgress(update), position));
+  const additions = [];
+  const duplicates = [];
+  const conflicts = [];
+  let candidate = run;
+  let cursor = -1;
+  for (const [index, update] of updates.entries()) {
+    const previous = updates[index - 1];
+    let message;
+    if (previous && (update.step < previous.step || Date.parse(update.recordedAt) < Date.parse(previous.recordedAt))) {
+      message = "Report observations must be chronological with nondecreasing optimizer steps. Keep the original report order.";
+    } else {
+      const positions = known.get(progressSignature(update));
+      const position = positions?.find((value) => value >= cursor);
+      if (position !== undefined) {
+        duplicates.push({ index, update });
+        cursor = position;
+        continue;
+      }
+      const existing = identities.get(progressIdentity(update));
+      if (positions) {
+        message = "This observation is out of journal order. Keep the original report order.";
+      } else if (existing) {
+        const fields = ["totalSteps", "loss", "evalLoss", "note"].filter((key) => existing[key] !== update[key]);
+        message = `Conflicting ${update.status} observation at step ${update.step}, ${update.recordedAt}: ${fields.join(", ")} differs. Existing evidence will not be overwritten.`;
+      } else {
+        message = progressConflict(candidate, update);
+      }
+    }
+    if (message) {
+      conflicts.push({ index, update, message });
+      continue;
+    }
+    candidate = recordProgress(candidate, update);
+    cursor = candidate.history.length - 1;
+    remember(update, cursor);
+    additions.push({ index, update });
+  }
+  return { runId: run.id, additions, duplicates, conflicts, run: conflicts.length ? run : candidate };
+}
+
+export function importProgressReport(workspace, report) {
+  const run = workspace.runs.find((item) => item.id === report?.runId);
+  assert(run, "Progress report must reference an existing run.");
+  const preview = previewProgressReport(run, report);
+  assert(!preview.conflicts.length, preview.conflicts.map(({ index, message }) => `Observation ${index + 1}: ${message}`).join("\n"));
+  if (!preview.additions.length) return workspace;
+  return validateWorkspace({ ...workspace, runs: workspace.runs.map((item) => item.id === run.id ? preview.run : item) });
 }
 
 export function validateArtifact(input, workspace) {
