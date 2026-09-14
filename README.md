@@ -52,7 +52,10 @@ MAMASE_TRAINING_PYTHON="$PWD/.venv/bin/python" npm run validate -- cpu
 
 The CPU gate checks the Python patch version, all four exact requirement pins
 and actual imports before running `tests/lab.test.js`, `tests/evaluation.test.js`
-and `tests/preflight.test.js` with `MAMASE_REQUIRE_ML=1`. Missing Python,
+and `tests/preflight.test.js` with `MAMASE_REQUIRE_ML=1`. CPU test files run
+one at a time so independent model-runtime processes do not compete for memory
+and initialization time. This does not exclude cases or extend their deadlines.
+Missing Python,
 unimportable/wrong-version dependencies, test failures, empty runs and **any
 ML-job test skip** fail the gate. It creates real local synthetic LoRA, rsLoRA,
 DoRA and response-distillation adapters, reloads them, evaluates base/adapter

@@ -82,8 +82,8 @@ try {
       const mlEnv = { ...nodeEnv, MAMASE_TRAINING_PYTHON: python, MAMASE_REQUIRE_ML: "1" };
       run(job, python, ["-B", "scripts/check-training-env.py"], "selected Python -B scripts/check-training-env.py", mlEnv);
       job.pythonVersion = "3.14.7";
-      run(job, node, ["--test", "--test-reporter=tap", "tests/lab.test.js", "tests/evaluation.test.js", "tests/preflight.test.js"],
-        "node --test --test-reporter=tap tests/lab.test.js tests/evaluation.test.js tests/preflight.test.js (required ML)", mlEnv, true);
+      run(job, node, ["--test", "--test-concurrency=1", "--test-reporter=tap", "tests/lab.test.js", "tests/evaluation.test.js", "tests/preflight.test.js"],
+        "node --test --test-concurrency=1 --test-reporter=tap tests/lab.test.js tests/evaluation.test.js tests/preflight.test.js (required ML)", mlEnv, true);
     } else {
       run(job, node, ["scripts/verify-ux.mjs"], "node scripts/verify-ux.mjs",
         { ...nodeEnv, MAMASE_UX_EVIDENCE: join(output, "browser") });
