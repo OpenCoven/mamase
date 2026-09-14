@@ -1,0 +1,63 @@
+name: Bug report
+description: Report a reproducible problem with the local lab.
+title: "[Bug] "
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Search existing issues first. Use synthetic examples and redact local paths.
+        Never attach familiar identity/memory, private datasets, credentials, weights,
+        or raw per-case evaluation reports. A minimal synthetic reproducer is preferred.
+  - type: dropdown
+    id: area
+    attributes:
+      label: Affected area
+      options:
+        - Preparation or training
+        - Evaluation or candidate review
+        - Workspace, import, or recovery
+        - Interface, theme, or accessibility
+        - Development or contribution workflow
+    validations:
+      required: true
+  - type: textarea
+    id: behavior
+    attributes:
+      label: Expected and observed behavior
+      description: Separate what happened from what you expected; describe the user impact.
+    validations:
+      required: true
+  - type: textarea
+    id: reproduce
+    attributes:
+      label: Minimal reproduction
+      description: Include ordered steps or a synthetic fixture, exact command, and branch/commit.
+    validations:
+      required: true
+  - type: textarea
+    id: environment
+    attributes:
+      label: Environment
+      description: Relevant browser/OS, Node/Python/package versions, device, and adapter technique. No private paths or identifiers.
+    validations:
+      required: true
+  - type: textarea
+    id: evidence
+    attributes:
+      label: Redacted evidence
+      description: Exact error, exit status, and frequency. Explain if the problem risks data loss or invalid evidence.
+    validations:
+      required: true
+  - type: textarea
+    id: regression
+    attributes:
+      label: Regression boundary and related issues
+      description: Last known working version, relevant issue links, and a proposed regression assertion if known.
+  - type: checkboxes
+    id: privacy
+    attributes:
+      label: Data boundaries
+      options:
+        - label: I reviewed this report for private data and used redacted or synthetic evidence.
+          required: true

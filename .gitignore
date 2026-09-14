@@ -141,3 +141,10 @@ dist
 vite.config.js.timestamp-*
 vite.config.ts.timestamp-*
 .vite/
+
+# Private training data, environments, and model artifacts
+.venv/
+__pycache__/
+*.pyc
+.lab/
+outputs/

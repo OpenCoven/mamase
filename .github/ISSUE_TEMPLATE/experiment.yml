@@ -1,0 +1,60 @@
+name: Experiment or evaluation proposal
+description: Plan a measurable local experiment without confusing a hypothesis with evidence.
+title: "[Experiment] "
+labels: ["enhancement", "area:eval"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Keep all examples, identities, private prompts/responses, and model artifacts local.
+        This issue tracks a proposal and redacted evidence, not permission to harvest data,
+        start an expensive run, change a familiar's identity, or promote a model.
+  - type: textarea
+    id: hypothesis
+    attributes:
+      label: Hypothesis and baseline
+      description: State the expected improvement, its baseline, and what would falsify the hypothesis.
+    validations:
+      required: true
+  - type: textarea
+    id: protocol
+    attributes:
+      label: Proposed protocol
+      description: Technique, model identifier/revision, device/resource budget, seed, and controlled variables. No private paths.
+    validations:
+      required: true
+  - type: textarea
+    id: provenance
+    attributes:
+      label: Data authorization and split strategy
+      description: Describe provenance/permission and how training, tuning holdout, and independent evaluation remain separate.
+    validations:
+      required: true
+  - type: textarea
+    id: metrics
+    attributes:
+      label: Success, regression, and stopping criteria
+      description: Specify versioned suite, metrics/rubrics, sample counts, decoding, acceptable regressions, and stop conditions. Distinguish rule checks from human judgments.
+    validations:
+      required: true
+  - type: textarea
+    id: artifacts
+    attributes:
+      label: Evidence to retain and review
+      description: Name local manifest/report types and redacted summaries. Identify the reviewer and required approval before any runtime change.
+    validations:
+      required: true
+  - type: textarea
+    id: dependencies
+    attributes:
+      label: Dependencies and unresolved assumptions
+      description: Link blocking issues and distinguish verified compatibility from assumptions.
+    validations:
+      required: true
+  - type: checkboxes
+    id: authority
+    attributes:
+      label: Approval boundaries
+      options:
+        - label: This proposal does not authorize automatic training, deployment, identity changes, or new tool permissions.
+          required: true

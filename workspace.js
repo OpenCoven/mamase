@@ -1,5 +1,10 @@
+import { assert, text, number, date, id } from "./validation.js";
+import { validateTrainingLineage, validateComparison, artifactFromTrainingResult, evaluationFromReport } from "./results.js";
+
+export { assert } from "./validation.js";
 export const STORAGE_KEY = "mamase.coven-lab.v1";
 export const METHODS = { lora: "LoRA fine-tuning", distillation: "Response distillation" };
+export const ADAPTERS = { lora: "LoRA", qlora: "QLoRA · 4-bit NF4 (CUDA)", rslora: "Rank-stabilized LoRA", dora: "DoRA" };
 export const STATUSES = ["planned", "running", "paused", "completed", "failed", "cancelled"];
 export const MAX_IMPORT_BYTES = 20 * 1024 * 1024;
 export const MAX_WORKSPACE_BYTES = 4 * 1024 * 1024;
@@ -12,33 +17,6 @@ const transitions = {
   failed: ["failed"],
   cancelled: ["cancelled"],
 };
-
-export function assert(condition, message) {
-  if (!condition) throw new Error(message);
-}
-
-function text(value, label, max = 500, optional = false) {
-  assert(typeof value === "string", `${label} must be text.`);
-  const result = value.trim();
-  assert((optional || result.length > 0) && result.length <= max, `${label} must contain ${optional ? "0" : "1"}–${max} characters.`);
-  return result;
-}
-
-function number(value, label, min, max, integer = false) {
-  assert(typeof value === "number" && Number.isFinite(value), `${label} must be a finite number.`);
-  assert(value >= min && value <= max && (!integer || Number.isSafeInteger(value)), `${label} must be ${integer ? "an integer " : ""}between ${min} and ${max}.`);
-  return value;
-}
-
-function date(value) {
-  assert(typeof value === "string" && Number.isFinite(Date.parse(value)), "A valid timestamp is required.");
-  return value;
-}
-
-function id(value) {
-  assert(typeof value === "string" && /^[a-zA-Z0-9_-]{1,80}$/.test(value), "Invalid record ID.");
-  return value;
-}
 
 export function createWorkspace() {
   return {
@@ -124,12 +102,21 @@ export function validateRecipe(input, workspace) {
   }
   const rank = number(input.rank, "LoRA rank", 4, 256, true);
   assert([4, 8, 16, 32, 64, 128, 256].includes(rank), "LoRA rank must be a power of two from 4 to 256.");
+  const adapter = input.adapter ?? "lora";
+  assert(Object.hasOwn(ADAPTERS, adapter), "Choose a supported adapter.");
+  const familiarId = text(input.familiarId ?? "", "Familiar ID", 80, true);
+  const instanceId = text(input.instanceId ?? "", "Coven instance ID", 80, true);
+  assert(Boolean(familiarId) === Boolean(instanceId), "Set both familiar and Coven instance IDs, or leave both unbound.");
+  if (familiarId) { id(familiarId); id(instanceId); }
   return {
     method: input.method,
     programId: input.programId,
     datasetId: dataset.id,
     student: text(input.student, "Student/base model", 200),
     teacher: input.method === "distillation" ? teacher : "",
+    adapter,
+    familiarId,
+    instanceId,
     rank,
     alpha: number(input.alpha, "LoRA alpha", 1, 1024, true),
     learningRate: number(input.learningRate, "Learning rate", 0.00000001, 1),
@@ -188,8 +175,10 @@ export function recordProgress(run, input) {
 }
 
 export function validateArtifact(input, workspace) {
-  assert(workspace.runs.some((run) => run.id === input.runId), "Choose an existing run.");
+  const run = workspace.runs.find((run) => run.id === input.runId);
+  assert(run, "Choose an existing run.");
   assert(["adapter", "checkpoint", "merged", "gguf"].includes(input.kind), "Choose a supported artifact type.");
+  if (input.lineage !== undefined) assert(input.kind === "adapter", "Imported training results must reference an adapter.");
   return {
     id: id(input.id),
     runId: input.runId,
@@ -198,12 +187,19 @@ export function validateArtifact(input, workspace) {
     path: text(input.path, "Local artifact path", 1000),
     notes: text(input.notes, "Artifact notes", 2000, true),
     createdAt: date(input.createdAt),
+    ...(input.lineage === undefined ? {} : { lineage: validateTrainingLineage(input.lineage, run, workspace.datasets.find((item) => item.id === run.recipe.datasetId)) }),
   };
 }
 
 export function validateEvaluation(input, workspace) {
-  assert(workspace.artifacts.some((artifact) => artifact.id === input.artifactId), "Register a model artifact first.");
+  const artifact = workspace.artifacts.find((artifact) => artifact.id === input.artifactId);
+  assert(artifact, "Register a model artifact first.");
   const maximum = number(input.maximum, "Score maximum", 0.000001, 1_000_000);
+  const comparison = input.comparison === undefined ? undefined : validateComparison(input.comparison, artifact);
+  if (comparison) {
+    assert(input.score === comparison.adapterPassed && maximum === comparison.samples && input.samples === comparison.samples, "Evaluation score does not match paired results.");
+    assert(input.benchmark === `${comparison.suite.name} / ${comparison.suite.version}`, "Evaluation benchmark does not match its suite.");
+  }
   return {
     id: id(input.id),
     artifactId: input.artifactId,
@@ -213,7 +209,25 @@ export function validateEvaluation(input, workspace) {
     samples: number(input.samples, "Evaluation samples", 1, 1_000_000_000, true),
     notes: text(input.notes, "Evaluation notes", 2000, true),
     createdAt: date(input.createdAt),
+    ...(comparison ? { comparison } : {}),
   };
+}
+
+export function importTrainingResult(workspace, result, metadata) {
+  const run = workspace.runs.find((item) => item.id === result?.runId);
+  assert(run, "Training result must reference an existing run.");
+  assert(!workspace.artifacts.some((artifact) => artifact.lineage?.resultSha256 === metadata.sha256), "This training result is already imported.");
+  const dataset = workspace.datasets.find((item) => item.id === run.recipe.datasetId);
+  const artifact = validateArtifact(artifactFromTrainingResult(result, metadata, run, dataset), workspace);
+  return validateWorkspace({ ...workspace, artifacts: [...workspace.artifacts, artifact] });
+}
+
+export function importEvaluationReport(workspace, report, metadata) {
+  const artifact = workspace.artifacts.find((item) => item.lineage?.resultSha256 === report?.resultSha256);
+  assert(artifact, "Import the matching training result.json before this evaluation.");
+  assert(!workspace.evaluations.some((evaluation) => evaluation.comparison?.reportSha256 === metadata.sha256), "This evaluation report is already imported.");
+  const evaluation = validateEvaluation(evaluationFromReport(report, metadata, artifact), workspace);
+  return validateWorkspace({ ...workspace, evaluations: [...workspace.evaluations, evaluation] });
 }
 
 export function validateWorkspace(input) {
@@ -262,10 +276,10 @@ export function exportRecipe(run, workspace) {
     runId: run.id,
     name: run.name,
     execution: "external",
-    description: "Planning manifest, not an executable trainer configuration. Map these fields to your local trainer.",
+    description: "External execution only. Prepare this recipe with npm run lab -- prepare; training requires an explicit local Python command.",
     recipe: run.recipe,
     dataset: { ...dataset, split: splitCounts(dataset), splitSeed: 42 },
-    splitPolicy: "Shuffle with seed 42, reserve the recorded holdout count, and exclude holdout examples from training. Mamase records metadata; your trainer must perform the split.",
+    splitPolicy: "The Mamase prepare command orders unique prompts by SHA-256(seed + prompt), reserves the recorded holdout count, and writes disjoint train/holdout files. Other trainers must apply an equivalent leakage-free split.",
     distillation: run.recipe.method === "distillation" ? "Supervised LoRA training on pre-generated teacher responses; no online generation or logit/KL matching." : null,
     estimatedOptimizerSteps: estimatedSteps(run.recipe, dataset),
   };

@@ -58,3 +58,39 @@ test("draft recovery rejects corrupt or unexpected data without deleting it", ()
   source = "broken";
   assert.throws(() => readRecipeDraft(storage, defaults));
 });
+
+test("paired comparisons also require identical suite, decoding, and familiar conditions", () => {
+  const first = {
+    id: "paired-1", benchmark: "Coven v1", score: 2, maximum: 4, samples: 4, notes: "Paired rule checks",
+    comparison: {
+      suite: { sha256: "a".repeat(64) }, decoding: { doSample: false, numBeams: 1, maxNewTokens: 128, seed: 42 },
+      familiarId: "cody", instanceId: "test-coven", device: "cpu",
+    },
+  };
+  const second = { ...structuredClone(first), id: "paired-2", score: 3 };
+  assert.equal(compareEvaluations(first, second).delta, 25);
+  for (const change of [
+    { comparison: undefined },
+    { comparison: { ...second.comparison, suite: { sha256: "b".repeat(64) } } },
+    { comparison: { ...second.comparison, decoding: { ...second.comparison.decoding, maxNewTokens: 64 } } },
+    { comparison: { ...second.comparison, familiarId: "nova" } },
+    { comparison: { ...second.comparison, instanceId: "another-coven" } },
+    { comparison: { ...second.comparison, device: "mps" } },
+  ]) {
+    const result = compareEvaluations(first, { ...second, ...change });
+    assert.equal(result.compatible, false);
+    assert.equal(result.delta, null);
+  }
+});
+
+test("pre-lab drafts recover with explicit new-field defaults without accepting arbitrary omissions", () => {
+  const legacy = { name: "Keep my draft", method: "lora", datasetId: "data" };
+  const defaults = { name: "", method: "lora", datasetId: "", adapter: "lora", familiarId: "", instanceId: "" };
+  let source = JSON.stringify({ version: 1, draft: legacy });
+  const storage = { getItem: () => source };
+  assert.deepEqual(readRecipeDraft(storage, defaults), { ...defaults, ...legacy });
+  for (const draft of [{ ...legacy, extra: "unexpected" }, { method: "lora", datasetId: "data" }, { ...legacy, adapter: null }]) {
+    source = JSON.stringify({ version: 1, draft });
+    assert.throws(() => readRecipeDraft(storage, defaults), /invalid fields/);
+  }
+});

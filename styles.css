@@ -317,6 +317,7 @@ code { overflow-wrap: anywhere; }
 .empty-state.compact .button { min-height: 31px; font-size: 11px; }
 .card { border: 1px solid var(--glass-border); border-radius: 16px; padding: 25px; margin-bottom: 22px; min-width: 0; background: var(--surface); background-image: var(--glass-sheen); box-shadow: var(--glass-shadow); }
 .card p:last-child { margin-bottom: 0; }
+.card pre { white-space: pre-wrap; overflow-wrap: anywhere; }
 .notice { display: flex; align-items: start; gap: 10px; padding: 14px 16px; margin-bottom: 25px; border: 1px solid var(--notice-line); border-radius: 7px; color: var(--notice-ink); background: var(--notice-surface); font-size: 12px; line-height: 1.6; }
 .notice .icon { width: 16px; height: 16px; margin-top: 2px; }
 .table-scroll { position: relative; max-width: 100%; overflow-x: auto; border: 1px solid var(--glass-border); border-radius: 14px; background: var(--surface); background-image: var(--glass-sheen); box-shadow: var(--glass-shadow); }
