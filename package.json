@@ -8,7 +8,8 @@
     "start": "node server.mjs",
     "lab": "node lab.mjs",
     "test": "node --test",
-    "test:e2e": "node scripts/verify-ux.mjs"
+    "test:e2e": "node scripts/verify-ux.mjs",
+    "test:training": "node scripts/verify-training.mjs"
   },
   "devDependencies": {
     "playwright": "1.62.0"

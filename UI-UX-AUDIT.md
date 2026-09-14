@@ -1,5 +1,10 @@
 # Mamase UI and UX audit
 
+Subsequent implementation: managed local MLX-LM execution is now available.
+See the README for setup and current execution boundaries. This audit records
+the UI baseline before that runtime integration; its original external-only
+scope is retained below as historical context.
+
 ## Executive assessment
 
 The near-black OpenCoven palette, original distillation illustration, restrained

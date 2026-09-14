@@ -39,6 +39,10 @@ build/Release
 
 # Dependency directories
 node_modules/
+.venv-training/
+.mamase/
+__pycache__/
+*.pyc
 jspm_packages/
 
 # Snowpack dependency directory (https://snowpack.dev/)

@@ -1,0 +1,29 @@
+import { assert, validateArtifact, validateWorkspace } from "./workspace.js";
+
+export function trainingIdentity(run, dataset) {
+  return JSON.stringify({ id: run.id, name: run.name, createdAt: run.createdAt, recipe: run.recipe, dataset });
+}
+
+export function mergeTrainingJob(workspace, job) {
+  const current = workspace.runs.find((run) => run.id === job.run?.id);
+  assert(current, "The managed job's run is not in this workspace.");
+  const dataset = workspace.datasets.find((item) => item.id === current.recipe.datasetId);
+  assert(dataset && trainingIdentity(current, dataset) === job.identity, "Managed job identity does not match this recipe and dataset.");
+  assert(trainingIdentity(job.run, job.dataset) === job.identity, "Managed job recipe identity is inconsistent.");
+  assert(job.run.localJobId === job.id && (!current.localJobId || current.localJobId === job.id), "This run belongs to another local job.");
+  assert(Array.isArray(job.run.history) && current.history.length <= job.run.history.length &&
+    JSON.stringify(current.history) === JSON.stringify(job.run.history.slice(0, current.history.length)),
+  "Local and managed progress history diverged. Download the managed report before resolving this conflict.");
+  const run = validateWorkspace({ ...workspace, runs: [job.run], artifacts: [], evaluations: [] }).runs[0];
+  const next = structuredClone(workspace);
+  next.runs[next.runs.findIndex((item) => item.id === run.id)] = run;
+  if (job.artifact) {
+    assert(job.status === "completed" && run.status === "completed", "Only a completed job may register its output.");
+    const artifact = validateArtifact(job.artifact, next);
+    assert(artifact.runId === run.id && artifact.id === `artifact-${job.id}` && artifact.kind === "adapter", "Invalid managed artifact lineage.");
+    const existing = next.artifacts.find((item) => item.id === artifact.id);
+    assert(!existing || JSON.stringify(existing) === JSON.stringify(artifact), "The managed artifact conflicts with an existing record.");
+    if (!existing) next.artifacts.push(artifact);
+  }
+  return next;
+}

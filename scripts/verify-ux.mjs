@@ -94,6 +94,19 @@ try {
   const page = await fresh.newPage();
   watch(page);
   await go(page, "settings");
+  assert.equal(await page.locator(".sidebar [data-theme-value]").count(), 0);
+  assert.equal(await page.locator("html").getAttribute("data-theme-preference"), "system");
+  const appearance = page.getByRole("group", { name: "Appearance mode", exact: true });
+  await page.emulateMedia({ colorScheme: "light" });
+  await page.waitForFunction(() => document.documentElement.dataset.theme === "light");
+  await appearance.getByRole("button", { name: "Dark", exact: true }).click();
+  await page.reload();
+  await page.waitForFunction(() => document.documentElement.dataset.theme === "dark");
+  assert.equal(await appearance.getByRole("button", { name: "Dark", exact: true }).getAttribute("aria-pressed"), "true");
+  await appearance.getByRole("button", { name: "System", exact: true }).click();
+  await page.waitForFunction(() => document.documentElement.dataset.theme === "light");
+  await page.emulateMedia({ colorScheme: "dark" });
+  await page.waitForFunction(() => document.documentElement.dataset.theme === "dark");
   await page.getByLabel("Workspace name", { exact: true }).fill("Unsubmitted coven name");
   await page.getByRole("button", { name: "Open navigation", exact: true }).click();
   assert.equal(await page.locator("#main").evaluate((element) => element.inert), true);
@@ -154,7 +167,7 @@ try {
   await modal.waitFor({ state: "hidden" });
   assert.equal(await page.getByLabel("Training objective", { exact: true }).inputValue(), "Keep my experiment intact.");
   assert.equal(await page.getByLabel("Training dataset", { exact: true }).inputValue(), (await stored(page)).datasets[0].id);
-  await page.getByText("Ready to save a planned run. Training remains external.", { exact: true }).waitFor();
+  await page.getByText("Ready to save a planned run. Launch training from the run page.", { exact: true }).waitFor();
   await page.getByRole("button", { name: "Save planned run", exact: true }).click();
   await page.waitForURL(/sessions\/run-/);
   assert.equal((await stored(page)).runs[0].status, "planned");
@@ -179,6 +192,12 @@ try {
   await modal.getByRole("button", { name: "Discard draft", exact: true }).click();
   await modal.waitFor({ state: "hidden" });
   assert.equal(await page.evaluate((key) => sessionStorage.getItem(key), DRAFT_KEY), null);
+  await page.evaluate((key) => localStorage.setItem(key, "invalid workspace"), STORAGE_KEY);
+  await go(page, "settings");
+  await page.getByRole("heading", { name: "Workspace needs attention", exact: true }).waitFor();
+  await page.getByRole("group", { name: "Appearance mode", exact: true }).getByRole("button", { name: "Light", exact: true }).click();
+  await page.waitForFunction(() => document.documentElement.dataset.theme === "light");
+  assert.equal(await page.locator(".sidebar [data-theme-value]").count(), 0);
   await fresh.close();
 
   const pairedData = fixture();
