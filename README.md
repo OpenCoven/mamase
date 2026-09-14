@@ -20,6 +20,31 @@ Open [http://127.0.0.1:4173](http://127.0.0.1:4173). The server binds only to
 loopback and serves an explicit list of public assets. Set `PORT` to use a
 different port.
 
+## Hosted on Vercel
+
+Vercel serves the **browser workspace only**, not the local Node/Python trainer.
+The project must use the static configuration in `vercel.json`, not Vercel's
+Node framework preset. That preset treats `app.js` as a server entry point and
+crashes with `ReferenceError: document is not defined`.
+
+`npm run build:hosted` checks JavaScript syntax and copies only the explicit
+public asset list into `dist/`. Training code, environments, model weights,
+datasets, job files and secrets are not published. The hosted capability response
+disables job discovery and process commands; the UI explains the local handoff.
+There are no Vercel Functions in this deployment.
+
+To train, start Mamase locally on an Apple Silicon Mac. Export a workspace backup
+from the hosted site and restore it in the local app, then select the original
+dataset file when starting a run. **Each address has separate browser storage.**
+Backups transfer records, not model weights or example files.
+
+For an authenticated, prebuilt Vercel release:
+
+```sh
+npm run build:hosted -- --prebuilt
+vercel deploy --prebuilt
+```
+
 ## Workflow
 
 1. **Programs:** organize related experiments.
@@ -27,12 +52,11 @@ different port.
    Record provenance, permissions, holdout percentage, and the teacher model for
    teacher-generated data. Only metadata and a SHA-256 fingerprint are retained;
    source examples remain in your file.
-3. **Distillation lab:** bind the familiar and Coven instance IDs, choose
-   supervised fine-tuning or response distillation, select LoRA, rsLoRA, DoRA,
-   or CUDA QLoRA, and
-   configure the student/base model, rank, alpha, learning rate, epochs,
-   micro-batch size, gradient accumulation, sequence length, and output path.
-   Saving creates a **planned run**, not a training process.
+3. **Distillation lab:** choose **Train on this Mac** or **Train in a terminal**.
+   Choose your examples, base model and objective; optional learning parameters
+   live under Advanced settings. The terminal path requires familiar/instance
+   IDs and supports additional adapter techniques. Managed LoRA needs no identity
+   labels. **Save recipe & review** records a plan, not a training process.
 4. **Training runs:** launch a managed local MLX-LM LoRA job, or export a recipe
    and execute the identity-bound preparation and training commands below, then
    import the CLI progress report. Actual observations
@@ -104,6 +128,13 @@ files, Mamase registers the output directory in Model library automatically.
 The deterministic artifact ID prevents duplicate registration on reconnect.
 Managed jobs own their progress history; manual progress/report imports remain
 available for external runs only.
+
+The run page separates preparation, learning, finalization, failure, cancellation
+and disconnected records. Reaching 100% of learning updates does not mean files
+have finalized. Completed runs lead to adapter review, not deployment. Training
+and holdout loss use readable summaries; full precision, files and logs remain
+under the chart's observations and Technical details. Holdout trends describe
+fit within one run, not a quality score or permission to deploy.
 
 Closing or reloading the browser does not stop the process. Reopening the run
 reconciles the server's journal and completed artifact with the browser workspace.

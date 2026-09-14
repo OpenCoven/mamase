@@ -11,12 +11,14 @@ import { TrainingClient, encodeDataset, localJobActive } from "./training-client
 import { mergeTrainingJob, trainingIdentity, managedRecipeIssue } from "./training-state.js";
 import { trainingWorkflow, runGuidance, formatLoss, lossReading, modelName } from "./training-guide.js";
 import { MAX_BACKUP_BYTES, exportWorkspaceBackup, parseWorkspaceBackup } from "./backups.js";
+import { AuthClient } from "./auth-client.js";
 
 const app = document.querySelector("#app");
 const dialog = document.querySelector("#dialog");
 const toast = document.querySelector("#toast");
 const theme = window.mamaseTheme;
 const hosted = document.querySelector('meta[name="mamase-runtime"]')?.content === "hosted";
+const account = new AuthClient({ onChange: syncAccountControls });
 const pendingTraining = new Map();
 const trainingSyncErrors = new Map();
 let submissionCount = 0;
@@ -110,10 +112,42 @@ function sidebar(page) {
     <div class="workspace-label"><span class="tiny-mark">${icon("spark")}</span><span>${esc(workspace?.name || "The Coven")}</span><span class="workspace-tag">${hosted ? "HOSTED" : "LOCAL"}</span></div>
     ${workspace ? `<button type="button" class="workspace-search-button" data-action="search" aria-label="Search workspace">${icon("search")}<span>Search workspace</span><kbd>Ctrl K</kbd></button>` : ""}
     <nav>${links.map(([id, label, glyph], index) => `${index === 7 ? '<div class="nav-section">Workspace</div>' : ""}<a href="#/${id}" class="nav-link ${page === id ? "active" : ""}" ${page === id ? 'aria-current="page"' : ""} aria-label="${label}" title="${label}">${icon(glyph)}<span>${label}</span>${id === "sessions" && workspace?.runs.length ? `<span class="nav-count">${workspace.runs.length}</span>` : ""}</a>`).join("")}</nav>
-    <div class="sidebar-bottom"><div class="local-status"><span class="status-dot"></span><span>Local workspace</span></div>
+    <div class="sidebar-bottom"><div class="local-status"><span class="status-dot"></span><span>${hosted ? "Saved in this browser" : "Local workspace"}</span></div>
       <p>Knowledge stays in the coven.</p>
-      <a class="profile" href="#/settings"><span class="avatar">C</span><span><strong>${esc(workspace?.name || "The Coven")}</strong><small>On this browser</small></span>${icon("settings")}</a></div>
+      <a class="profile" id="account-profile" href="#/settings" aria-label="Account settings">${accountProfile()}</a></div>
   </aside>`;
+}
+
+function accountName() {
+  return account.state.user ? [account.state.user.firstName, account.state.user.lastName].filter(Boolean).join(" ") || account.state.user.email : "Account settings";
+}
+
+function accountProfile() {
+  const name = accountName();
+  return `<span class="avatar">${esc(account.state.user ? name.slice(0, 1).toUpperCase() : "C")}</span><span><strong>${esc(name)}</strong><small>${account.state.phase === "signed-in" ? "Signed in with WorkOS" : account.state.phase === "signed-out" ? "Sign in to your account" : account.state.phase === "loading" ? "Checking sign-in" : "Offline workspace available"}</small></span>${icon("settings")}`;
+}
+
+function accountContent() {
+  const { phase, user, message } = account.state;
+  let content = '<p class="help">Checking sign-in...</p>';
+  if (phase === "signed-in") content = `<div class="account-identity"><span class="avatar">${esc(accountName().slice(0, 1).toUpperCase())}</span><div><strong>${esc(accountName())}</strong><p>${esc(user.email)}</p></div></div><div class="actions">${button(account.busy ? "Signing out..." : "Sign out", "sign-out", "", "quiet", account.busy ? "disabled" : "")}</div>`;
+  else if (phase === "signed-out") content = `<p>Continue to WorkOS AuthKit to choose GitHub, Google, or another sign-in method enabled for the coven.</p><div class="actions">${button("Sign in", "sign-in", "arrow", "primary")}</div>`;
+  else if (phase === "unconfigured") content = `<p>${esc(message || "Sign-in is not configured for this deployment.")}</p><p class="help">The deployment owner needs to connect a WorkOS project. You can keep using this workspace offline.</p>`;
+  else if (phase === "error") content = `<p class="error-text" role="status">${esc(message)}</p><div class="actions">${button("Retry account connection", "auth-refresh", "arrow", "quiet")}</div>`;
+  return `<h2>Account</h2>${content}<p class="help account-boundary">Sign-in identifies you; it does not sync or isolate this browser's workspace by account. Signing out does not erase records or stop local training. Use a separate browser profile on a shared device.</p>`;
+}
+
+function accountSettings() {
+  return `<section class="card account-card" id="account-panel" data-phase="${account.state.phase}" aria-live="polite">${accountContent()}</section>`;
+}
+
+function syncAccountControls() {
+  const panel = document.querySelector("#account-panel");
+  const focusedAction = panel?.contains(document.activeElement) ? document.activeElement.dataset.action : null;
+  if (panel) { panel.dataset.phase = account.state.phase; panel.innerHTML = accountContent(); }
+  const profile = document.querySelector("#account-profile");
+  if (profile) profile.innerHTML = accountProfile();
+  if (focusedAction) panel.querySelector(`[data-action="${CSS.escape(focusedAction)}"]`)?.focus({ preventScroll: true });
 }
 
 function themePicker() {
@@ -235,7 +269,7 @@ function runDetail(id) {
   const workflow = trainingWorkflow(run);
   const manual = workflow === "cli" && !run.localJobId;
   return `<a class="breadcrumb" href="#/sessions">Training runs / <span>${esc(run.name)}</span></a>
-    ${header(esc(run.name), button("Duplicate recipe", "duplicate-run", "plus", "quiet", `data-id="${run.id}"`), `${workflow === "managed" ? "Train on this Mac" : "Terminal workflow"} · ${esc(modelName(run.recipe.student))}`)}
+    ${header(esc(run.name), button("Duplicate recipe", "duplicate-run", "plus", "quiet", `data-id="${run.id}"`), `${workflow === "managed" ? "Local Mac training" : "Terminal workflow"} · ${esc(modelName(run.recipe.student))}`)}
     <div id="run-journey"></div>
     <section class="card local-training-panel run-control" id="local-training-panel" data-run-id="${run.id}" aria-label="Training status"><h2>Loading this run…</h2></section>
     <section class="card run-output" id="run-output-section" ${workspace.artifacts.some((item) => item.runId === id) ? "" : "hidden"}><h2>Saved output</h2><div id="run-artifacts">${runArtifacts(run)}</div></section>
@@ -369,10 +403,11 @@ function updateTrainingPanel(runId) {
   const busy = [...training.jobs.values()].some(localJobActive) || capability?.busy;
   const guide = runGuidance(!matches ? { ...run, localJobId: rawJob.id } : run, { job, artifact, available: capability?.available, loading, busy, error, hosted: hosted || capability?.hosted });
   if (!matches) guide.action = "duplicate";
-  const diagnostic = guide.workflow === "managed" ? error || job?.error || "" : "";
+  const diagnostic = guide.workflow === "managed" && !hosted && !capability?.hosted ? error || job?.error || "" : "";
   const key = JSON.stringify([guide, diagnostic, artifact?.id, loading, busy]);
   const labels = ["Recipe saved", "Train model", "Review output"];
-  document.querySelector("#run-journey").innerHTML = `<ol class="run-journey" aria-label="Experiment stages">${labels.map((label, index) => `<li class="${index < guide.stage ? "is-done" : index === guide.stage ? "is-current" : ""}" ${index === guide.stage ? 'aria-current="step"' : ""}><span>${index < guide.stage ? icon("check") : index + 1}</span><div><strong>${label}</strong><small>${index < guide.stage ? "Done" : index === guide.stage ? index === 2 ? "Next: assess quality" : guide.phase === "ready" || guide.phase === "external" ? "Not started here" : "Current stage" : "After training"}</small></div></li>`).join("")}</ol>`;
+  const trainingStage = guide.phase === "hosted" ? "Continue locally" : ["ready", "external"].includes(guide.phase) ? "Not started here" : "Current stage";
+  document.querySelector("#run-journey").innerHTML = `<ol class="run-journey" aria-label="Experiment stages">${labels.map((label, index) => `<li class="${index < guide.stage ? "is-done" : index === guide.stage ? "is-current" : ""}" ${index === guide.stage ? 'aria-current="step"' : ""}><span>${index < guide.stage ? icon("check") : index + 1}</span><div><strong>${label}</strong><small>${index < guide.stage ? "Done" : index === guide.stage ? index === 2 ? "Next: assess quality" : trainingStage : "After training"}</small></div></li>`).join("")}</ol>`;
   if (panel.dataset.state !== key) {
     const focused = panel.contains(document.activeElement);
     const setupOpen = panel.querySelector("#runtime-setup")?.open;
@@ -442,7 +477,7 @@ function labPage() {
     <div class="draft-status"><p id="draft-status" class="help" role="status">${esc(draftMessage)}</p>${button("Download draft", "download-draft", "download", "small quiet")}</div>
     <form id="recipe-form" data-form="recipe" class="lab-layout"><div class="lab-main">
       <section class="form-section"><h2>Where will you train?</h2><div class="method-picker workflow-picker" role="group" aria-label="Training workflow">
-        <button type="button" data-action="workflow" data-workflow="managed" aria-pressed="${managed}" class="method-card ${managed ? "selected" : ""}">${icon("local")}<strong>Train on this Mac</strong><span>Guided LoRA training. Progress and output are saved automatically.</span><small>Apple Silicon · existing MLX model required</small></button>
+        <button type="button" data-action="workflow" data-workflow="managed" aria-pressed="${managed}" class="method-card ${managed ? "selected" : ""}">${icon("local")}<strong>${hosted ? "Train on a Mac" : "Train on this Mac"}</strong><span>${hosted ? "Plan here, then move your recipe to local Mamase to train." : "Guided LoRA training. Progress and output are saved automatically."}</span><small>Apple Silicon · existing MLX model required</small></button>
         <button type="button" data-action="workflow" data-workflow="cli" aria-pressed="${!managed}" class="method-card ${!managed ? "selected" : ""}">${icon("code")}<strong>Train in a terminal</strong><span>Advanced identity-bound workflow. Run commands and import the results.</span><small>LoRA, rsLoRA, DoRA or CUDA QLoRA</small></button></div><input type="hidden" name="workflow" value="${draft.workflow}"></section>
       <h3>What examples will the model learn from?</h3>
       <div class="method-picker" role="group" aria-label="Training method">
@@ -457,7 +492,7 @@ function labPage() {
         ${select("Training dataset", "datasetId", draft.datasetId, datasetOptions(), "required")}
         <div id="dataset-summary" class="dataset-summary">${dataset ? datasetSummary(dataset) : "Import and select your examples."}</div><p class="help">Keep the original JSONL file. ${managed ? "You will select it again before training; its contents must match this import." : "The preparation command needs that file, not just its name."}</p>
         ${distill ? '<p class="notice inline">The teacher answers must already be in your dataset. This workflow does not call a teacher or generate answers for you.</p>' : ""}</section>
-      <section class="form-section"><h3>Choose the model to customize</h3>${field(distill ? "Student model" : "Base model", "student", draft.student, { attrs: `maxlength="200" placeholder="${managed ? "/Users/you/Models/your-model" : "Model name or local path"}"`, hint: managed ? "Use the path to an existing MLX-compatible model folder on this Mac. A name such as Qwen/model does not download a model. Compatibility is checked at launch." : "Record the base model here. The terminal command also requires the path to its compatible local model files." })}
+      <section class="form-section"><h3>Choose the model to customize</h3>${field(distill ? "Student model" : "Base model", "student", draft.student, { attrs: `maxlength="200" placeholder="${managed ? "/Users/you/Models/your-model" : "Model name or local path"}"`, hint: managed ? "Use the path to an existing MLX-compatible model folder on the training Mac. A name such as Qwen/model does not download a model. Compatibility is checked at launch." : "Record the base model here. The terminal command also requires the path to its compatible local model files." })}
         ${distill ? field("Teacher model", "teacher", draft.teacher, { attrs: 'maxlength="200"', hint: "Must match the dataset's recorded teacher." }) : ""}
       </section>
       <details class="form-section disclosure" id="recipe-advanced"><summary>Advanced settings <span>Learning parameters${managed ? " and optional ownership labels" : ", adapter technique and export hint"}</span></summary>
@@ -474,8 +509,8 @@ function labPage() {
       </details>
     </div><aside class="lab-settings recipe-overview" aria-label="Recipe overview">
       <div class="inspector-title">${icon("lab")} Your plan</div><div class="recipe-readiness" id="recipe-readiness" role="status"></div>
-      <section><dl class="facts"><dt>Workflow</dt><dd>${managed ? "Train on this Mac" : "Train in a terminal"}</dd><dt>Model</dt><dd id="preview-model">${esc(draft.student ? modelName(draft.student) : "Not chosen")}</dd><dt>Examples</dt><dd id="preview-examples">${dataset ? num(dataset.records) : "Not chosen"}</dd><dt>Output</dt><dd>${managed ? "New private job folder, registered automatically" : "Adapter in the terminal bundle; import its result"}</dd></dl><div class="estimate">${icon("clock")}<span id="step-estimate">${stepEstimate()}</span></div></section>
-      <section><h3>What saving does</h3><p class="help">${managed ? "Saves this recipe and opens a review page. You choose the original file and confirm Start training there." : "Saves a recipe to export. You run the trainer yourself and import its reports."}</p><p class="help">An adapter needs its base model. Nothing is deployed or approved automatically.</p></section>
+      <section><dl class="facts"><dt>Workflow</dt><dd>${managed ? "Local Mac training" : "Train in a terminal"}</dd><dt>Model</dt><dd id="preview-model">${esc(draft.student ? modelName(draft.student) : "Not chosen")}</dd><dt>Examples</dt><dd id="preview-examples">${dataset ? num(dataset.records) : "Not chosen"}</dd><dt>Output</dt><dd>${managed ? "New private job folder, registered automatically" : "Adapter in the terminal bundle; import its result"}</dd></dl><div class="estimate">${icon("clock")}<span id="step-estimate">${stepEstimate()}</span></div></section>
+      <section><h3>What saving does</h3><p class="help">${managed ? hosted ? "Saves this recipe in this browser and explains how to move it to local Mamase. This website cannot start or monitor training." : "Saves this recipe and opens a review page. You choose the original file and confirm Start training there." : "Saves a recipe to export. You run the trainer yourself and import its reports."}</p><p class="help">An adapter needs its base model. Nothing is deployed or approved automatically.</p></section>
     </aside><div class="lab-submit"><div class="lab-footer"><p>${icon("local")} No training starts when you save.</p><button type="submit" class="button primary">${icon("arrow")} Save recipe &amp; review</button></div>
       <p class="form-error" role="alert" hidden></p></div></form>`;
 }
@@ -620,10 +655,10 @@ function appearanceSettings() {
 
 function settingsPage() {
   return `${header("Workspace settings", "", "A local home for the coven's experiments.")}
-    <div class="settings-grid">${appearanceSettings()}
+    <div class="settings-grid">${accountSettings()}${appearanceSettings()}
     <section class="card"><h2>Workspace identity</h2><form data-form="workspace">${field("Workspace name", "workspaceName", workspace.name, { attrs: 'maxlength="80"' })}<button class="button primary" type="submit">Save name</button><p class="form-error" role="alert" hidden></p></form></section>
-    <section class="card"><h2>Backups &amp; portability</h2><p>Recipes, dataset fingerprints, recorded results, and artifact references are saved in this browser. No cloud sync or accounts are configured.</p><div class="actions">${button("Export workspace", "export-workspace", "download")}${button("Restore backup", "restore-workspace", "upload")}</div><p class="help">Exports use a versioned backup envelope. Restore previews the source format and collection counts before replacement; legacy v1 backups remain supported. Appearance settings, dataset contents and model weights are not included.</p></section>
-    <section class="card"><h2>Execution boundary</h2><dl class="facts"><dt>Trainer</dt><dd>Local MLX-LM (optional) or explicit PEFT CLI</dd><dt>Inference</dt><dd>No runtime endpoint connected</dd><dt>Storage</dt><dd>Browser workspace; managed jobs and training bundles on local disk</dd><dt>Workspace size</dt><dd id="workspace-size">${formatBytes(new TextEncoder().encode(JSON.stringify(workspace)).length)} / 4 MB</dd></dl><p>Managed jobs persist their input, split files, logs and adapters separately. Check runtime availability from a saved run. There are no fabricated jobs or benchmark scores.</p></section>
+    <section class="card"><h2>Backups &amp; portability</h2><p>Recipes, dataset fingerprints, recorded results, and artifact references are saved in this browser, not in a cloud account.</p><div class="actions">${button("Export workspace", "export-workspace", "download")}${button("Restore backup", "restore-workspace", "upload")}</div><p class="help">Exports use a versioned backup envelope. Restore previews the source format and collection counts before replacement; legacy v1 backups remain supported. Appearance settings, dataset contents and model weights are not included.</p></section>
+    <section class="card"><h2>Execution boundary</h2><dl class="facts"><dt>Trainer</dt><dd>${hosted ? "Not available on this hosted site" : "Local MLX-LM or explicit PEFT CLI"}</dd><dt>Inference</dt><dd>No runtime endpoint connected</dd><dt>Storage</dt><dd>Workspace in this browser; model files stay on local disk</dd><dt>Workspace size</dt><dd id="workspace-size">${formatBytes(new TextEncoder().encode(JSON.stringify(workspace)).length)} / 4 MB</dd></dl><p>${hosted ? "Vercel hosts only this interface. Export a workspace backup and restore it in local Mamase to move your recipes; the two addresses do not share browser storage." : "Managed jobs keep their input, splits, logs and adapters separately. Check the trainer connection from a saved run."}</p></section>
     <section class="card"><h2>Reset workspace</h2><p>Remove this browser's saved metadata and start fresh. Your datasets and local model files are not touched.</p>${button("Reset local workspace", "reset-workspace", "", "danger")}</section></div>`;
 }
 
@@ -639,7 +674,7 @@ function render() {
     Object.assign(ui, { query, status, program, sort, runPage });
   }
   let content;
-  if (storageError) content = `${header("Workspace needs attention")}<div class="card"><p class="error-text">${esc(storageError)}</p><div class="actions">${button("Download stored data", "raw-backup", "download")}${button("Restore backup", "restore-workspace", "upload")}${button("Reset local workspace", "reset-workspace", "", "danger")}</div></div>${page === "settings" ? appearanceSettings() : ""}`;
+  if (storageError) content = `${header("Workspace needs attention")}<div class="card"><p class="error-text">${esc(storageError)}</p><div class="actions">${button("Download stored data", "raw-backup", "download")}${button("Restore backup", "restore-workspace", "upload")}${button("Reset local workspace", "reset-workspace", "", "danger")}</div></div>${page === "settings" ? accountSettings() + appearanceSettings() : ""}`;
   else if (page === "sessions" && id) content = workspace.runs.some((run) => run.id === id) ? runDetail(id) : empty("Run not found.", "This run is not in the current workspace.", link("Back to training runs", "#/sessions"));
   else if (page === "datasets" && id) content = workspace.datasets.some((item) => item.id === id) ? datasetDetail(id) : empty("Dataset not found.", "This dataset is not in the current workspace.", link("Back to datasets", "#/datasets"));
   else if (page === "checkpoints" && id) content = workspace.artifacts.some((item) => item.id === id) ? artifactDetail(id) : empty("Artifact not found.", "This artifact is not in the current workspace.", link("Back to model library", "#/checkpoints"));
@@ -650,7 +685,7 @@ function render() {
   app.innerHTML = `<div class="shell ${ui.menu ? "menu-open" : ""} ${ui.collapsed ? "collapsed" : ""}">
     <a class="skip-link" href="#main">Skip to content</a>${sidebar(page)}
     <button class="menu-scrim" type="button" data-action="close-menu" aria-label="Close navigation" ${ui.menu ? "" : "hidden"}></button>
-    <div class="mobile-header"><button type="button" class="icon-button" data-action="toggle-menu" aria-controls="navigation" aria-expanded="${ui.menu}" aria-label="Open navigation">${icon("panel")}</button><a class="brand" href="#/home">mamase.</a><span class="workspace-tag">${hosted ? "HOSTED" : "LOCAL LAB"}</span>${workspace ? `<button type="button" class="icon-button mobile-search" data-action="search" aria-label="Search workspace">${icon("search")}</button>` : ""}</div>
+    <div class="mobile-header"><button type="button" class="icon-button" data-action="toggle-menu" aria-controls="navigation" aria-expanded="${ui.menu}" aria-label="Open navigation">${icon("panel")}</button><a class="brand" href="#/home">mamase.</a><span class="workspace-tag">${hosted ? "HOSTED" : "LOCAL LAB"}</span>${workspace ? `<button type="button" class="icon-button mobile-search" data-action="search" aria-label="Search workspace">${icon("search")}</button>` : ""}<a class="icon-button" href="#/settings" aria-label="Account settings">${icon("settings")}</a></div>
     <main class="main ${page === "home" && !storageError ? "main-home" : ""}" id="main" tabindex="-1"><section id="workspace-alert" class="notice workspace-alert" role="alert" hidden></section>${content}</main></div>`;
   for (const id of expanded) { const details = document.getElementById(id); if (details instanceof HTMLDetailsElement) details.open = true; }
   updateSidebarAccess();
@@ -799,6 +834,12 @@ function searchResults(query) {
 }
 
 const actions = {
+  "auth-refresh": () => account.refresh(),
+  "sign-in": () => {
+    assert(account.state.phase === "signed-out", "Check the account connection before signing in.");
+    location.assign(`/api/auth/login?returnTo=${encodeURIComponent("/#/settings")}`);
+  },
+  "sign-out": async () => location.assign(await account.logout()),
   theme: (element) => theme.setPreference(element.dataset.themeValue),
   "toggle-sidebar": () => {
     const mobile = matchMedia("(max-width: 760px)").matches;
@@ -1252,3 +1293,17 @@ window.addEventListener("storage", (event) => {
 document.addEventListener("mamase:themechange", syncThemeControls);
 dialog.addEventListener("close", flushTrainingUpdates);
 render();
+void account.refresh();
+window.addEventListener("focus", () => { if (!account.busy) void account.refresh(); });
+window.addEventListener("pageshow", (event) => { if (event.persisted) void account.refresh(); });
+const authResult = new URL(location.href);
+if (authResult.searchParams.has("auth_error")) {
+  const messages = {
+    cancelled: "Sign-in was cancelled. Your workspace has not changed.",
+    invalid_callback: "This sign-in link expired or did not match this browser. Start sign-in again.",
+    exchange_failed: "WorkOS could not complete sign-in. Try again or ask the deployment owner to check its configuration.",
+  };
+  notify(messages[authResult.searchParams.get("auth_error")] || "Sign-in could not be completed. Try again.", true);
+  authResult.searchParams.delete("auth_error");
+  history.replaceState(null, "", authResult);
+}
