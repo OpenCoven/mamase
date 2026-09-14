@@ -11,8 +11,9 @@ import { publicAssets } from "../public-assets.mjs";
 import { TrainingClient } from "../training-client.js";
 import { runGuidance } from "../training-guide.js";
 import { createWorkspace, createRun, recordProgress } from "../workspace.js";
+import { existsSync } from "node:fs";
 
-test("hosted builds contain only public assets and no serverless function", async () => {
+test("hosted static files contain only public assets and functions are limited to accounts", async () => {
   execFileSync(process.execPath, ["scripts/build-hosted.mjs"]);
   const expected = [...new Set([...publicAssets.values()].map(([name]) => name)), "training-capabilities.json"].sort();
   assert.deepEqual((await readdir("dist")).sort(), expected);
@@ -25,7 +26,7 @@ test("hosted builds contain only public assets and no serverless function", asyn
   const config = JSON.parse(await readFile("vercel.json", "utf8"));
   assert.equal(config.framework, null);
   assert.equal(config.outputDirectory, "dist");
-  assert.equal(config.functions, undefined);
+  assert.deepEqual(Object.keys(config.functions), ["api/auth/*.js"]);
   assert.ok(config.rewrites.some((item) => item.source === "/api/training/capabilities" && item.destination === "/training-capabilities.json"));
 });
 
@@ -89,10 +90,47 @@ test("invalid browser JavaScript fails before replacing a previous hosted build"
   }
 });
 
+test("prebuilt releases isolate four account functions from browser and training code", async () => {
+  execFileSync(process.execPath, ["scripts/build-hosted.mjs", "--prebuilt"]);
+  const functions = ".vercel/output/functions/api/auth";
+  assert.equal(existsSync(functions), true, "The release needs explicit account functions.");
+  assert.deepEqual((await readdir(functions)).sort(), ["callback.func", "login.func", "logout.func", "session.func"]);
+  assert.equal(existsSync(".vercel/output/functions/index.func"), false);
+  assert.equal(existsSync(".vercel/output/static/auth-api.mjs"), false);
+  const isolated = await mkdtemp(join(tmpdir(), "mamase-auth-function-"));
+  try {
+    const { cp } = await import("node:fs/promises");
+    await cp(`${functions}/session.func`, isolated, { recursive: true });
+    const config = JSON.parse(await readFile(join(isolated, ".vc-config.json"), "utf8"));
+    assert.equal(config.launcherType, "Nodejs");
+    assert.equal(config.handler, "api/auth/session.js");
+    for (const name of ["app.js", "server.mjs", "local-training.mjs", "training", ".mamase", ".env"]) {
+      assert.equal(existsSync(join(isolated, name)), false, name);
+    }
+    const result = execFileSync(process.execPath, ["--input-type=module", "-e", `
+      import {createServer} from 'node:http';
+      import {once} from 'node:events';
+      import handler from './api/auth/session.js';
+      const server=createServer(handler);server.listen(0,'127.0.0.1');await once(server,'listening');
+      try { const r=await fetch('http://127.0.0.1:'+server.address().port+'/api/auth/session'); console.log(JSON.stringify({status:r.status,body:await r.json()})); }
+      finally { await new Promise(resolve=>server.close(resolve)); }
+    `], {
+      cwd: isolated, encoding: "utf8",
+      env: { ...process.env, WORKOS_API_KEY: "", WORKOS_CLIENT_ID: "", WORKOS_COOKIE_PASSWORD: "", WORKOS_REDIRECT_URI: "" },
+    });
+    const response = JSON.parse(result);
+    assert.equal(response.status, 200);
+    assert.equal(response.body.configured, false);
+  } finally {
+    await rm(isolated, { recursive: true, force: true });
+  }
+});
+
 test("the built hosted interface boots, explains the handoff and never calls job APIs", async () => {
   const files = new Map();
   for (const [path, [name, mime]] of publicAssets) files.set(path, [await readFile(`dist/${name}`), mime]);
   files.set("/api/training/capabilities", [await readFile("dist/training-capabilities.json"), "application/json"]);
+  files.set("/api/auth/session", [JSON.stringify({ configured: false, authenticated: false, message: "WorkOS sign-in is not configured." }), "application/json"]);
   const config = JSON.parse(await readFile("vercel.json", "utf8"));
   const headers = Object.fromEntries(config.headers[0].headers.map(({ key, value }) => [key, value]));
   const server = createServer((req, res) => {
@@ -139,7 +177,7 @@ test("the built hosted interface boots, explains the handoff and never calls job
       }
     }
     assert.ok(apiCalls.length);
-    assert.ok(apiCalls.every((path) => path === "/api/training/capabilities"), JSON.stringify(apiCalls));
+    assert.ok(apiCalls.every((path) => ["/api/training/capabilities", "/api/auth/session"].includes(path)), JSON.stringify(apiCalls));
     assert.deepEqual(errors, []);
     for (const path of ["/server.mjs", "/.mamase/training/owner.json", "/.env", "/training/mlx_runner.py"]) {
       assert.equal((await fetch(`${base}${path}`)).status, 404);

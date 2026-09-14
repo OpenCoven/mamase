@@ -220,6 +220,10 @@ code { overflow-wrap: anywhere; }
 .avatar { display: grid; place-items: center; flex-shrink: 0; width: 32px; height: 32px; border-radius: 50%; background: var(--selected); font-size: 12px; }
 .profile strong { display: block; max-width: 132px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 12px; font-weight: 500; }
 .profile small { display: block; color: var(--muted); font-size: 10px; }
+.account-identity { display: flex; align-items: center; gap: 12px; margin: 18px 0; }
+.account-identity > div { min-width: 0; overflow-wrap: anywhere; }
+.account-identity p { margin: 4px 0 0; color: var(--muted); }
+.account-boundary { padding-top: 16px; margin-top: 20px; border-top: 1px solid var(--line); }
 .main { margin-left: var(--sidebar); min-height: 100vh; padding: 0 28px 40px; }
 .main:focus { outline: none; }
 .main-home { padding: 0; height: 100dvh; max-height: 100dvh; min-height: 0; }

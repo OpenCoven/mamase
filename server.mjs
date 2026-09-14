@@ -5,8 +5,9 @@ import { fileURLToPath } from "node:url";
 import { createTrainingApi } from "./training-api.mjs";
 import { LocalTrainer } from "./local-training.mjs";
 import { publicAssets as files } from "./public-assets.mjs";
+import { createAuthApi } from "./auth-api.mjs";
 
-export function createAppServer({ training = null } = {}) {
+export function createAppServer({ training = null, auth = createAuthApi() } = {}) {
   const trainingApi = createTrainingApi(training);
   const server = createServer(async (request, response) => {
     let pathname;
@@ -17,6 +18,7 @@ export function createAppServer({ training = null } = {}) {
       response.writeHead(400).end("Invalid URL");
       return;
     }
+    if (await auth(request, response, pathname)) return;
     if (await trainingApi(request, response, pathname)) return;
     if (!["GET", "HEAD"].includes(request.method)) {
       response.writeHead(405, { Allow: "GET, HEAD" }).end("Method not allowed");
