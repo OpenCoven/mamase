@@ -420,6 +420,7 @@ summary:focus-visible { outline: 2px solid var(--focus); outline-offset: 2px; }
 .loss-explainer .help { font-size: 11px; padding-top: 12px; border-top: 1px solid var(--line); }
 .output-list { list-style: none; padding: 0; margin: 18px 0 0; }
 .output-list li { display: flex; align-items: center; gap: 16px; min-width: 0; padding: 14px 0; }
+.output-list li > div { min-width: 0; overflow-wrap: anywhere; }
 .output-list li + li { border-top: 1px solid var(--line); }
 .output-list a { font-size: 14px; }
 .output-list p { margin: 5px 0 0; font-size: 12px; color: var(--muted); }

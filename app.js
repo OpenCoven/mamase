@@ -245,19 +245,10 @@ function runDetail(id) {
     </section>
     <section class="card" id="external-training-guide" ${manual ? "" : "hidden"}><h2>Run this recipe in your terminal</h2>
       <ol class="next-steps"><li><strong>Export the recipe.</strong> Keep the original dataset and the familiar's workspace available.</li><li><strong>Prepare, then train.</strong> Preparation binds the familiar's identity and writes the split; it does not start training.</li><li><strong>Bring back the results.</strong> Import <code>run-report.json</code> for progress, then <code>result.json</code> for the adapter and holdout comparison.</li></ol>
-      ${run.status === "planned" ? `<div class="actions">${button("Import report", "import-report", "upload", "small", `data-id="${run.id}"`)}<span class="help">Already ran the trainer? Import its progress here.</span></div>` : ""}
+      ${run.status === "planned" || closed ? `<div class="actions">${button("Import report", "import-report", "upload", "small", `data-id="${run.id}"`)}<span class="help">${closed ? "Recheck a report without rewriting closed history." : "Already ran the trainer? Import its progress here."}</span></div>` : ""}
       <details class="disclosure"><summary>Terminal commands <span>Requires the separate Python / PEFT environment</span></summary><p class="help">${run.recipe.familiarId ? `${esc(run.recipe.instanceId)} / ${esc(run.recipe.familiarId)}` : "This older recipe has no familiar binding. Duplicate it and choose the terminal workflow to add both IDs."}</p><pre>mkdir -p .lab
 npm run lab -- prepare --recipe /path/recipe.json --dataset /path/examples.jsonl --identity-dir /path/familiar --out .lab/experiment</pre>
-<<<<<<< Updated upstream
-      <p>After inspecting the bundle, use a compatible local safetensors model:</p>
-      <pre>.venv/bin/python training/train.py --bundle .lab/experiment --model /path/local-model</pre>
-      <p class="help">Preview <code>run-report.json</code> below before confirming its new observations. Cumulative reports can be imported again: identical evidence is skipped, while conflicts never overwrite history. Once training completes, import <code>result.json</code> to register the actual adapter path and holdout comparison. Run a separate versioned suite with <code>training/evaluate.py</code> and import its paired report from Evaluations. Nothing promotes the adapter.</p></section>
-    <section class="card"><div class="section-heading"><h2>Progress journal</h2><div class="actions">${button("Report template", "report-template", "code", "small", `data-id="${run.id}"`)}${run.localJobId ? "" : button("Import report", "import-report", "upload", "small", `data-id="${run.id}"`)}</div></div>
-    <div id="run-journal">${runJournal(run)}</div></section>
-    <section class="card"><div class="section-heading"><h2>Local model artifacts</h2><div class="actions">${run.status === "completed" && !run.localJobId ? button("Import training result", "import-training-result", "upload", "small", `data-id="${run.id}"`) : ""}${button("Register artifact", "new-artifact", "plus", "small", `data-id="${run.id}"`)}</div></div>
-    <div id="run-artifacts">${runArtifacts(run)}</div></section>`;
-=======
-      <pre>.venv/bin/python training/train.py --bundle .lab/experiment --model /path/local-model</pre><p class="help">Replace the example paths with your own. Setup and the independent evaluator are in the Training handbook.</p>${link("Open training handbook", "#/resources", "docs", "small quiet")}</details></section>
+      <pre>.venv/bin/python training/train.py --bundle .lab/experiment --model /path/local-model</pre><p class="help">Replace the example paths with your own. Preview cumulative progress reports before confirming new observations; identical evidence is skipped and conflicts never overwrite history. Setup and the independent evaluator are in the Training handbook. Nothing promotes the adapter.</p>${link("Open training handbook", "#/resources", "docs", "small quiet")}</details></section>
     <details class="card disclosure run-technical" id="run-technical"><summary>Technical details <span>Files, recipe, trainer logs and exact history</span></summary>
       <dl class="facts"><dt>Run ID</dt><dd><code>${run.id}</code></dd><dt>Base model folder</dt><dd><code>${esc(run.recipe.student)}</code></dd><dt>Dataset</dt><dd><a href="#/datasets/${dataset.id}">${esc(dataset.name)}</a> · ${datasetSummary(dataset)}</dd><dt>Dataset fingerprint</dt><dd><code>${dataset.sha256}</code></dd><dt>External output hint</dt><dd><code>${esc(run.recipe.outputPath)}</code> · not used for managed output</dd><dt>Objective</dt><dd>${esc(run.recipe.objective)}</dd></dl>
       <div id="run-job-files"></div><div class="actions">${button("Export recipe", "export-recipe", "download", "small", `data-id="${run.id}"`)}${button("Register artifact", "new-artifact", "plus", "small quiet", `data-id="${run.id}"`)}</div>
@@ -266,7 +257,6 @@ npm run lab -- prepare --recipe /path/recipe.json --dataset /path/examples.jsonl
       <div class="section-heading"><h2>Progress journal</h2><div class="actions">${manual ? button("Report template", "report-template", "code", "small", `data-id="${run.id}"`) : ""}${closed || !manual ? "" : button("Record progress", "progress", "plus", "small", `data-id="${run.id}"`)}</div></div>
       <div id="run-journal">${runJournal(run)}</div>
     </details>`;
->>>>>>> Stashed changes
 }
 
 function runJournal(run) {
@@ -619,11 +609,7 @@ function resourcesPage() {
   return `${header("Training handbook", "", "A practical path from shared knowledge to a local model.")}
     <div class="resource-grid"><article class="card"><span class="eyebrow">01 · Curate</span><h2>Start with evidence, not volume.</h2><p>Import JSONL with <code>messages</code> or <code>prompt</code> / <code>response</code> records. Track licenses, consent, provenance, and the teacher ID. Do not train on private material without permission.</p><p>Set aside a holdout before training. The preparation CLI writes deterministic, disjoint splits and rejects duplicate prompts. Keep a separate final evaluation suite out of both splits.</p>${button("Download example JSONL", "example-dataset", "download")}</article>
     <article class="card"><span class="eyebrow">02 · Distill</span><h2>Pass the teacher's responses on.</h2><p>Generate responses with a teacher outside Mamase. Review and filter them, then import them as teacher-generated examples. Response distillation here means supervised LoRA fine-tuning on those responses.</p><p>It is not online inference, hidden chain-of-thought extraction, or logit/KL distillation. A teacher label alone does not generate data.</p>${link("Configure a recipe", "#/playground", "arrow")}</article>
-<<<<<<< Updated upstream
-    <article class="card"><span class="eyebrow">03 · Train</span><h2>Keep execution on your terms.</h2><p>Export the recipe and use <code>npm run lab -- prepare</code> to check dataset fingerprints, bind familiar identity, and write disjoint splits. Then explicitly run <code>training/train.py</code> with a local model. LoRA, rsLoRA, DoRA, and CUDA QLoRA are supported.</p><p>The trainer saves adapters, actual progress, and base/adapter holdout loss locally. It makes no teacher API calls or automatic model downloads. Import its report from the run page.</p><p>On Apple Silicon, the separate managed MLX-LM path can launch from a saved run with a local MLX-compatible model and the original dataset. Install its optional runtime with <code>python3.12 -m venv .venv-training</code> and <code>.venv-training/bin/python -m pip install -r training/requirements-mlx.txt</code>. Only explicit launch/cancel controls operate that process.</p><a class="subtle-link" href="https://huggingface.co/docs/peft/main/en/package_reference/lora" target="_blank" rel="noreferrer">PEFT adapter techniques ${icon("external")}</a></article>
-=======
     <article class="card"><span class="eyebrow">03 · Train</span><h2>Keep execution on your terms.</h2><p>On Apple Silicon, launch a managed MLX-LM LoRA job from a saved run using a local model directory and the original dataset. Install its isolated runtime with <code>python3.12 -m venv .venv-training</code> and <code>.venv-training/bin/python -m pip install -r training/requirements-mlx.txt</code>. Logs, losses and finalized adapters arrive automatically.</p><p>For canonical familiar identity binding, rsLoRA, DoRA or CUDA QLoRA, export the recipe and use <code>npm run lab -- prepare</code>, followed by <code>training/train.py</code>. Import its progress and training result from the run page. Neither workflow downloads models or calls a teacher API.</p><a class="subtle-link" href="https://github.com/ml-explore/mlx-lm" target="_blank" rel="noreferrer">MLX-LM documentation ${icon("external")}</a></article>
->>>>>>> Stashed changes
     <article class="card"><span class="eyebrow">04 · Evaluate &amp; keep</span><h2>A candidate must earn its place.</h2><p>Import the completed training result to bind the actual adapter and its holdout loss. Run <code>training/evaluate.py</code> on an independent, versioned task/identity/consent/tool-boundary suite. Import its report for base/adapter comparisons and regressions.</p><p>Rule checks are not semantic certification. Review the private outputs and require explicit operator approval before any runtime change. Model manifests and browser backups retain summaries and lineage, never prompts or model weights.</p>${link("Evaluations", "#/evaluations", "arrow")}</article></div>`;
 }
 
@@ -636,11 +622,7 @@ function settingsPage() {
     <div class="settings-grid">${appearanceSettings()}
     <section class="card"><h2>Workspace identity</h2><form data-form="workspace">${field("Workspace name", "workspaceName", workspace.name, { attrs: 'maxlength="80"' })}<button class="button primary" type="submit">Save name</button><p class="form-error" role="alert" hidden></p></form></section>
     <section class="card"><h2>Backups &amp; portability</h2><p>Recipes, dataset fingerprints, recorded results, and artifact references are saved in this browser. No cloud sync or accounts are configured.</p><div class="actions">${button("Export workspace", "export-workspace", "download")}${button("Restore backup", "restore-workspace", "upload")}</div><p class="help">Restoring replaces this workspace after confirmation. Dataset contents and model weights are never included.</p></section>
-<<<<<<< Updated upstream
     <section class="card"><h2>Execution boundary</h2><dl class="facts"><dt>Trainer</dt><dd>Local MLX-LM (optional) or explicit PEFT CLI</dd><dt>Inference</dt><dd>No runtime endpoint connected</dd><dt>Storage</dt><dd>Browser workspace; managed jobs and training bundles on local disk</dd><dt>Workspace size</dt><dd id="workspace-size">${formatBytes(new TextEncoder().encode(JSON.stringify(workspace)).length)} / 4 MB</dd></dl><p>Managed jobs persist their input, split files, logs and adapters separately. Check runtime availability from a saved run. There are no fabricated jobs or benchmark scores.</p></section>
-=======
-    <section class="card"><h2>Execution boundary</h2><dl class="facts"><dt>Trainer</dt><dd>Local MLX-LM (optional) or external tools</dd><dt>Inference</dt><dd>Not connected</dd><dt>Storage</dt><dd>Browser workspace; managed jobs on local disk</dd><dt>Workspace size</dt><dd id="workspace-size">${formatBytes(new TextEncoder().encode(JSON.stringify(workspace)).length)} / 4 MB</dd></dl><p>Managed jobs persist their input, split files, logs and adapters separately. Check runtime availability from a saved run. There are no fabricated jobs or benchmark scores.</p></section>
->>>>>>> Stashed changes
     <section class="card"><h2>Reset workspace</h2><p>Remove this browser's saved metadata and start fresh. Your datasets and local model files are not touched.</p>${button("Reset local workspace", "reset-workspace", "", "danger")}</section></div>`;
 }
 
@@ -920,20 +902,12 @@ const actions = {
     const run = byId(workspace.runs, element.dataset.id);
     downloadJson(`${run.id}-report-template.json`, { schema: "mamase.run-report.v1", runId: run.id, updates: [{ status: "running", step: run.step, totalSteps: run.totalSteps, loss: null, evalLoss: null, note: "Replace with actual trainer observations before importing.", recordedAt: now() }] });
   },
-<<<<<<< Updated upstream
-=======
-  "import-training-result": (element) => importDialog("Import training result", "training-result", "Choose result.json from a completed local training bundle. Import its run-report.json first. This registers the actual adapter path, source fingerprints, and base/adapter holdout loss; it never promotes a model.", { runId: element.dataset.id }),
-  "import-evaluation": () => importDialog("Import paired evaluation", "paired-evaluation", "Choose evaluation-report.json from the local evaluator (up to 20 MB). Import the matching training result first. Scores are recomputed from the report's string checks; only summaries and fingerprints are saved, not its prompts or responses."),
->>>>>>> Stashed changes
   "import-report": (element) => {
     assert(!byId(workspace.runs, element.dataset.id).localJobId && !training.jobs.has(element.dataset.id), "Managed local jobs record their own progress.");
     importDialog("Import progress report", "report", "Choose a mamase.run-report.v1 JSON file (up to 4 MB). Preview new observations, duplicates and conflicts before saving. Exact repeats are safe, including on closed runs; history is never rewritten.", { runId: element.dataset.id }, "Preview report");
   },
-<<<<<<< Updated upstream
   "import-training-result": (element) => importDialog("Import training result", "training-result", "Choose result.json from a completed local training bundle. Import its run-report.json first. This registers the actual adapter path, source fingerprints, and base/adapter holdout loss; it never promotes a model.", { runId: element.dataset.id }),
   "import-evaluation": () => importDialog("Import paired evaluation", "paired-evaluation", "Choose evaluation-report.json from the local evaluator (up to 20 MB). Import the matching training result first. Scores are recomputed from the report's string checks; only summaries and fingerprints are saved, not its prompts or responses."),
-=======
->>>>>>> Stashed changes
   "new-artifact": (element) => {
     assert(workspace.runs.length, "Save a planned run in the distillation lab before registering its outputs.");
     const run = workspace.runs.find((item) => item.id === element.dataset.id) || workspace.runs.at(-1);
