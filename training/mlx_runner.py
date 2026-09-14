@@ -132,27 +132,35 @@ def read_job(job_path):
     return job, source.resolve(), model.resolve(), output
 
 
-def validated_model_config(model_path):
-    with (model_path / "config.json").open(encoding="utf-8") as stream:
-        config = json.load(stream)
+def validate_model_metadata(config):
     if not isinstance(config, dict):
         raise ValueError("Model config.json must contain an object")
     if config.get("model_file") is not None or config.get("auto_map"):
         raise ValueError("Custom model code (model_file/auto_map) is not supported")
     if not re.fullmatch(r"[a-z][a-z0-9_]*", str(config.get("model_type", ""))):
-        raise ValueError("Model config requires a standard MLX-LM model_type")
+        raise ValueError("Model config requires a standard model_type")
     if config.get("is_encoder_decoder") or config.get("vision_config") or config.get("audio_config"):
         raise ValueError("Only text-only causal language models are supported")
-    if not list(model_path.glob("model*.safetensors")):
-        raise ValueError("Local model directory must contain model*.safetensors weights")
-    with (model_path / "tokenizer_config.json").open(encoding="utf-8") as stream:
-        tokenizer_config = json.load(stream)
+
+
+def validate_tokenizer_metadata(tokenizer_config):
     if not isinstance(tokenizer_config, dict) or tokenizer_config.get("auto_map"):
         raise ValueError("Tokenizer must be standard and cannot require custom auto_map code")
     for key in ("chat_template_type", "tool_parser_type"):
         value = tokenizer_config.get(key)
         if value is not None and not re.fullmatch(r"[a-z][a-z0-9_]*", str(value)):
             raise ValueError(f"Unsupported tokenizer {key}")
+
+
+def validated_model_config(model_path):
+    with (model_path / "config.json").open(encoding="utf-8") as stream:
+        config = json.load(stream)
+    validate_model_metadata(config)
+    if not list(model_path.glob("model*.safetensors")):
+        raise ValueError("Local model directory must contain model*.safetensors weights")
+    with (model_path / "tokenizer_config.json").open(encoding="utf-8") as stream:
+        tokenizer_config = json.load(stream)
+    validate_tokenizer_metadata(tokenizer_config)
     # v0.31.3 load_model has no trust_remote_code parameter. A validated override
     # prevents its unconditional custom model_file branch from executing.
     return {**config, "model_file": None}

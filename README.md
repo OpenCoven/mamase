@@ -12,6 +12,10 @@ or build step. Identity-bound CLI training uses Python 3.10+ and
 `training/requirements.txt`. Optional managed MLX training uses an isolated
 Python 3.12 environment and `training/requirements-mlx.txt` on Apple Silicon.
 
+Use `.venv` for PEFT commands and `.venv-training` for managed MLX. These are
+separate runtimes and artifact formats; installing the MLX requirements does
+not provide PyTorch/PEFT.
+
 ```sh
 npm start
 ```
@@ -91,6 +95,13 @@ labels; this worker does not inject a canonical familiar identity bundle.
 Use the separate identity-bound CLI below for that binding, rsLoRA/DoRA/QLoRA,
 and PEFT paired evaluation. MLX's recorded holdout loss is adapter-only, not a
 base-versus-adapter improvement claim.
+
+The PEFT preflight below does **not** validate or launch managed MLX jobs.
+The server's runtime-availability probe is not a model/token/context or memory
+preflight and initializes its managed state directory. The MLX worker validates
+its own manifest, source and model metadata during execution, then loads weights.
+Do not infer model or memory readiness from a successful runtime probe.
+See [the worker integration notes](training/INTEGRATION.md).
 
 Save the recipe, then choose **Launch local training** from its run page.
 Select the exact original JSONL file and confirm local execution. Mamase checks
@@ -245,7 +256,7 @@ any supported adapter variant.
 
 ## Run an identity-bound experiment
 
-From this checkout, install the optional training environment:
+From this checkout, install the optional **PEFT** environment, separate from MLX:
 
 ```sh
 python3 -m venv .venv
@@ -276,8 +287,64 @@ identity or role/skill configuration, provisions tools, or grants authority.
 The instance ID is operator-supplied; there is no Coven registry connection
 that attests it. Output directories must be new and their parent must exist.
 
-Inspect the bundle, then explicitly start the trainer with a **compatible local
-safetensors model snapshot**:
+Before loading weights, run the read-only offline preflight with the **same local
+snapshot and device** you intend to train:
+
+```sh
+.venv/bin/python training/preflight.py \
+  --bundle .lab/cody-experiment-001 \
+  --model /absolute/path/to/local-model \
+  --device cpu
+```
+
+Stdout is one JSON object with schema `mamase.preflight.v1`, backend
+`transformers-peft`, overall `ready`, blocking `errors`, non-blocking `warnings`,
+verified `facts`, and explanations of `skipped` checks. Exit **0** means the
+implemented checks passed; exit **1** means blocked, including missing
+dependencies or invalid arguments. Diagnostics from libraries go to stderr.
+Every error has a stable category `code` and an actionable `message`. The
+command requires an explicit `cpu`, `mps`, or `cuda`; it never substitutes a
+device or adapter algorithm.
+
+The checks reuse the trainer's bundle, device, adapter configuration and
+response-token masking helpers and the evaluator's context limit. They cover
+bundle/split hashes, unchanged bound identity files, unused output locations,
+recipe limits, importable PEFT dependencies, local model/tokenizer metadata,
+standard causal architecture, tokenizer vocabulary/template compatibility,
+and every train/holdout example's full token and completion budget. Unknown
+context limits and examples exceeding the configured or model/tokenizer
+limit block readiness; identity and responses are never silently truncated.
+The standard local model/tokenizer metadata guards are shared with the MLX
+worker without importing MLX or invoking its model loader.
+QLoRA requires CUDA, bitsandbytes, and a supported NVIDIA device. Pre-quantized
+or MLX snapshots, GGUF/pickle-only weights, adapter-only directories, custom
+model/tokenizer code, missing shards and malformed safetensors headers fail.
+
+**Readiness is bounded evidence, not a successful run.** Weight inventory
+records resolved local paths, byte sizes and bounded safetensors-header hashes;
+configuration/tokenizer files are hashed, but tensor payloads are neither read
+nor hashed. Same-size tensor corruption, exact architecture/LoRA target
+compatibility and numerical/kernel behavior remain unverified until real
+execution. The recipe's student string is only a label, not a verified Hub
+revision. Original dataset integrity was established at preparation; preflight
+checks the prepared splits, not an unstored original-source path. It reads only
+the selected bundle/snapshot and the bundle's explicitly bound identity files,
+not unrelated model caches or directories.
+
+There is **no memory estimate or OOM guarantee**: weights, activations, temporary
+buffers and optimizer memory are not allocated or measured. The command never
+constructs a model, trainer, optimizer or adapter, starts training/inference,
+downloads weights, executes remote code/pickle, rewrites identity, or creates
+locks, output directories or report files. You can redirect stdout yourself
+to preserve the JSON, but it is **not** an importable progress/result/evaluation
+report and never authorizes promotion. Rerun after changing any inputs,
+dependencies or device; it is not a lock against later source changes.
+
+The browser handbook only documents this local command; it does not inspect
+your hardware or certify a model. This command does not accept MLX `job.json`,
+validate MLX launch readiness, or extend managed MLX's adapter/identity support.
+
+After reviewing a ready report and its warnings, explicitly start the trainer:
 
 ```sh
 .venv/bin/python training/train.py \
