@@ -76,7 +76,7 @@ try {
     job.nodeVersion = version;
     const nodeEnv = { PATH: `${dirname(resolve(node))}${delimiter}${env.PATH || ""}` };
     if (job.name.startsWith("node-")) {
-      run(job, node, ["--test", "--test-reporter=tap"], "node --test --test-reporter=tap (explicit Node-only mode)",
+      run(job, node, ["--test", "--test-concurrency=1", "--test-reporter=tap"], "node --test --test-concurrency=1 --test-reporter=tap (explicit Node-only mode)",
         { ...nodeEnv, MAMASE_SKIP_ML: "1" });
     } else if (job.name === "cpu") {
       const mlEnv = { ...nodeEnv, MAMASE_TRAINING_PYTHON: python, MAMASE_REQUIRE_ML: "1" };

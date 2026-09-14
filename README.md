@@ -79,6 +79,8 @@ current Node 22/24 interpreter. Node-only jobs deliberately exclude the two
 optional ML cases, even if a local environment exists, and label that exclusion;
 only the separate required CPU job establishes ML coverage. The protocol
 fixture is not real MLX training. Normal `npm test` keeps its optional-ML behavior.
+The Node gates also use one file worker to avoid overlapping browser fixtures
+on shared hosts; concurrent-operation cases within each file still run.
 
 Every invocation prints a new ignored `.validation/run-*/summary.json` path.
 It records the commit, dirty-tree flag, exact Node version, commands, exit
