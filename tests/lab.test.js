@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { access, mkdir, mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
+import { access, mkdir, mkdtemp, readFile, rm, stat, symlink, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
@@ -51,6 +51,21 @@ async function prepareFiles(dir, adapter = "lora") {
   await writeFile(recipePath, JSON.stringify(manifest));
   await writeFile(datasetPath, source);
   return { workspace, options: { recipePath, datasetPath, identityDir, outputDir: join(dir, adapter) } };
+}
+
+async function selectContext(options) {
+  await writeFile(join(options.identityDir, "ROLE.md"), "- **Role:** Code familiar.\nUse only observed synthetic evidence.\n");
+  const selection = {
+    schema: "mamase.context-selection.v1", familiarId: "cody", instanceId: "test-coven",
+    lane: "coding", role: "Code familiar.", coverage: "selected-sources",
+    sources: [{ path: "IDENTITY.md", role: "identity" }, { path: "SOUL.md", role: "soul" }, { path: "ROLE.md", role: "role" }],
+  };
+  const contextManifestPath = join(options.identityDir, "context-selection.json");
+  await writeFile(contextManifestPath, JSON.stringify(selection));
+  const inspect = () => command(process.execPath, ["lab.mjs", "inspect-context", "--recipe", options.recipePath,
+    "--identity-dir", options.identityDir, "--context-manifest", contextManifestPath]);
+  const preview = JSON.parse(inspect().stdout);
+  return { selection, inspect, preview, options: { ...options, contextManifestPath, contextSha256: preview.familiarContext.sha256 } };
 }
 
 function command(executable, args) {
@@ -133,6 +148,102 @@ test("Python bundle validation rejects altered data and changed identity", async
   assert.match(corrupt.stderr, /fingerprint mismatch/);
 });
 
+test("explicit context preview binds ordered sources without rewriting legacy identity", async (context) => {
+  const dir = await directory(context);
+  const original = await prepareFiles(dir);
+  const selected = await selectContext(original.options);
+  await assert.rejects(access(original.options.outputDir));
+  assert.deepEqual(selected.preview.sources.map(({ path, role }) => ({ path, role })), selected.selection.sources);
+  assert.equal(selected.preview.familiarContext.scope, "selected-sources");
+  await assert.rejects(prepareBundle({ ...selected.options, contextSha256: "0".repeat(64) }), /preview|review|fingerprint/i);
+  await assert.rejects(access(original.options.outputDir));
+  const prepared = await prepareBundle(selected.options);
+  assert.equal(prepared.bundle.schema, "mamase.local-bundle.v2");
+  assert.deepEqual(prepared.bundle.familiarContext, selected.preview.familiarContext);
+  const code = "from pathlib import Path; from training.train import load_bundle; import sys; b, r = load_bundle(Path(sys.argv[1])); print(r['train'][0]['prompt'][0]['content'])";
+  assert.match(command("python3", ["-B", "-c", code, selected.options.outputDir]).stdout, /Use only observed synthetic evidence/);
+  const frozen = JSON.parse(await readFile(join(selected.options.outputDir, "context.json")));
+  assert.equal(frozen.binding.promptSha256, selected.preview.familiarContext.promptSha256);
+  assert.ok(!JSON.stringify(prepared.bundle.familiarContext).includes(dir));
+  assert.ok(!JSON.stringify(prepared.bundle.familiarContext).includes("Use only observed"));
+  await writeFile(join(original.options.identityDir, "ROLE.md"), "- **Role:** Code familiar.\nRecord a different synthetic rubric.\n");
+  const changed = spawnSync("python3", ["-B", "-c", code, selected.options.outputDir], { cwd: root, encoding: "utf8" });
+  assert.notEqual(changed.status, 0);
+  assert.match(changed.stderr, /context source changed/i);
+  const newer = JSON.parse(selected.inspect().stdout);
+  assert.notEqual(newer.familiarContext.sha256, selected.preview.familiarContext.sha256);
+  await assert.rejects(prepareBundle({ ...selected.options, outputDir: join(dir, "stale") }), /preview|review|fingerprint/i);
+  await writeFile(join(original.options.identityDir, "ROLE.md"), frozen.sources[2].content);
+  await writeFile(selected.options.contextManifestPath, JSON.stringify({ ...selected.selection, sources: selected.selection.sources.toReversed() }));
+  const reordered = spawnSync("python3", ["-B", "-c", code, selected.options.outputDir], { cwd: root, encoding: "utf8" });
+  assert.notEqual(reordered.status, 0);
+  assert.match(reordered.stderr, /Context selection changed/);
+  await writeFile(selected.options.contextManifestPath, JSON.stringify(selected.selection));
+  await rm(join(original.options.identityDir, "ROLE.md"));
+  const missing = spawnSync("python3", ["-B", "-c", code, selected.options.outputDir], { cwd: root, encoding: "utf8" });
+  assert.notEqual(missing.status, 0);
+  assert.match(missing.stderr, /ROLE.md|missing/i);
+});
+
+test("context sources and structured metadata fail closed before creating a bundle", async (context) => {
+  const dir = await directory(context);
+  const original = await prepareFiles(dir);
+  const selected = await selectContext(original.options);
+  for (const mutate of [
+    (value) => { value.sources.reverse(); },
+    (value) => { value.sources.push(value.sources[2]); },
+    (value) => { value.sources[2].path = "../outside.md"; },
+    (value) => { value.sources[2].path = "MEMORY.md"; },
+    (value) => { value.sources[2].path = "USER.md"; },
+    (value) => { value.sources[2].path = "skills/secrets.md"; },
+    (value) => { value.familiarId = "another-familiar"; },
+    (value) => { value.instanceId = "another-instance"; },
+    (value) => { value.role = "A conflicting role"; },
+    (value) => { value.coverage = "full-runtime-parity"; },
+  ]) {
+    const value = structuredClone(selected.selection);
+    mutate(value);
+    await writeFile(selected.options.contextManifestPath, JSON.stringify(value));
+    await assert.rejects(prepareBundle(selected.options));
+    await assert.rejects(access(original.options.outputDir));
+  }
+  await writeFile(selected.options.contextManifestPath, JSON.stringify(selected.selection));
+  await rm(join(original.options.identityDir, "ROLE.md"));
+  await writeFile(join(dir, "outside.md"), "Neighboring private fixture");
+  await symlink(join(dir, "outside.md"), join(original.options.identityDir, "ROLE.md"));
+  await assert.rejects(prepareBundle(selected.options), /selected familiar|escape|symlink/i);
+  await rm(join(original.options.identityDir, "ROLE.md"));
+  await assert.rejects(prepareBundle(selected.options), /ENOENT|missing/i);
+  await writeFile(join(original.options.identityDir, "ROLE.md"), "x".repeat(128 * 1024 + 1));
+  await assert.rejects(prepareBundle(selected.options), /exceeds|large/i);
+  for (const content of ["- **Role:**\nUse observed evidence.\n", "- **Role:** Code familiar.\n- **Role:** Code familiar.\n"]) {
+    await writeFile(join(original.options.identityDir, "ROLE.md"), content);
+    await assert.rejects(prepareBundle(selected.options), /Structured Role|Duplicate structured Role/);
+  }
+});
+
+test("an explicitly empty context option never falls back to legacy preparation", async (context) => {
+  const dir = await directory(context);
+  const { options } = await prepareFiles(dir);
+  for (const [index, contextManifestPath] of ["", "   ", null, false].entries()) {
+    const outputDir = join(dir, `empty-context-${index}`);
+    await assert.rejects(prepareBundle({ ...options, contextManifestPath, outputDir }), /context|Context/);
+    await assert.rejects(access(outputDir));
+  }
+  const outputDir = join(dir, "empty-context-cli");
+  const failed = spawnSync(process.execPath, ["lab.mjs", "prepare", "--recipe", options.recipePath,
+    "--dataset", options.datasetPath, "--identity-dir", options.identityDir, "--out", outputDir,
+    "--context-manifest", ""], { cwd: root, encoding: "utf8" });
+  assert.notEqual(failed.status, 0, failed.stdout);
+  assert.match(failed.stderr, /context|Context/);
+  await assert.rejects(access(outputDir));
+  const selected = await selectContext(options);
+  await assert.rejects(prepareBundle({ ...selected.options, contextSha256: undefined }), /confirm|review/i);
+  await assert.rejects(access(options.outputDir));
+  await assert.rejects(prepareBundle({ ...options, contextSha256: selected.options.contextSha256 }), /context-manifest/);
+  await assert.rejects(access(options.outputDir));
+});
+
 test("completion loss masks identity and prompts and refuses silent truncation", () => {
   command("python3", ["-c", `
 from training.train import tokenize_rows
@@ -164,8 +275,15 @@ test("real local PEFT training saves reloadable adapters and importable observed
   command(python, ["tests/training_fixture.py", "create", model]);
   for (const adapter of ["lora", "rslora", "dora", "distillation"]) {
     await context.test(adapter, async () => {
-      const { workspace, options } = await prepareFiles(dir, adapter);
+      const fixture = await prepareFiles(dir, adapter);
+      const workspace = fixture.workspace;
+      const options = adapter === "lora" ? (await selectContext(fixture.options)).options : fixture.options;
       await prepareBundle(options);
+      if (adapter === "lora") {
+        const preflight = JSON.parse(command(python, ["training/preflight.py", "--bundle", options.outputDir, "--model", model, "--device", "cpu"]).stdout);
+        assert.equal(preflight.ready, true);
+        assert.equal(preflight.facts.bundle.familiarContext.sha256, options.contextSha256);
+      }
       command(python, ["training/train.py", "--bundle", options.outputDir, "--model", model]);
       const report = JSON.parse(await readFile(join(options.outputDir, "run-report.json")));
       for (const update of report.updates) workspace.runs[0] = recordProgress(workspace.runs[0], update);
@@ -180,6 +298,8 @@ test("real local PEFT training saves reloadable adapters and importable observed
       assert.ok(result.trainableParameters > 0 && result.trainableParameters < result.totalParameters);
       command(python, ["tests/training_fixture.py", "verify", model, result.adapter.path]);
       if (adapter === "lora") {
+        assert.equal(result.familiarContext.sha256, options.contextSha256);
+        const contextSelection = JSON.parse(await readFile(options.contextManifestPath));
         const suitePath = join(dir, "suite.json");
         const suite = {
           schema: "mamase.eval-suite.v1", name: "Independent synthetic pipeline fixture", version: "1",
@@ -198,6 +318,7 @@ test("real local PEFT training saves reloadable adapters and importable observed
         assert.equal(first.resultSha256, sha256(await readFile(join(options.outputDir, "result.json"))));
         assert.equal(first.suite.sha256, sha256(await readFile(suitePath)));
         assert.equal(first.promotion, "not-authorized");
+        assert.deepEqual(first.familiarContext, result.familiarContext);
         assert.match(first.interpretation, /semantic|deployment/);
         assert.equal((await stat(firstOut)).mode & 0o777, 0o700);
         assert.equal((await stat(join(firstOut, "evaluation-report.json"))).mode & 0o777, 0o600);
@@ -261,9 +382,12 @@ test("real local PEFT training saves reloadable adapters and importable observed
           [join(options.outputDir, "result.json"), JSON.stringify({ ...result, holdoutSha256: "0".repeat(64) }), /holdout fingerprint/i],
           [join(options.outputDir, "result.json"), JSON.stringify({ ...result, runId: "another-run" }), /run ID/i],
           [join(options.outputDir, "result.json"), JSON.stringify({ ...result, familiar: { ...result.familiar, instanceId: "other-instance" } }), /identity mismatch/i],
+          [join(options.outputDir, "result.json"), JSON.stringify({ ...result, familiarContext: { ...result.familiarContext, sha256: "0".repeat(64) } }), /familiar context mismatch/i],
           [join(options.outputDir, "result.json"), JSON.stringify({ ...result, adapter: { ...result.adapter, path: model } }), /Adapter path/i],
           [join(options.outputDir, "run-report.json"), JSON.stringify({ ...report, updates: report.updates.slice(0, -1) }), /completed/i],
           [join(options.identityDir, "SOUL.md"), "Changed synthetic identity", /identity changed/i],
+          [join(options.identityDir, "ROLE.md"), "Changed synthetic role", /context source changed/i],
+          [options.contextManifestPath, JSON.stringify({ ...contextSelection, sources: contextSelection.sources.toReversed() }), /Context selection changed/i],
           [join(model, "config.json"), "{}", /Base.model.*fingerprint/i],
           [join(result.adapter.path, "adapter_model.safetensors"), "changed", /Adapter.*fingerprint/i],
           [join(options.outputDir, "holdout.jsonl"), "{}", /fingerprint/i],

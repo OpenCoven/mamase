@@ -1,20 +1,13 @@
-import { createHash } from "node:crypto";
-import { mkdir, readFile, realpath, stat, writeFile } from "node:fs/promises";
+import { mkdir, realpath, writeFile } from "node:fs/promises";
 import { basename, dirname, join, resolve } from "node:path";
 import { parseArgs } from "node:util";
 import { fileURLToPath } from "node:url";
 import { assert, createWorkspace, parseDataset, validateDataset, validateRecipe, splitCounts, MAX_IMPORT_BYTES } from "./workspace.js";
+import { boundedRead, inspectContext, sha256 } from "./familiar-context.mjs";
 
-export const sha256 = (value) => createHash("sha256").update(value).digest("hex");
+export { sha256 };
 const json = (value) => `${JSON.stringify(value, null, 2)}\n`;
 const jsonl = (rows) => `${rows.map((row) => JSON.stringify(row)).join("\n")}\n`;
-
-async function boundedRead(path, limit) {
-  assert((await stat(path)).size <= limit, `File exceeds ${limit} bytes: ${path}`);
-  const bytes = await readFile(path);
-  assert(bytes.length <= limit, `File exceeds ${limit} bytes: ${path}`);
-  return bytes;
-}
 
 export function prepareData(manifest, source, identity) {
   assert(manifest?.schema === "mamase.training-recipe.v1", "Expected a mamase.training-recipe.v1 export.");
@@ -33,7 +26,7 @@ export function prepareData(manifest, source, identity) {
   const parsed = parseDataset(source.toString("utf8"));
   assert(parsed.records === dataset.records && parsed.format === dataset.format, "Dataset metadata does not match its source.");
   assert(manifest.dataset.splitSeed === 42, "Unsupported split seed; export the recipe again.");
-  const identityPrompt = `Coven instance: ${recipe.instanceId}\nFamiliar ID: ${recipe.familiarId}\n\n${identity.identity}\n\n${identity.soul}`;
+  const identityPrompt = identity.contextPrompt ?? `Coven instance: ${recipe.instanceId}\nFamiliar ID: ${recipe.familiarId}\n\n${identity.identity}\n\n${identity.soul}`;
   const seen = new Set();
   const entries = source.toString("utf8").replace(/^\uFEFF/, "").split(/\r?\n/).filter((line) => line.trim()).map((line) => {
     const row = JSON.parse(line);
@@ -66,7 +59,11 @@ export function prepareData(manifest, source, identity) {
   };
 }
 
-export async function prepareBundle({ recipePath, datasetPath, identityDir, outputDir }) {
+export async function prepareBundle({ recipePath, datasetPath, identityDir, outputDir, contextManifestPath, contextSha256 }) {
+  const hasContext = contextManifestPath !== undefined;
+  assert(!hasContext || (typeof contextManifestPath === "string" && contextManifestPath.trim()), "--context-manifest must name an explicit nonempty context selection.");
+  assert(hasContext || contextSha256 === undefined, "--context-sha256 requires an explicit --context-manifest.");
+  assert(!hasContext || (typeof contextSha256 === "string" && /^[a-f0-9]{64}$/.test(contextSha256)), "Context preparation requires the reviewed --context-sha256 confirmation from inspect-context.");
   const manifest = JSON.parse(await boundedRead(resolve(recipePath), 1024 * 1024));
   const directory = await realpath(resolve(identityDir));
   const files = {};
@@ -75,19 +72,25 @@ export async function prepareBundle({ recipePath, datasetPath, identityDir, outp
     assert(dirname(path) === directory, `${name} must belong to the selected familiar workspace, not a symlink to another workspace.`);
     const content = await boundedRead(path, 128 * 1024);
     assert(content.toString("utf8").trim(), `${name} must not be empty.`);
-    files[name] = { path, sha256: sha256(content), content: content.toString("utf8") };
+    files[name] = { path, sha256: sha256(content), content: new TextDecoder("utf-8", { fatal: true, ignoreBOM: true }).decode(content) };
+  }
+  const context = hasContext ? await inspectContext({ contextManifestPath, identityDir, recipe: manifest.recipe }) : null;
+  if (context) {
+    assert(contextSha256 === context.familiarContext.sha256, "Context differs from the reviewed preview. Run inspect-context, review the source roles/order, then confirm with --context-sha256.");
+    for (const name of ["IDENTITY.md", "SOUL.md"]) assert(context.snapshot.sources.find((source) => source.path === name).content === files[name].content, "Identity changed during context inspection. Review again.");
   }
   const source = await boundedRead(resolve(datasetPath), MAX_IMPORT_BYTES);
-  const prepared = prepareData(manifest, source, { identity: files["IDENTITY.md"].content, soul: files["SOUL.md"].content });
+  const prepared = prepareData(manifest, source, { identity: files["IDENTITY.md"].content, soul: files["SOUL.md"].content, ...(context ? { contextPrompt: context.prompt } : {}) });
   assert(basename(directory) === prepared.recipe.familiarId, "Familiar ID must match the selected workspace directory name.");
   const payloads = {
     "train.jsonl": jsonl(prepared.train),
     "holdout.jsonl": jsonl(prepared.holdout),
     "identity.json": json({ familiarId: prepared.recipe.familiarId, instanceId: prepared.recipe.instanceId, files }),
     "recipe.json": json(manifest),
+    ...(context ? { "context.json": json(context.snapshot) } : {}),
   };
   const bundle = {
-    schema: "mamase.local-bundle.v1",
+    schema: context ? "mamase.local-bundle.v2" : "mamase.local-bundle.v1",
     runId: manifest.runId,
     preparedAt: new Date().toISOString(),
     recipe: prepared.recipe,
@@ -97,6 +100,7 @@ export async function prepareBundle({ recipePath, datasetPath, identityDir, outp
     files: Object.fromEntries(Object.entries(payloads).map(([name, content]) => [name, sha256(content)])),
     execution: "not-started",
     promotion: "not-authorized",
+    ...(context ? { familiarContext: context.familiarContext } : {}),
   };
   const out = resolve(outputDir);
   // Exclusive directory creation prevents replacing an experiment or its private data.
@@ -112,15 +116,27 @@ async function main() {
     options: {
       recipe: { type: "string" }, dataset: { type: "string" },
       "identity-dir": { type: "string" }, out: { type: "string" }, help: { type: "boolean" },
+      "context-manifest": { type: "string" }, "context-sha256": { type: "string" },
     },
   });
   if (values.help || !positionals.length) {
     console.log("Usage: npm run lab -- prepare --recipe recipe.json --dataset examples.jsonl --identity-dir /path/familiar --out .lab/experiment\nCreate the output parent first. Preparation never downloads models or starts training.\nUse the PEFT environment (training/requirements.txt), not managed MLX. Check readiness without loading weights or writing reports:\n.venv/bin/python training/preflight.py --bundle .lab/experiment --model /path/local-model --device cpu\nRead its JSON errors/warnings/facts; exit 1 means blocked. A ready preflight is not an OOM guarantee or a run report. Then explicitly train with the same model/device:\n.venv/bin/python training/train.py --bundle .lab/experiment --model /path/local-model --device cpu");
+    console.log("Optional selected familiar context: inspect-context --recipe recipe.json --identity-dir /path/familiar --context-manifest context-selection.json\nReview the ordered sources and fingerprint, then add --context-manifest and --context-sha256 SHA_FROM_PREVIEW to prepare. Without these options, the historical identity-files-only scope is retained.");
     return;
   }
-  assert(positionals.length === 1 && positionals[0] === "prepare", "Only the prepare command is supported.");
+  assert(positionals.length === 1 && ["prepare", "inspect-context"].includes(positionals[0]), "Use prepare or inspect-context.");
+  if (positionals[0] === "inspect-context") {
+    for (const key of ["recipe", "identity-dir", "context-manifest"]) assert(values[key], `Missing --${key}.`);
+    assert(values.dataset === undefined && values.out === undefined && values["context-sha256"] === undefined, "inspect-context does not prepare outputs or confirm a selection; use prepare after reviewing.");
+    const manifest = JSON.parse(await boundedRead(resolve(values.recipe), 1024 * 1024));
+    assert(manifest?.schema === "mamase.training-recipe.v1", "Expected a mamase.training-recipe.v1 export.");
+    const context = await inspectContext({ contextManifestPath: values["context-manifest"], identityDir: values["identity-dir"], recipe: manifest.recipe });
+    console.log(json(context.preview));
+    return;
+  }
   for (const key of ["recipe", "dataset", "identity-dir", "out"]) assert(values[key], `Missing --${key}.`);
-  const result = await prepareBundle({ recipePath: values.recipe, datasetPath: values.dataset, identityDir: values["identity-dir"], outputDir: values.out });
+  const result = await prepareBundle({ recipePath: values.recipe, datasetPath: values.dataset, identityDir: values["identity-dir"], outputDir: values.out,
+    contextManifestPath: values["context-manifest"], contextSha256: values["context-sha256"] });
   console.log(`Prepared ${result.path}\n${result.bundle.split.train} train / ${result.bundle.split.holdout} holdout. No training started.\nBefore training, run training/preflight.py with --bundle, --model and an explicit --device in your PEFT environment. It emits readiness JSON, not a training report.`);
 }
 

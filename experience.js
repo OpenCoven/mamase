@@ -1,4 +1,5 @@
 import { assert, STATUSES } from "./workspace.js";
+import { sameFamiliarContext } from "./context-summary.js";
 
 export const DRAFT_KEY = "mamase.recipe-draft.v1";
 export const RUN_PAGE_SIZE = 20;
@@ -71,6 +72,7 @@ export function compareEvaluations(first, second) {
       if (baseline.suite.sha256 !== candidate.suite.sha256) reasons.push("Evaluation suite fingerprints differ.");
       if (["doSample", "numBeams", "maxNewTokens", "seed"].some((key) => baseline.decoding[key] !== candidate.decoding[key])) reasons.push("Paired decoding settings differ.");
       if (baseline.familiarId !== candidate.familiarId || baseline.instanceId !== candidate.instanceId) reasons.push("Familiar or Coven instance bindings differ.");
+      if (!sameFamiliarContext(baseline.familiarContext, candidate.familiarContext)) reasons.push("Familiar context scope or fingerprints differ.");
       if (baseline.device !== candidate.device) reasons.push("Recorded evaluation devices differ.");
     }
   }
