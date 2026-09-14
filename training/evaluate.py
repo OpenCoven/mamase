@@ -294,7 +294,7 @@ def evaluate(args):
         import torch
         from transformers import set_seed
     except ImportError as error:
-        raise RuntimeError("Evaluation dependencies are missing. Use the training/requirements-peft.txt virtual environment (not the managed MLX runtime).") from error
+        raise RuntimeError("Evaluation dependencies are missing. Use the training/requirements.txt virtual environment (not the managed MLX runtime).") from error
     recipe = source["bundle"]["recipe"]
     validate_device(torch, recipe["adapter"], args.device)
     set_seed(42)

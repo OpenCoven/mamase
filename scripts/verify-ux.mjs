@@ -193,6 +193,7 @@ try {
   await modal.waitFor({ state: "hidden" });
   assert.equal(await page.evaluate((key) => sessionStorage.getItem(key), DRAFT_KEY), null);
   await page.evaluate((key) => localStorage.setItem(key, "invalid workspace"), STORAGE_KEY);
+  await page.reload();
   await go(page, "settings");
   await page.getByRole("heading", { name: "Workspace needs attention", exact: true }).waitFor();
   await page.getByRole("group", { name: "Appearance mode", exact: true }).getByRole("button", { name: "Light", exact: true }).click();
@@ -289,6 +290,23 @@ try {
   assert.equal(await lab.getByLabel("Training dataset", { exact: true }).inputValue(), "teacher-data");
   await lab.getByLabel("Run name", { exact: true }).fill("Keep this draft");
   await go(lab, "sessions/run-1");
+  const preflightCommand = ".venv/bin/python training/preflight.py --bundle .lab/experiment --model /path/local-model --device cpu";
+  const runInstructions = lab.locator("section.card").filter({ has: lab.getByRole("heading", { name: "Run locally", exact: true }) });
+  const commands = await runInstructions.locator("pre").allTextContents();
+  assert.ok(commands.includes(preflightCommand));
+  assert.ok(commands.indexOf(preflightCommand) < commands.findIndex((command) => command.includes("training/train.py")));
+  assert.match(await runInstructions.textContent(), /mamase\.preflight\.v1/);
+  assert.match(await runInstructions.textContent(), /not preflight managed MLX jobs/);
+  const beforeHandbook = await stored(lab);
+  await go(lab, "resources");
+  const preflightCard = lab.locator("article.card").filter({ has: lab.getByRole("heading", { name: "Check before loading weights.", exact: true }) });
+  assert.equal(await preflightCard.locator("pre").textContent(), preflightCommand);
+  const preflightText = await preflightCard.textContent();
+  for (const text of ["errors", "warnings", "facts", "ready: false", "exits 1", "not a run report", "OOM guarantee", "browser does not inspect hardware", "training/requirements.txt", "training/requirements-mlx.txt"]) {
+    assert.ok(preflightText.includes(text), `Missing preflight boundary: ${text}`);
+  }
+  assert.deepEqual(await stored(lab), beforeHandbook);
+  await go(lab, "sessions/run-1");
   await lab.getByRole("button", { name: "Duplicate recipe", exact: true }).click();
   modal = lab.locator("#dialog");
   await modal.getByRole("button", { name: "Keep editing", exact: true }).click();
@@ -377,7 +395,7 @@ try {
     await lab.emulateMedia({ colorScheme: theme });
     for (const [width, height] of [[1440, 900], [1024, 768], [390, 844], [320, 640], [320, 568], [844, 390]]) {
       await lab.setViewportSize({ width, height });
-      for (const path of ["home", "projects", "datasets/teacher-data", "sessions", "sessions/run-0", "checkpoints/artifact-0", "playground", "evaluations", "settings"]) {
+      for (const path of ["home", "projects", "datasets/teacher-data", "sessions", "sessions/run-0", "checkpoints/artifact-0", "playground", "evaluations", "resources", "settings"]) {
         await go(lab, path);
         await bounds(lab, path === "home");
         if (path === "home" && height > 620) assert.equal(await lab.evaluate(() => document.documentElement.scrollHeight), height);
@@ -429,7 +447,7 @@ try {
     await context.addInitScript((data) => localStorage.setItem("mamase.coven-lab.v1", JSON.stringify(data)), longContent);
     const page = await context.newPage();
     watch(page);
-    for (const path of ["home", "projects", "datasets/teacher-data", "sessions", "sessions/run-0", "checkpoints/artifact-0", "playground", "evaluations", "settings"]) {
+    for (const path of ["home", "projects", "datasets/teacher-data", "sessions", "sessions/run-0", "checkpoints/artifact-0", "playground", "evaluations", "resources", "settings"]) {
       await go(page, path);
       await bounds(page, path === "home");
     }
@@ -437,7 +455,7 @@ try {
   }
   assert.deepEqual(errors, []);
   assert.deepEqual(external, []);
-  console.log(`UX end-to-end passed: ${layouts} responsive layouts, recoverable drafts, atomic imports, paired-report lineage and regression review, private-summary backups, matching CSV exports, guarded comparisons, loss accessibility and conflict recovery.`);
+  console.log(`UX end-to-end passed: ${layouts} responsive layouts, read-only preflight instructions, recoverable drafts, atomic imports, paired-report lineage and regression review, private-summary backups, matching CSV exports, guarded comparisons, loss accessibility and conflict recovery.`);
 } catch (error) {
   if (currentPage && !currentPage.isClosed()) await capture(currentPage, "failure");
   throw error;

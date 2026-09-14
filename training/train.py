@@ -216,7 +216,7 @@ def train(args):
         from peft import get_peft_model, prepare_model_for_kbit_training
         from transformers import Trainer, TrainerCallback, TrainingArguments, set_seed
     except ImportError as error:
-        raise RuntimeError("Training dependencies are missing. Install training/requirements-peft.txt in a local virtual environment (not the managed MLX runtime).") from error
+        raise RuntimeError("Training dependencies are missing. Install training/requirements.txt in a local virtual environment (not the managed MLX runtime).") from error
 
     recipe = bundle["recipe"]
     validate_device(torch, recipe["adapter"], args.device)

@@ -203,7 +203,7 @@ def dependencies(report, technique):
         try:
             versions[name] = importlib.metadata.version(name)
         except importlib.metadata.PackageNotFoundError:
-            report.error("dependencies.missing", f"Missing {name} in {sys.executable}. Use the PEFT environment from training/requirements-peft.txt (plus bitsandbytes on CUDA for QLoRA), not the managed MLX environment.")
+            report.error("dependencies.missing", f"Missing {name} in {sys.executable}. Use the PEFT environment from training/requirements.txt (plus bitsandbytes on CUDA for QLoRA), not the managed MLX environment.")
     report.value["facts"]["dependencies"] = versions
     if len(versions) != len(names):
         return None

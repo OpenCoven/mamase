@@ -115,7 +115,7 @@ async function main() {
     },
   });
   if (values.help || !positionals.length) {
-    console.log("Usage: npm run lab -- prepare --recipe recipe.json --dataset examples.jsonl --identity-dir /path/familiar --out .lab/experiment\nCreate the output parent first. Preparation never downloads models or starts training.\nUse the PEFT environment (training/requirements-peft.txt), not managed MLX. Check readiness without loading weights or writing reports:\n.venv/bin/python training/preflight.py --bundle .lab/experiment --model /path/local-model --device cpu\nRead its JSON errors/warnings/facts; exit 1 means blocked. A ready preflight is not an OOM guarantee or a run report. Then explicitly train with the same model/device:\n.venv/bin/python training/train.py --bundle .lab/experiment --model /path/local-model --device cpu");
+    console.log("Usage: npm run lab -- prepare --recipe recipe.json --dataset examples.jsonl --identity-dir /path/familiar --out .lab/experiment\nCreate the output parent first. Preparation never downloads models or starts training.\nUse the PEFT environment (training/requirements.txt), not managed MLX. Check readiness without loading weights or writing reports:\n.venv/bin/python training/preflight.py --bundle .lab/experiment --model /path/local-model --device cpu\nRead its JSON errors/warnings/facts; exit 1 means blocked. A ready preflight is not an OOM guarantee or a run report. Then explicitly train with the same model/device:\n.venv/bin/python training/train.py --bundle .lab/experiment --model /path/local-model --device cpu");
     return;
   }
   assert(positionals.length === 1 && positionals[0] === "prepare", "Only the prepare command is supported.");
