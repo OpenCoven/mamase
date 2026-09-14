@@ -9,11 +9,13 @@ from pathlib import Path
 import re
 
 if __package__:
+    from .eval_suites import validate_governance, validate_lineage, suite_summary, ExposureJournal
     from .train import (
         adapter_config, fingerprint, fingerprint_tree, load_bundle, load_local_model,
         load_local_tokenizer, package_versions, require, validate_device, write_json,
     )
 else:
+    from eval_suites import validate_governance, validate_lineage, suite_summary, ExposureJournal
     from train import (
         adapter_config, fingerprint, fingerprint_tree, load_bundle, load_local_model,
         load_local_tokenizer, package_versions, require, validate_device, write_json,
@@ -67,7 +69,7 @@ def validate_checks(checks):
 
 
 def validate_suite(suite, rows):
-    require(isinstance(suite, dict) and suite.get("schema") == "mamase.eval-suite.v1", "Unsupported evaluation suite schema.")
+    require(isinstance(suite, dict) and suite.get("schema") in ("mamase.eval-suite.v1", "mamase.eval-suite.v2"), "Unsupported evaluation suite schema.")
     bounded_text(suite.get("name"), "Suite name", 100)
     bounded_text(suite.get("version"), "Suite version", 80)
     cases = suite.get("cases")
@@ -94,6 +96,7 @@ def validate_suite(suite, rows):
         prompts.add(prompt)
         categories.add(category)
     require(categories == CATEGORIES, "The suite must cover task, identity, consent, and tool-boundary.")
+    validate_governance(suite)
     return suite
 
 
@@ -279,6 +282,12 @@ def write_report(out, report):
 
 def evaluate(args):
     os.umask(0o077)
+    with ExposureJournal(getattr(args, "history", None), read_json) as journal:
+        return evaluate_with_history(args, journal)
+
+
+def evaluate_with_history(args, journal):
+    os.umask(0o077)
     max_new_tokens = validate_max_new_tokens(args.max_new_tokens)
     requested_out = Path(args.out).absolute()
     parent = requested_out.parent.resolve(strict=True)
@@ -290,6 +299,20 @@ def evaluate(args):
     source = load_completed_bundle(bundle_dir)
     suite, suite_hash = load_suite(suite_path, source["rows"])
     require(not any(out.is_relative_to(source[key]) for key in ("modelDir", "adapterDir")), "Evaluation output must not modify the model or adapter snapshot.")
+    lineage, lineage_hash = None, None
+    lineage_path = getattr(args, "task_lineage", None)
+    if lineage_path:
+        lineage, lineage_hash = read_json(Path(lineage_path))
+        validate_lineage(lineage, source["result"])
+    if journal.path:
+        require(not any(journal.path.is_relative_to(source[key]) for key in ("modelDir", "adapterDir")),
+                "Exposure history must not modify model or adapter snapshots.")
+        require(journal.path not in (suite_path, Path(lineage_path).absolute() if lineage_path else None),
+                "Exposure history must not replace suite or task-lineage inputs.")
+    created_at = datetime.now(timezone.utc).isoformat(timespec="milliseconds").replace("+00:00", "Z")
+    journal.record(suite, suite_hash, created_at, lineage, lineage_hash)
+    governed_suite = suite_summary(suite, suite_hash, journal.value, lineage, lineage_hash)
+    governed_suite["historySha256"] = journal.sha256
     try:
         import torch
         from transformers import set_seed
@@ -304,7 +327,7 @@ def evaluate(args):
     require(not model.config.is_encoder_decoder, "Evaluation supports causal language models only.")
     prompts = prepare_prompts(suite, source["rows"], tokenizer, recipe["maxSequence"], context_limit(model.config, tokenizer), max_new_tokens)
     cases = [
-        {key: case[key] for key in ("id", "category", "prompt", "checks")}
+        dict(case)
         for case in suite["cases"]
     ]
     for candidate in ("base", "adapter"):
@@ -319,15 +342,19 @@ def evaluate(args):
     current = load_completed_bundle(bundle_dir)
     require(current == source, "Training result or source provenance changed during evaluation.")
     require(fingerprint(suite_path) == suite_hash, "Suite changed during evaluation.")
+    if lineage_path:
+        require(fingerprint(Path(lineage_path)) == lineage_hash, "Task-lineage inventory changed during evaluation.")
+    if journal.path and journal.sha256:
+        require(fingerprint(journal.path) == journal.sha256, "Exposure history changed during evaluation.")
     result = source["result"]
     report = {
         "schema": "mamase.evaluation-report.v1", "runId": result["runId"],
-        "createdAt": datetime.now(timezone.utc).isoformat(timespec="milliseconds").replace("+00:00", "Z"),
+        "createdAt": created_at,
         "resultSha256": source["resultSha256"], "bundleSha256": result["bundleSha256"],
         "datasetSha256": result["datasetSha256"],
         "familiar": {key: result["familiar"][key] for key in ("familiarId", "instanceId")},
         "adapterPath": result["adapter"]["path"],
-        "suite": {"name": suite["name"], "version": suite["version"], "sha256": suite_hash},
+        "suite": governed_suite,
         "decoding": {"doSample": False, "numBeams": 1, "maxNewTokens": max_new_tokens, "seed": 42},
         "device": args.device, "versions": package_versions(recipe["adapter"]),
         "promotion": "not-authorized", "cases": cases,
@@ -336,7 +363,7 @@ def evaluate(args):
             "adapterPassed": sum(case["adapter"]["passed"] for case in cases),
             "regressions": sum(case["base"]["passed"] and not case["adapter"]["passed"] for case in cases),
         },
-        "interpretation": "Case-sensitive string-rule checks are narrow proxies, not proof of semantic correctness, identity fidelity, consent, or safe tool use. This independent suite is distinct from training holdout loss and does not authorize deployment or promotion.",
+        "interpretation": "Generated text and case-sensitive string-rule checks only: not execution receipts, semantic correctness, identity fidelity, consent, or safe tool use. Legacy or missing lineage/history means independence unverified; mechanical eligibility is only an unauthenticated declaration check. Holdout loss, human review and deployment authorization are separate.",
     }
     return write_report(out, report)
 
@@ -344,7 +371,9 @@ def evaluate(args):
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--bundle", required=True, help="Prepared bundle with completed result.json and run-report.json")
-    parser.add_argument("--suite", required=True, help="Independent, versioned mamase.eval-suite.v1 JSON file")
+    parser.add_argument("--suite", required=True, help="Local mamase.eval-suite.v1 (legacy) or v2 JSON file")
+    parser.add_argument("--history", help="Local exposure journal shared across suite versions/candidates; created as unknown if missing")
+    parser.add_argument("--task-lineage", help="Optional operator-declared mamase.task-lineage.v1 inventory bound to bundle/dataset hashes")
     parser.add_argument("--out", required=True, help="New private output directory; its parent must already exist")
     parser.add_argument("--device", choices=("cpu", "mps", "cuda"), default="cpu")
     parser.add_argument("--max-new-tokens", type=int, default=128)

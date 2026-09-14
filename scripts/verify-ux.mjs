@@ -9,6 +9,7 @@ import { createAuthApi } from "../auth-api.mjs";
 import { createWorkspace, createRun, recordProgress, STORAGE_KEY } from "../workspace.js";
 import { DRAFT_KEY } from "../experience.js";
 import { MAX_BACKUP_BYTES } from "../backups.js";
+import { verifyReviewUx } from "./verify-review-ux.mjs";
 
 const server = createAppServer({ auth: createAuthApi({ env: {} }) });
 server.listen(0, "127.0.0.1");
@@ -483,6 +484,7 @@ try {
   assert.deepEqual(await stored(pairedPage), backupWorkspace);
   assert.equal(await pairedPage.locator("html").getAttribute("data-theme-preference"), "light");
   await pairedContext.close();
+  await verifyReviewUx({ browser, base, watch, downloaded, bounds });
 
   const populated = await browser.newContext({ viewport: { width: 1440, height: 900 }, colorScheme: "dark" });
   await populated.addInitScript((workspace) => {

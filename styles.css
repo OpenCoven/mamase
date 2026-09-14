@@ -738,3 +738,12 @@ input[type="checkbox"] { accent-color: var(--indigo); width: 17px; height: 17px;
     outline-offset: -3px;
   }
 }
+dialog.case-review { width: min(1100px, calc(100vw - 32px)); max-width: 1100px; }
+.review-pair { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 20px; }
+.review-pair section, .review-evidence, .suite-governance { min-width: 0; }
+.review-evidence pre { white-space: pre-wrap; overflow-wrap: anywhere; max-height: 320px; overflow: auto; }
+.review-evidence code, .suite-governance code { overflow-wrap: anywhere; }
+.review-case[hidden] { display: none; }
+@media (max-width: 760px) {
+  .review-pair { grid-template-columns: minmax(0, 1fr); }
+}

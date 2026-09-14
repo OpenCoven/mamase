@@ -1,4 +1,5 @@
 import { assert, text, number, date, id, digest } from "./validation.js";
+import { validateSuiteSummary, validateCaseFamilies } from "./evaluation-suites.js";
 
 export const EVAL_CATEGORIES = ["task", "identity", "consent", "tool-boundary"];
 
@@ -86,11 +87,7 @@ export function validateComparison(input, artifact) {
     assert(input[key] === lineage[key], `Evaluation ${key} does not match the imported training result.`);
   }
   assert(input.adapterPath === artifact.path, "Evaluation adapter path does not match the imported artifact.");
-  const suite = {
-    name: text(input.suite?.name, "Suite name", 100),
-    version: text(input.suite?.version, "Suite version", 80),
-    sha256: digest(input.suite?.sha256, "Suite"),
-  };
+  const suite = validateSuiteSummary(input.suite, input.samples);
   assert(input.decoding?.doSample === false && input.decoding.numBeams === 1 && input.decoding.seed === 42, "Expected paired greedy decoding with seed 42.");
   const decoding = { doSample: false, numBeams: 1, seed: 42, maxNewTokens: number(input.decoding.maxNewTokens, "Maximum new tokens", 1, 512, true) };
   const summary = counts(input);
@@ -152,11 +149,12 @@ export function evaluationFromReport(report, metadata, artifact) {
     ...report, ...summary, categories, reportSha256: metadata.sha256,
     familiarId: report.familiar?.familiarId, instanceId: report.familiar?.instanceId,
   }, artifact);
+  validateCaseFamilies(report.cases, comparison.suite);
   return {
     id: metadata.id, artifactId: artifact.id,
     benchmark: `${comparison.suite.name} / ${comparison.suite.version}`,
     score: comparison.adapterPassed, maximum: comparison.samples, samples: comparison.samples,
-    notes: "Independent paired string-rule checks, not a semantic judge or deployment approval. Full prompts and outputs remain in the local report.",
+    notes: "Paired string-rule checks, not a semantic judge or deployment approval. Independence depends on declared suite lineage/history. Full prompts and outputs remain in the local report.",
     createdAt: date(report.createdAt), comparison,
   };
 }

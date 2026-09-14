@@ -6,6 +6,8 @@ import { spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { prepareBundle, prepareData, sha256 } from "../lab.mjs";
 import { createWorkspace, createRun, exportRecipe, importEvaluationReport, importTrainingResult, parseDataset, recordProgress, validateWorkspace } from "../workspace.js";
+import { syntheticSuiteTemplate } from "../evaluation-suites.js";
+import { prepareReview, recordHumanDecision } from "../human-review.js";
 
 const root = fileURLToPath(new URL("../", import.meta.url));
 const python = process.env.MAMASE_TRAINING_PYTHON || join(root, ".venv/bin/python");
@@ -197,6 +199,8 @@ test("real local PEFT training saves reloadable adapters and importable observed
         assert.deepEqual(first.decoding, { doSample: false, numBeams: 1, maxNewTokens: 8, seed: 42 });
         assert.equal(first.resultSha256, sha256(await readFile(join(options.outputDir, "result.json"))));
         assert.equal(first.suite.sha256, sha256(await readFile(suitePath)));
+        assert.equal(first.suite.governance.classification, "legacy-development");
+        assert.equal(first.suite.governance.independence, "unverified");
         assert.equal(first.promotion, "not-authorized");
         assert.match(first.interpretation, /semantic|deployment/);
         assert.equal((await stat(firstOut)).mode & 0o777, 0o700);
@@ -235,6 +239,52 @@ test("real local PEFT training saves reloadable adapters and importable observed
         const repeated = JSON.parse(await readFile(join(repeatOut, "evaluation-report.json")));
         assert.deepEqual(repeated.cases, paired.cases);
         assert.deepEqual(repeated.summary, paired.summary);
+
+        const governedPath = join(dir, "synthetic-suite-v2.json");
+        const historyPath = join(dir, "evaluation-history.json");
+        const inventoryPath = join(dir, "task-lineage.json");
+        const governed = syntheticSuiteTemplate();
+        governed.intendedUse = "tuning";
+        governed.cases[1].familyId = governed.cases[2].familyId;
+        await writeFile(governedPath, JSON.stringify(governed));
+        await writeFile(inventoryPath, JSON.stringify({
+          schema: "mamase.task-lineage.v1", bundleSha256: result.bundleSha256, datasetSha256: result.datasetSha256,
+          coverage: "complete-declared", provenance: "Synthetic optional inventory; no parser-supplied lineage claim.",
+          groups: [{ familyId: "fixture-alpha", use: "training", source: "Synthetic declared training task family." }],
+        }));
+        const governedArgs = (output) => ["training/evaluate.py", "--bundle", options.outputDir, "--suite", governedPath,
+          "--history", historyPath, "--task-lineage", inventoryPath, "--out", output, "--max-new-tokens", "8"];
+        command(python, governedArgs(join(dir, "eval-v2-tuning")));
+        governed.name = "Renamed synthetic suite";
+        governed.version = "3";
+        governed.intendedUse = "final";
+        await writeFile(governedPath, JSON.stringify(governed));
+        const governedOut = join(dir, "eval-v2-renamed-final");
+        command(python, governedArgs(governedOut));
+        const governedBytes = await readFile(join(governedOut, "evaluation-report.json"));
+        const governedReport = JSON.parse(governedBytes);
+        assert.equal(governedReport.suite.sha256, sha256(await readFile(governedPath)));
+        assert.equal(governedReport.suite.historySha256, sha256(await readFile(historyPath)));
+        assert.equal(governedReport.suite.governance.trainingLineage.sha256, sha256(await readFile(inventoryPath)));
+        assert.equal(governedReport.suite.governance.independence, "known-exposure");
+        assert.equal(governedReport.suite.governance.caseCount, 4);
+        assert.equal(governedReport.suite.governance.groupCount, 3);
+        assert.ok(governedReport.suite.governance.history.events.some((event) => event.use === "tuning"));
+        assert.ok(governedReport.suite.governance.history.events.some((event) => event.use === "training"));
+        assert.deepEqual(governedReport.cases.map((row) => row.familyId), governed.cases.map((row) => row.familyId));
+        const governedWorkspace = importEvaluationReport(imported, governedReport, {
+          id: "evaluation-governed", sha256: sha256(governedBytes), createdAt: new Date().toISOString(),
+        });
+        const localReview = await prepareReview(governedWorkspace, "evaluation-governed", governedReport, sha256(governedBytes));
+        const unknown = { taskState: "unknown", responseJudgment: "unknown", executionEvidence: "unknown", receiptAdequacy: "not-applicable" };
+        const reviewed = validateWorkspace(recordHumanDecision(governedWorkspace, localReview, {
+          id: "tiny-model-review", recordedAt: new Date().toISOString(), reviewer: "Synthetic smoke operator",
+          decision: "needs-more-evidence", rationale: "Actual tiny-model output exercises evidence binding only.",
+          limitations: "Not candidate quality or a production benchmark; text-only evidence.",
+          annotations: localReview.cases.map((item) => ({ caseId: item.id, caseSha256: item.sha256, base: unknown, adapter: unknown })),
+        }));
+        assert.deepEqual(reviewed.evaluations[0].comparison, governedWorkspace.evaluations[0].comparison);
+        assert.ok(!JSON.stringify(reviewed).includes(governed.cases[0].prompt));
 
         async function fails(expected, output = join(dir, "eval-error"), extra = []) {
           const failed = spawnSync(python, [...args(output), ...extra], { cwd: root, encoding: "utf8", timeout: 30_000, env: { ...process.env, PYTHONDONTWRITEBYTECODE: "1" } });
