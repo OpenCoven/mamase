@@ -161,6 +161,20 @@ test("exported recipe describes an external plan, split policy, and recorded dat
   assert.equal(exported.dataset.splitSeed, 42);
   assert.equal(exported.distillation, null);
   assert.equal(exported.estimatedOptimizerSteps, 69);
+  assert.match(exported.description, /npm run lab -- prepare/);
+  assert.match(exported.splitPolicy, /SHA-256/);
+  assert.equal(Object.hasOwn(exported, "localJobId"), false);
+});
+
+test("managed recipe exports retain job identity and the managed split policy", () => {
+  const workspace = fixture();
+  const exported = exportRecipe({ ...workspace.runs[0], localJobId: "job-1" }, workspace);
+  assert.equal(exported.execution, "local-mlx");
+  assert.equal(exported.localJobId, "job-1");
+  assert.match(exported.description, /does not start training/);
+  assert.match(exported.splitPolicy, /shuffles source indices with seed 42/);
+  assert.equal(exported.dataset.sha256, dataset.sha256);
+  assert.equal(exported.estimatedOptimizerSteps, 69);
 });
 
 test("user text is escaped and CSV cells cannot become spreadsheet formulas", () => {

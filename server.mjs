@@ -14,13 +14,10 @@ const files = new Map([
   ["/ui.js", ["ui.js", "text/javascript"]],
   ["/workspace.js", ["workspace.js", "text/javascript"]],
   ["/experience.js", ["experience.js", "text/javascript"]],
-<<<<<<< Updated upstream
   ["/validation.js", ["validation.js", "text/javascript"]],
   ["/results.js", ["results.js", "text/javascript"]],
-=======
   ["/training-state.js", ["training-state.js", "text/javascript"]],
   ["/training-client.js", ["training-client.js", "text/javascript"]],
->>>>>>> Stashed changes
   ["/favicon.svg", ["favicon.svg", "image/svg+xml"]],
 ]);
 

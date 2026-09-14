@@ -193,6 +193,7 @@ try {
   await modal.waitFor({ state: "hidden" });
   assert.equal(await page.evaluate((key) => sessionStorage.getItem(key), DRAFT_KEY), null);
   await page.evaluate((key) => localStorage.setItem(key, "invalid workspace"), STORAGE_KEY);
+  await page.reload();
   await go(page, "settings");
   await page.getByRole("heading", { name: "Workspace needs attention", exact: true }).waitFor();
   await page.getByRole("group", { name: "Appearance mode", exact: true }).getByRole("button", { name: "Light", exact: true }).click();

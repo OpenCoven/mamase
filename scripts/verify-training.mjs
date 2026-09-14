@@ -67,6 +67,8 @@ try {
   const datasetId = await page.evaluate((key) => JSON.parse(localStorage.getItem(key)).datasets[0].id, STORAGE_KEY);
   await page.goto(`${base}/#/playground`);
   await page.getByLabel("Run name", { exact: true }).fill("Local training diagnostic");
+  await page.getByLabel("Familiar ID", { exact: true }).fill("fixture");
+  await page.getByLabel("Coven instance ID", { exact: true }).fill("diagnostic-coven");
   await page.getByLabel("Training objective", { exact: true }).fill("Verify real LoRA optimization and artifact registration, not model quality.");
   await page.getByLabel("Base model", { exact: true }).fill(fixture.modelPath);
   await page.getByLabel("Training dataset", { exact: true }).selectOption(datasetId);

@@ -276,17 +276,16 @@ export function exportRecipe(run, workspace) {
     schema: "mamase.training-recipe.v1",
     runId: run.id,
     name: run.name,
-<<<<<<< Updated upstream
-    execution: "external",
-    description: "External execution only. Prepare this recipe with npm run lab -- prepare; training requires an explicit local Python command.",
-=======
     execution: run.localJobId ? "local-mlx" : "external",
     ...(run.localJobId ? { localJobId: run.localJobId } : {}),
-    description: "Planning manifest, not an executable trainer configuration. Map these fields to your local trainer.",
->>>>>>> Stashed changes
+    description: run.localJobId
+      ? "Recipe for the recorded managed local MLX job. Exporting does not start training."
+      : "External execution only. Prepare this recipe with npm run lab -- prepare; training requires an explicit local Python command.",
     recipe: run.recipe,
     dataset: { ...dataset, split: splitCounts(dataset), splitSeed: 42 },
-    splitPolicy: "The Mamase prepare command orders unique prompts by SHA-256(seed + prompt), reserves the recorded holdout count, and writes disjoint train/holdout files. Other trainers must apply an equivalent leakage-free split.",
+    splitPolicy: run.localJobId
+      ? "The managed MLX worker shuffles source indices with seed 42, reserves the recorded holdout count, and writes separate training and validation files."
+      : "The Mamase prepare command orders unique prompts by SHA-256(seed + prompt), reserves the recorded holdout count, and writes disjoint train/holdout files. Other trainers must apply an equivalent leakage-free split.",
     distillation: run.recipe.method === "distillation" ? "Supervised LoRA training on pre-generated teacher responses; no online generation or logit/KL matching." : null,
     estimatedOptimizerSteps: estimatedSteps(run.recipe, dataset),
   };
