@@ -1,6 +1,6 @@
 import {
   STORAGE_KEY, METHODS, ADAPTERS, STATUSES, MAX_IMPORT_BYTES, MAX_WORKSPACE_BYTES, assert,
-  createWorkspace, loadWorkspace, saveWorkspace, validateWorkspace, parseDataset,
+  createWorkspace, loadWorkspace, saveWorkspace, parseDataset,
   validateDataset, splitCounts, createRun, recordProgress, validateArtifact,
   validateEvaluation, exportRecipe, escapeHtml as esc, runsCsv, estimatedSteps,
   importTrainingResult, importEvaluationReport, previewProgressReport, importProgressReport,
@@ -10,6 +10,7 @@ import { DRAFT_KEY, RUN_PAGE_SIZE, parseRoute, runUrl, selectRuns, searchWorkspa
 import { TrainingClient, encodeDataset, localJobActive } from "./training-client.js";
 import { mergeTrainingJob, trainingIdentity, managedRecipeIssue } from "./training-state.js";
 import { trainingWorkflow, runGuidance, formatLoss, lossReading, modelName } from "./training-guide.js";
+import { MAX_BACKUP_BYTES, exportWorkspaceBackup, parseWorkspaceBackup } from "./backups.js";
 
 const app = document.querySelector("#app");
 const dialog = document.querySelector("#dialog");
@@ -621,7 +622,7 @@ function settingsPage() {
   return `${header("Workspace settings", "", "A local home for the coven's experiments.")}
     <div class="settings-grid">${appearanceSettings()}
     <section class="card"><h2>Workspace identity</h2><form data-form="workspace">${field("Workspace name", "workspaceName", workspace.name, { attrs: 'maxlength="80"' })}<button class="button primary" type="submit">Save name</button><p class="form-error" role="alert" hidden></p></form></section>
-    <section class="card"><h2>Backups &amp; portability</h2><p>Recipes, dataset fingerprints, recorded results, and artifact references are saved in this browser. No cloud sync or accounts are configured.</p><div class="actions">${button("Export workspace", "export-workspace", "download")}${button("Restore backup", "restore-workspace", "upload")}</div><p class="help">Restoring replaces this workspace after confirmation. Dataset contents and model weights are never included.</p></section>
+    <section class="card"><h2>Backups &amp; portability</h2><p>Recipes, dataset fingerprints, recorded results, and artifact references are saved in this browser. No cloud sync or accounts are configured.</p><div class="actions">${button("Export workspace", "export-workspace", "download")}${button("Restore backup", "restore-workspace", "upload")}</div><p class="help">Exports use a versioned backup envelope. Restore previews the source format and collection counts before replacement; legacy v1 backups remain supported. Appearance settings, dataset contents and model weights are not included.</p></section>
     <section class="card"><h2>Execution boundary</h2><dl class="facts"><dt>Trainer</dt><dd>Local MLX-LM (optional) or explicit PEFT CLI</dd><dt>Inference</dt><dd>No runtime endpoint connected</dd><dt>Storage</dt><dd>Browser workspace; managed jobs and training bundles on local disk</dd><dt>Workspace size</dt><dd id="workspace-size">${formatBytes(new TextEncoder().encode(JSON.stringify(workspace)).length)} / 4 MB</dd></dl><p>Managed jobs persist their input, split files, logs and adapters separately. Check runtime availability from a saved run. There are no fabricated jobs or benchmark scores.</p></section>
     <section class="card"><h2>Reset workspace</h2><p>Remove this browser's saved metadata and start fresh. Your datasets and local model files are not touched.</p>${button("Reset local workspace", "reset-workspace", "", "danger")}</section></div>`;
 }
@@ -765,6 +766,23 @@ function progressReportPreview(preview, report, expectedSource) {
     <div class="actions">${button("Export open workspace", "export-workspace", "download", "small")}${button("Reload workspace", "reload-workspace", "", "small")}</div>
     ${conflicts.length ? `<div class="modal-footer">${button("Cancel", "close-dialog", "", "quiet")}${button("Choose another report", "import-report", "upload", "primary", `data-id="${preview.runId}"`)}</div>` : formFooter(additions.length ? "Import new observations" : "Keep existing history")}`,
   conflicts.length ? "" : "confirm-report", { runId: preview.runId, report, expectedSource });
+  const title = dialog.querySelector("#dialog-title");
+  title.tabIndex = -1;
+  title.focus();
+}
+
+function workspaceRestorePreview(backup, filename, expectedSource) {
+  const collections = ["programs", "datasets", "runs", "artifacts", "evaluations"];
+  openModal("Review workspace restore", `
+    <p id="restore-summary" role="status">No changes have been saved. This replaces all current workspace metadata, not individual records.</p>
+    <dl class="facts"><dt>Source file</dt><dd>${esc(filename)}</dd><dt>Backup format</dt><dd>${esc(backup.format)}</dd><dt>Workspace version</dt><dd>${backup.workspace.version}</dd><dt>Exported at</dt><dd>${backup.exportedAt ? esc(backup.exportedAt) : "Not recorded in a legacy backup"}</dd><dt>Current workspace</dt><dd>${esc(workspace?.name || "Unavailable: stored data needs recovery")}</dd><dt>Replacement workspace</dt><dd>${esc(backup.workspace.name)}</dd></dl>
+    ${backup.migration ? '<p class="help">Legacy workspace v1 will be validated and restored as workspace v1. The next export uses the versioned backup envelope; existing lineage and comparisons are retained.</p>' : ""}
+    ${table(["Collection", "Current", "Backup"], collections.map((key) => [esc(key), workspace ? num(workspace[key].length) : "Unavailable", num(backup.workspace[key].length)]), "Workspace restore collection counts")}
+    <p class="warning">Current browser metadata will be replaced. Appearance settings and files on disk are unchanged. This does not cancel or delete managed training jobs.</p>
+    <p class="help">Export recovery data first. If storage is full, free space and retry this confirmation. If another tab changes the workspace, reload and preview again.</p>
+    <div class="actions">${workspace ? button("Export open workspace", "export-workspace", "download", "small") : button("Download stored data", "raw-backup", "download", "small")}${button("Reload workspace", "reload-workspace", "", "small")}</div>
+    <label class="check-label"><input name="confirm" type="checkbox" required> I understand this replaces the browser's saved workspace.</label>${formFooter("Restore workspace")}`,
+  "confirm-restore", { backup, expectedSource });
   const title = dialog.querySelector("#dialog-title");
   title.tabIndex = -1;
   title.focus();
@@ -951,8 +969,8 @@ const actions = {
       ${field("Conditions & notes", "notes", "", { textarea: true, required: false, attrs: 'rows="2" maxlength="2000" placeholder="Split, seed, prompt, decoding settings, hardware..."', hint: "Needed for comparisons: identify the sample set, scoring protocol, prompt, seed and decoding settings." })}${formFooter("Save evaluation")}`, "evaluation");
   },
   "export-runs": () => download("coven-training-runs.csv", runsCsv(selectRuns(workspace.runs, ui)), "text/csv"),
-  "export-workspace": () => downloadJson("coven-workspace.json", workspace),
-  "restore-workspace": () => openModal("Restore a workspace backup", `<p class="warning">This replaces the current workspace. Export your current data first. Datasets and model files on disk are not affected.</p>${field("Workspace JSON backup", "file", "", { type: "file", attrs: 'accept=".json,application/json"' })}<label class="check-label"><input name="confirm" type="checkbox" required> I understand this replaces the browser's saved workspace.</label>${formFooter("Restore workspace")}`, "restore"),
+  "export-workspace": () => download("coven-workspace.json", exportWorkspaceBackup(workspace, now())),
+  "restore-workspace": () => openModal("Restore a workspace backup", `<p>Choose a versioned Mamase backup or a legacy workspace v1 JSON file. Preview its source and collection counts before confirming replacement. The workspace payload must fit the 4 MB storage budget.</p>${field("Workspace JSON backup", "file", "", { type: "file", attrs: 'accept=".json,application/json"' })}${formFooter("Preview backup")}`, "restore"),
   "reset-workspace": () => openModal("Reset local workspace", `<p class="warning">All recorded programs, dataset metadata, runs, artifacts, and evaluations in this browser will be removed. Export a backup first.</p>${field("Type RESET to confirm", "confirmation")}${formFooter("Reset workspace")}`, "reset"),
   "raw-backup": () => { const raw = localStorage.getItem(STORAGE_KEY); assert(raw !== null, "No stored data is available to download."); download("mamase-recovery.json", raw); },
   "example-dataset": () => download("coven-example.jsonl", [
@@ -982,7 +1000,7 @@ async function submitForm(form) {
   const input = Object.fromEntries(new FormData(form));
   const type = form.dataset.form;
   const context = { ...modalContext };
-  const expectedSource = type === "confirm-report" ? context.expectedSource : savedSource;
+  const expectedSource = ["confirm-report", "confirm-restore"].includes(type) ? context.expectedSource : savedSource;
   if (type === "local-launch") {
     const run = structuredClone(byId(workspace.runs, context.runId));
     const dataset = structuredClone(byId(workspace.datasets, run.recipe.datasetId));
@@ -1068,9 +1086,15 @@ async function submitForm(form) {
     next.name = input.workspaceName;
     message = "Workspace name saved.";
   } else if (type === "restore") {
+    const { file, source } = await readFile(form, MAX_BACKUP_BYTES);
+    const backup = parseWorkspaceBackup(source);
+    assert(form.isConnected && dialog.open, "The form was closed before saving. No changes were made.");
+    assertWorkspaceSource(expectedSource);
+    workspaceRestorePreview(backup, file.name, expectedSource);
+    return;
+  } else if (type === "confirm-restore") {
     assert(input.confirm === "on", "Confirm that you want to replace the workspace.");
-    const { source } = await readFile(form, MAX_WORKSPACE_BYTES);
-    next = validateWorkspace(JSON.parse(source));
+    next = context.backup.workspace;
     message = "Workspace restored.";
     destination = "#/home";
   } else if (type === "reset") {
@@ -1083,7 +1107,7 @@ async function submitForm(form) {
   }
   assert(form.isConnected && (form.closest("dialog") === null || dialog.open), "The form was closed before saving. No changes were made.");
   persist(next, expectedSource);
-  if (type === "recipe" || type === "reset" || type === "restore") {
+  if (type === "recipe" || type === "reset" || type === "confirm-restore") {
     try { clearDraft(); } catch (error) {
       ui.draft = defaults();
       draftBlocked = true;
@@ -1097,7 +1121,7 @@ async function submitForm(form) {
     if (ui.draft.method === "distillation" && dataset.kind === "teacher") ui.draft.teacher = dataset.teacher;
     saveDraft();
   }
-  if (type === "reset" || type === "restore") { ui.program = "all"; ui.status = "all"; ui.query = ""; training.forget(); pendingTraining.clear(); trainingSyncErrors.clear(); }
+  if (type === "reset" || type === "confirm-restore") { ui.program = "all"; ui.status = "all"; ui.query = ""; training.forget(); pendingTraining.clear(); trainingSyncErrors.clear(); }
   closeModal();
   if (destination && location.hash !== destination) location.hash = destination; else render();
   if (type === "dataset" && context.fromLab) document.querySelector("#field-datasetId")?.focus();

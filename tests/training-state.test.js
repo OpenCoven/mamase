@@ -2,6 +2,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { createWorkspace, createRun, recordProgress, validateWorkspace, validateRecipe } from "../workspace.js";
 import { trainingIdentity, mergeTrainingJob, managedRecipeIssue } from "../training-state.js";
+import { exportWorkspaceBackup, parseWorkspaceBackup } from "../backups.js";
 
 function fixture() {
   const workspace = createWorkspace();
@@ -21,6 +22,7 @@ test("managed observations merge idempotently and survive workspace backups", ()
   assert.equal(next.runs[0].history.length, 1);
   assert.deepEqual(mergeTrainingJob(next, job), next);
   assert.deepEqual(validateWorkspace(next), next);
+  assert.deepEqual(parseWorkspaceBackup(exportWorkspaceBackup(next, job.run.updatedAt)).workspace, next);
 });
 
 test("managed completion registers an artifact once without losing unrelated data", () => {
