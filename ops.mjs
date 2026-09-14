@@ -154,22 +154,24 @@ async function lookupManaged(server, runId) {
   let url;
   try { url = new URL(server); } catch { throw new OperationError("invalid-server", "--server must be a loopback URL such as http://127.0.0.1:3000."); }
   assert(url.protocol === "http:" && ["127.0.0.1", "localhost"].includes(url.hostname) && url.pathname === "/" && !url.search, "--server must be a loopback URL such as http://127.0.0.1:3000.");
+  // Returns undefined for transport failures (unreachable, redirect, non-JSON) so callers can tell "no answer" from "answered null".
   const get = async (pathname) => {
     let response;
     try {
-      response = await fetch(new URL(pathname, url), { cache: "no-store", signal: AbortSignal.timeout(35000) });
-    } catch { return null; }
+      response = await fetch(new URL(pathname, url), { cache: "no-store", redirect: "error", signal: AbortSignal.timeout(35000) });
+    } catch { return undefined; }
     const body = await response.text();
     assert(body.length <= MAX_INPUT_BYTES, "The local server response is too large.");
-    if (!response.headers.get("content-type")?.includes("application/json")) return null;
+    if (!response.headers.get("content-type")?.includes("application/json")) return undefined;
     const value = parseJson(Buffer.from(body), "Local server response");
     if (!response.ok) throw new OperationError("server-error", typeof value?.error === "string" ? value.error.slice(0, 500) : `Local server request failed (${response.status}).`);
     return value;
   };
   const capability = await get("/api/training/capabilities");
-  if (capability === null) return { capability: null, job: null };
+  if (capability === undefined || capability === null) return { capability: null };
   const { token, ...safe } = capability;
   const lookup = await get(`/api/training/runs/${runId}`);
+  if (lookup === undefined) return { capability: safe };
   return { capability: safe, job: lookup?.job ?? null };
 }
 
@@ -308,8 +310,13 @@ export async function runOperation(name, options = {}) {
     const { value } = await readInputJson(options.file, "job record", 4 * 1024 * 1024);
     const job = value?.job ?? value;
     assert(job && typeof job === "object" && typeof job.id === "string" && job.run && typeof job.run === "object", "Expected a managed job record with id and run.");
-    assert(!["starting", "running", "cancelling"].includes(job.status), "The job is still active. Reconcile after it finishes; nothing is cancelled or relaunched here.");
-    const next = mergeTrainingJob(workspace, job);
+    if (["starting", "running", "cancelling"].includes(job.status)) throw blocked("job-active", "The job is still active. Reconcile after it finishes; nothing is cancelled or relaunched here.");
+    if (!workspace.runs.some((run) => run.id === job.run.id)) throw blocked("record-missing", "The job's run is not in this workspace.");
+    let next;
+    try { next = mergeTrainingJob(workspace, job); } catch (error) {
+      if (error instanceof OperationError) throw error;
+      throw blocked("job-conflict", `The job record does not fit the recorded run. ${error instanceof Error ? error.message : ""}`.trim());
+    }
     const details = { run: job.run.id, job: job.id, status: job.status, ...(job.artifact ? { artifact: `artifact-${job.id}` } : {}) };
     if (same(next, workspace)) return unchanged({ ...details, duplicate: "the job record is already reflected in this workspace" });
     return commit(next, details);

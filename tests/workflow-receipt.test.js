@@ -108,6 +108,8 @@ test("PEFT receipts move from plan to human handoff only on recorded evidence", 
   assert.equal(trained.steps.find((step) => step.id === "train").evidence[0].context, "identity-files-only");
   const otherBundle = workflowReceipt(workspace, run, { bundle: bundleFor(run, { sha256: hash("7") }) });
   assert.deepEqual(codes(otherBundle), ["bundle-changed"]);
+  const fromLineage = workflowReceipt(workspace, run);
+  assert.deepEqual([fromLineage.state, states(fromLineage).prepare, fromLineage.nextAction.step, fromLineage.fingerprints.bundle], ["trained", "done", "evaluate", hash("b")], "without --bundle a trained run never asks to prepare again");
 
   workspace = importEvaluationReport(workspace, report(hash("1")), { id: "evaluation-1", sha256: hash("2"), createdAt: at(6) });
   const evaluated = workflowReceipt(workspace, run, { bundle: bundleFor(run) });
@@ -131,6 +133,8 @@ test("managed MLX receipts stay honest about runtimes, lost responses and interr
   const unknown = workflowReceipt(workspace, run);
   assert.deepEqual([unknown.lane, unknown.state, unknown.nextAction.step, unknown.familiarContext.scope], ["managed-mlx", "planned", "capability", "not-applicable"]);
   assert.equal(workflowReceipt(workspace, run, { capability: null }).runtime.state, "unreachable");
+  const downBeforeLaunch = workflowReceipt(workspace, run, { capability: null, job: null });
+  assert.deepEqual([downBeforeLaunch.state, states(downBeforeLaunch).capability, downBeforeLaunch.nextAction.step], ["planned", "next", "capability"], "an unreachable server before launch still names the capability query as the next action");
   assert.deepEqual(codes(workflowReceipt(workspace, run, { capability: { hosted: true, enabled: false, available: false } })), ["hosted-disabled"]);
   assert.deepEqual(codes(workflowReceipt(workspace, run, { capability: { enabled: false, available: false } })), ["runtime-disabled"]);
   assert.deepEqual(codes(workflowReceipt(workspace, run, { capability: { enabled: true, available: false } })), ["runtime-unavailable"]);
@@ -176,7 +180,9 @@ test("receipt and import-job operations recover finished managed jobs through th
   const state = { capability: { enabled: true, available: true, busy: false, backend: "mlx-lm", token: hash("f") }, job: null, hosted: false };
   const server = createServer((request, response) => {
     const json = (value, code = 200) => { response.writeHead(code, { "Content-Type": "application/json" }); response.end(JSON.stringify(value)); };
+    if (state.redirect) { response.writeHead(302, { Location: state.redirect }); return response.end(); }
     if (request.url === "/api/training/capabilities") return json(state.hosted ? { hosted: true, enabled: false, available: false, message: "Hosted." } : state.capability);
+    if (state.dropRunLookup) { response.writeHead(200, { "Content-Type": "text/html" }); return response.end("<html>proxy error</html>"); }
     if (request.url === `/api/training/runs/${run.id}`) return json({ job: state.job });
     json({ error: "Local job endpoint not found." }, 404);
   });
@@ -203,6 +209,18 @@ test("receipt and import-job operations recover finished managed jobs through th
   await assert.rejects(runOperation("receipt", { workspace: workspacePath, run: run.id, server: "not a url" }), /loopback/);
   const unreachable = await runOperation("receipt", { workspace: workspacePath, run: run.id, server: "http://127.0.0.1:9" });
   assert.equal(unreachable.runtime.state, "unreachable");
+  state.redirect = `${serverUrl}/api/training/capabilities`;
+  const redirected = await runOperation("receipt", { workspace: workspacePath, run: run.id, server: serverUrl });
+  assert.equal(redirected.runtime.state, "unreachable", "redirects are never followed, even back to loopback");
+  state.redirect = null;
+  const launchedPath = join(directory, "launched.json");
+  await writeFile(launchedPath, JSON.stringify({ schema: "mamase.workspace-file.v1", workspace: { ...workspace, runs: [{ ...run, localJobId: jobId }] } }));
+  state.dropRunLookup = true;
+  const droppedLookup = await runOperation("receipt", { workspace: launchedPath, run: run.id, server: serverUrl });
+  assert.deepEqual([droppedLookup.runtime.state, codes(droppedLookup), droppedLookup.nextAction.step], ["available", [], "job"], "a failed run lookup is a lost response, not a missing job");
+  state.dropRunLookup = false;
+  const knownMissing = await runOperation("receipt", { workspace: launchedPath, run: run.id, server: serverUrl });
+  assert.deepEqual(codes(knownMissing), ["job-missing"]);
 
   state.job = job;
   const lostResponse = await runOperation("receipt", { workspace: workspacePath, run: run.id, server: serverUrl });
@@ -211,7 +229,9 @@ test("receipt and import-job operations recover finished managed jobs through th
 
   const jobPath = join(directory, "job.json");
   await writeFile(jobPath, JSON.stringify({ job: { ...job, status: "running" } }));
-  await assert.rejects(runOperation("import-job", { workspace: workspacePath, "expected-revision": revision, file: jobPath }), /still active/);
+  await assert.rejects(runOperation("import-job", { workspace: workspacePath, "expected-revision": revision, file: jobPath }), (error) => error.code === "job-active" && error.outcome === "blocked");
+  await writeFile(jobPath, JSON.stringify({ job: { ...job, run: { ...managedRun, id: "run-9" } } }));
+  await assert.rejects(runOperation("import-job", { workspace: workspacePath, "expected-revision": revision, file: jobPath }), (error) => error.code === "record-missing" && error.outcome === "blocked");
   await writeFile(jobPath, JSON.stringify({ job }));
   const imported = await runOperation("import-job", { workspace: workspacePath, "expected-revision": revision, file: jobPath });
   assert.deepEqual([imported.outcome, imported.run, imported.job, imported.artifact], ["changed", run.id, jobId, `artifact-${jobId}`]);
@@ -219,7 +239,7 @@ test("receipt and import-job operations recover finished managed jobs through th
   const replay = await runOperation("import-job", { workspace: workspacePath, "expected-revision": revision, file: jobPath });
   assert.equal(replay.outcome, "unchanged");
   await writeFile(jobPath, JSON.stringify({ job: { ...job, id: "job-00000000-0000-4000-8000-000000000002", run: { ...managedRun, localJobId: "job-00000000-0000-4000-8000-000000000002" } } }));
-  await assert.rejects(runOperation("import-job", { workspace: workspacePath, "expected-revision": revision, file: jobPath }), /another local job/);
+  await assert.rejects(runOperation("import-job", { workspace: workspacePath, "expected-revision": revision, file: jobPath }), (error) => error.code === "job-conflict" && error.outcome === "blocked" && /another local job/.test(error.message));
 
   const registered = await runOperation("receipt", { workspace: workspacePath, run: run.id, server: serverUrl });
   assert.deepEqual([registered.state, registered.run.localJobId, registered.nextAction.step], ["trained", jobId, "test"]);

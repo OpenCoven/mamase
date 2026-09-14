@@ -53,7 +53,11 @@ function peftSteps(run, dataset, evidence, bundle) {
   const blockers = [];
   const fingerprints = { dataset: dataset.sha256 };
   let context = null;
-  if (bundle === undefined) {
+  const lineage = evidence.artifacts.filter((artifact) => artifact.lineage);
+  if (bundle === undefined && lineage.length) {
+    fingerprints.bundle = lineage.at(-1).lineage.bundleSha256;
+    steps.push(step("prepare", "done", { evidence: { bundleSha256: fingerprints.bundle, source: "artifact-lineage" }, note: "Bundle fingerprint taken from the latest imported result; pass --bundle to verify the prepared files." }));
+  } else if (bundle === undefined) {
     steps.push(step("prepare", "next", { command: "npm run lab -- prepare --recipe recipe.json --dataset <examples.jsonl> --identity-dir <familiar> --out <bundle>", requiresApproval: false, note: "Pass --bundle to this receipt after preparing. Selected familiar context needs inspect-context review and --context-sha256." }));
   } else if (bundle === null) {
     blockers.push(blocker("bundle-missing", "The named bundle directory has no readable bundle.json. Prepare the bundle or fix the path."));
@@ -66,7 +70,7 @@ function peftSteps(run, dataset, evidence, bundle) {
     steps.push(step("prepare", checked.issues.length ? "blocked" : "done", { evidence: { bundleSha256: bundle.sha256, context: context.scope, split: checked.split } }));
   }
   const prepared = steps.at(-1).state === "done";
-  const artifacts = evidence.artifacts.filter((artifact) => artifact.lineage);
+  const artifacts = lineage;
   const matching = artifacts.filter((artifact) => !fingerprints.bundle || artifact.lineage.bundleSha256 === fingerprints.bundle);
   if (fingerprints.bundle && artifacts.length && !matching.length) blockers.push(blocker("bundle-changed", "Imported training results were produced from a different bundle than the one named. Keep both; do not treat them as one attempt."));
   steps.push(step("preflight", matching.length ? "done" : prepared ? "next" : "pending", { command: ".venv/bin/python training/preflight.py --bundle <bundle> --model <local-model> --device cpu", requiresApproval: false, note: "Read-only readiness JSON; exit 1 means blocked. Not an OOM guarantee." }));
@@ -91,7 +95,7 @@ function managedSteps(run, dataset, evidence, capability, job) {
   else if (runtime.state === "disabled") blockers.push(blocker("runtime-disabled", "Local training is disabled for this server. Start Mamase with npm run dev."));
   else if (runtime.state === "unavailable") blockers.push(blocker("runtime-unavailable", "The local MLX runtime probe failed. Install the training requirements and query again."));
   const launchedBefore = Boolean(run.localJobId) || Boolean(job);
-  const capabilityState = ["available", "busy"].includes(runtime.state) ? "done" : ["unsupported", "disabled", "unavailable"].includes(runtime.state) ? "blocked" : launchedBefore || job !== undefined ? "not-applicable" : "next";
+  const capabilityState = ["available", "busy"].includes(runtime.state) ? "done" : ["unsupported", "disabled", "unavailable"].includes(runtime.state) ? "blocked" : launchedBefore ? "not-applicable" : "next";
   steps.push(step("capability", capabilityState, { evidence: runtime, requiresApproval: false, note: "Query GET /api/training/capabilities on the loopback server. Capabilities never prove model or memory readiness." }));
   if (job !== undefined && job !== null) {
     assert(job && typeof job === "object" && typeof job.id === "string" && /^job-[a-f0-9-]{36}$/.test(job.id) && job.run?.id === run.id, "The job lookup does not belong to this run.");
