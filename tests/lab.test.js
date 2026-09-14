@@ -222,6 +222,28 @@ test("context sources and structured metadata fail closed before creating a bund
   }
 });
 
+test("an explicitly empty context option never falls back to legacy preparation", async (context) => {
+  const dir = await directory(context);
+  const { options } = await prepareFiles(dir);
+  for (const [index, contextManifestPath] of ["", "   ", null, false].entries()) {
+    const outputDir = join(dir, `empty-context-${index}`);
+    await assert.rejects(prepareBundle({ ...options, contextManifestPath, outputDir }), /context|Context/);
+    await assert.rejects(access(outputDir));
+  }
+  const outputDir = join(dir, "empty-context-cli");
+  const failed = spawnSync(process.execPath, ["lab.mjs", "prepare", "--recipe", options.recipePath,
+    "--dataset", options.datasetPath, "--identity-dir", options.identityDir, "--out", outputDir,
+    "--context-manifest", ""], { cwd: root, encoding: "utf8" });
+  assert.notEqual(failed.status, 0, failed.stdout);
+  assert.match(failed.stderr, /context|Context/);
+  await assert.rejects(access(outputDir));
+  const selected = await selectContext(options);
+  await assert.rejects(prepareBundle({ ...selected.options, contextSha256: undefined }), /confirm|review/i);
+  await assert.rejects(access(options.outputDir));
+  await assert.rejects(prepareBundle({ ...options, contextSha256: selected.options.contextSha256 }), /context-manifest/);
+  await assert.rejects(access(options.outputDir));
+});
+
 test("completion loss masks identity and prompts and refuses silent truncation", () => {
   command("python3", ["-c", `
 from training.train import tokenize_rows

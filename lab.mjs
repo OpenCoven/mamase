@@ -60,6 +60,10 @@ export function prepareData(manifest, source, identity) {
 }
 
 export async function prepareBundle({ recipePath, datasetPath, identityDir, outputDir, contextManifestPath, contextSha256 }) {
+  const hasContext = contextManifestPath !== undefined;
+  assert(!hasContext || (typeof contextManifestPath === "string" && contextManifestPath.trim()), "--context-manifest must name an explicit nonempty context selection.");
+  assert(hasContext || contextSha256 === undefined, "--context-sha256 requires an explicit --context-manifest.");
+  assert(!hasContext || (typeof contextSha256 === "string" && /^[a-f0-9]{64}$/.test(contextSha256)), "Context preparation requires the reviewed --context-sha256 confirmation from inspect-context.");
   const manifest = JSON.parse(await boundedRead(resolve(recipePath), 1024 * 1024));
   const directory = await realpath(resolve(identityDir));
   const files = {};
@@ -70,8 +74,7 @@ export async function prepareBundle({ recipePath, datasetPath, identityDir, outp
     assert(content.toString("utf8").trim(), `${name} must not be empty.`);
     files[name] = { path, sha256: sha256(content), content: new TextDecoder("utf-8", { fatal: true, ignoreBOM: true }).decode(content) };
   }
-  assert(contextManifestPath || contextSha256 === undefined, "--context-sha256 requires an explicit context selection manifest.");
-  const context = contextManifestPath ? await inspectContext({ contextManifestPath, identityDir, recipe: manifest.recipe }) : null;
+  const context = hasContext ? await inspectContext({ contextManifestPath, identityDir, recipe: manifest.recipe }) : null;
   if (context) {
     assert(contextSha256 === context.familiarContext.sha256, "Context differs from the reviewed preview. Run inspect-context, review the source roles/order, then confirm with --context-sha256.");
     for (const name of ["IDENTITY.md", "SOUL.md"]) assert(context.snapshot.sources.find((source) => source.path === name).content === files[name].content, "Identity changed during context inspection. Review again.");
