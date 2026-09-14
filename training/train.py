@@ -57,7 +57,13 @@ def validate_device(torch, technique, device):
 def load_local_tokenizer(model_dir):
     from transformers import AutoTokenizer
 
-    tokenizer = AutoTokenizer.from_pretrained(model_dir, local_files_only=True, trust_remote_code=False)
+    try:
+        tokenizer = AutoTokenizer.from_pretrained(model_dir, local_files_only=True, trust_remote_code=False)
+    except Exception as error:
+        # The Rust tokenizer decoder uses bare Exception for invalid serialized input.
+        if type(error) is not Exception:
+            raise
+        raise ValueError(f"Cannot deserialize the local tokenizer: {error}. Supply a valid matching tokenizer snapshot.") from error
     if tokenizer.pad_token_id is None:
         require(tokenizer.eos_token_id is not None, "Tokenizer needs a pad or EOS token.")
         tokenizer.pad_token = tokenizer.eos_token
@@ -172,8 +178,8 @@ def tokenize_rows(rows, tokenizer, max_length):
         full = tokenizer.apply_chat_template(row["prompt"] + row["completion"], tokenize=False, add_generation_prompt=False)
         require(isinstance(prefix, str) and prefix.strip() and isinstance(full, str), "Chat template must render a nonempty text prompt.")
         require(full.startswith(prefix), "Chat template has no stable prompt/completion boundary; use a compatible template.")
-        require(all(message["content"] in prefix for message in row["prompt"]), "Chat template drops or rewrites identity/prompt content; use a compatible template.")
-        require(row["completion"][0]["content"] in full[len(prefix):], "Chat template drops or rewrites completion content; use a compatible template.")
+        require(all(message["content"].strip() in prefix for message in row["prompt"]), "Chat template drops or rewrites identity/prompt content; use a compatible template.")
+        require(row["completion"][0]["content"].strip() in full[len(prefix):], "Chat template drops or rewrites completion content; use a compatible template.")
         prompt_ids = tokenizer.encode(prefix, add_special_tokens=False)
         input_ids = tokenizer.encode(full, add_special_tokens=False)
         require(input_ids[:len(prompt_ids)] == prompt_ids, "Tokenizer merges across the response boundary; cannot safely mask the prompt.")

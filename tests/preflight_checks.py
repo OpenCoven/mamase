@@ -38,8 +38,8 @@ def digest(path):
 def make_bundle(root):
     identity = root / "fixture"
     identity.mkdir()
-    (identity / "IDENTITY.md").write_text("- **Name:** Fixture", encoding="utf-8")
-    (identity / "SOUL.md").write_text("Synthetic fixture only. Preserve consent.", encoding="utf-8")
+    (identity / "IDENTITY.md").write_text("- **Name:** Fixture\n", encoding="utf-8")
+    (identity / "SOUL.md").write_text("Synthetic fixture only. Preserve consent.\n", encoding="utf-8")
     recipe = {
         "method": "lora", "adapter": "lora", "familiarId": "fixture", "instanceId": "test-instance",
         "student": "synthetic-base-label", "teacher": "", "rank": 4, "alpha": 8, "learningRate": 0.001,
@@ -322,6 +322,64 @@ class LocalRuntime(unittest.TestCase):
             self.assertTrue(any(split + " example 1" in item["message"] and "never silently truncated" in item["message"] for item in report["errors"]))
             path.write_text(original)
             refresh_bundle(self.bundle)
+
+    def test_templates_may_trim_surrounding_whitespace_but_not_rewrite_content(self):
+        tokenizer = pf.load_local_tokenizer(self.model)
+        tokenizer.chat_template = "{% for m in messages %}{{ '[' + m['role'] + '] ' + (m['content'] | trim) + '\\n' }}{% endfor %}{% if add_generation_prompt %}{{ '[assistant] ' }}{% endif %}"
+        _, rows = pf.prepared_bundle(self.bundle)
+        for split, examples in rows.items():
+            for row in examples:
+                row["prompt"][-1]["content"] = " \t" + row["prompt"][-1]["content"] + " \n"
+                row["completion"][0]["content"] = " \t" + row["completion"][0]["content"] + " \n"
+            (self.bundle / f"{split}.jsonl").write_text("".join(json.dumps(row) + "\n" for row in examples))
+        refresh_bundle(self.bundle)
+        with patch.object(pf, "load_local_tokenizer", return_value=tokenizer):
+            report = pf.preflight(self.args)
+        self.assertTrue(report["ready"], report["errors"])
+        encoded = train.tokenize_rows(rows["train"], tokenizer, 512)
+        normalized = copy.deepcopy(rows["train"])
+        for row in normalized:
+            for message in row["prompt"] + row["completion"]:
+                message["content"] = message["content"].strip()
+        self.assertEqual(encoded, train.tokenize_rows(normalized, tokenizer, 512))
+        for content in ("Preserve consent.", "Synthetic answer"):
+            rewritten = copy.deepcopy(tokenizer)
+            rewritten.chat_template = tokenizer.chat_template.replace(
+                "m['content'] | trim", f"m['content'] | replace('{content}', 'changed') | trim")
+            with self.subTest(content=content), self.assertRaisesRegex(ValueError, "drops or rewrites"):
+                train.tokenize_rows(rows["train"], rewritten, 512)
+
+    def test_invalid_serialized_tokenizers_are_cli_blockers_not_tracebacks(self):
+        model = self.case / "invalid-model"
+        model.mkdir()
+        for path in self.model.iterdir():
+            if path.name != "tokenizer.json":
+                (model / path.name).symlink_to(path)
+        serialized = json.loads((self.model / "tokenizer.json").read_text())
+        serialized["version"] = "invalid"
+        for content in (json.dumps(serialized), "{"):
+            with self.subTest(content=content[:80]):
+                (model / "tokenizer.json").write_text(content)
+                result = subprocess.run([sys.executable, "-B", str(ROOT / "training/preflight.py"),
+                                         "--bundle", str(self.bundle), "--model", str(model), "--device", "cpu"],
+                                        capture_output=True, text=True, timeout=60)
+                self.assertEqual(result.returncode, 1, result.stderr)
+                self.assertTrue(result.stdout, result.stderr)
+                report = json.loads(result.stdout)
+                self.assertEqual(report["schema"], "mamase.preflight.v1")
+                self.assertFalse(report["ready"])
+                self.assertTrue(any(item["code"] == "tokenizer.invalid" and item["message"]
+                                    for item in report["errors"]))
+                self.assertNotIn("Traceback", result.stderr)
+                self.assertTrue(pf.unused_bundle(self.bundle))
+
+    def test_tokenizer_loader_preserves_typed_unexpected_errors(self):
+        from transformers import AutoTokenizer
+        for error in (AssertionError("unexpected assertion"), RuntimeError("unexpected runtime failure")):
+            with self.subTest(error=type(error).__name__), patch.object(AutoTokenizer, "from_pretrained", side_effect=error):
+                with self.assertRaises(type(error)) as raised:
+                    train.load_local_tokenizer(self.model)
+                self.assertIs(raised.exception, error)
 
     def test_unknown_context_and_mismatched_tokenizer_vocabulary(self):
         from transformers import AutoConfig
