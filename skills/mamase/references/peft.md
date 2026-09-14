@@ -46,15 +46,16 @@ not an OOM guarantee.
 .venv/bin/python training/train.py --bundle .lab/experiment --model /path/local-model --device cpu
 ```
 
-Only after the user says to train *this* bundle. It writes the run journal
-(`mamase.run-report.v1`) and `result.json` (`mamase.training-result.v1`) with
-`bundleSha256` lineage. Import the journal first, then the result — the validators
-refuse a result whose run has no completed journal and bind it to the run and
-bundle:
+Only after the user says to train *this* bundle. It refuses a bundle that already
+holds outputs (prepare a new bundle for another attempt) and writes the run journal
+`run-report.json` (`mamase.run-report.v1`) and `result.json`
+(`mamase.training-result.v1`, with `bundleSha256` lineage) into the bundle
+directory. Import the journal first, then the result — the validators refuse a
+result whose run has no completed journal and bind it to the run and bundle:
 
 ```bash
-npm run ops -- import-progress --workspace ... --expected-revision <sha256> --file run-report.json
-npm run ops -- import-result --workspace ... --expected-revision <sha256> --file result.json
+npm run ops -- import-progress --workspace ... --expected-revision <sha256> --file .lab/experiment/run-report.json
+npm run ops -- import-result --workspace ... --expected-revision <sha256> --file .lab/experiment/result.json
 ```
 
 A result from a different bundle than the one named in `--bundle` shows as

@@ -1,11 +1,13 @@
 # Evaluation evidence (PEFT lane)
 
 ```bash
-.venv/bin/python training/evaluate.py --bundle .lab/experiment --result result.json --suite suite.json --device cpu
-npm run ops -- import-evaluation --workspace ... --expected-revision <sha256> --file report.json
+.venv/bin/python training/evaluate.py --bundle .lab/experiment --suite suite.json --out .lab/experiment-eval --device cpu
+npm run ops -- import-evaluation --workspace ... --expected-revision <sha256> --file .lab/experiment-eval/evaluation-report.json
 ```
 
-`report.json` is `mamase.evaluation-report.v1`: ≥ 4 cases with unique prompts
+`evaluate.py` reads `result.json` and `run-report.json` from the bundle and
+requires a new `--out` directory; it writes `evaluation-report.json` there
+(`mamase.evaluation-report.v1`): ≥ 4 cases with unique prompts
 across `task`, `identity`, `consent` and `tool-boundary`, paired base/adapter
 responses, `resultSha256` binding it to the imported result and `bundleSha256` to
 the bundle. The importer refuses reports for unknown results, mismatched bundles or

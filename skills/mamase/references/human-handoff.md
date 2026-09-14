@@ -23,9 +23,10 @@ their codes; your recommendation labelled as such, with limitations. Point to th
 review surface (the evaluation's **Human review opinions** section in Results) and to the receipt
 `nextAction.requiresApproval` flag.
 
-## After the human decides
+## After the human decides (PEFT lane)
 
 The decision appears as `evaluations[].reviews[]` in the next backup / workspace
 import. `receipt` then reports `human-review: done` and `state: "evidence-ready"`.
+Managed MLX runs end at the `test` step instead (see managed-mlx.md).
 `needs-more-evidence` is a normal outcome: plan the next experiment as a **new**
 run; never reopen or rewrite the reviewed one.

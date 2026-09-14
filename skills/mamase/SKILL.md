@@ -48,8 +48,10 @@ The receipt's `lane` decides the reference: `peft`, `managed-mlx`, or
   `preflight.py` and `receipt` are inert. Training is `train.py` (PEFT, needs the
   user's explicit go-ahead for this run) or a browser-launched managed job.
 - **Blockers are explicit.** Missing runtime, model files, bundle, permissions or
-  context confirmation surface as receipt `blockers` / exit `2`. Never work around
-  one by relaunching, resetting or editing state.
+  context confirmation surface as receipt `blockers` (the `receipt` command itself
+  exits `0` — read `state` and `blockers`, never the exit code), as `preflight.py`
+  / `lab prepare` exit `1` with JSON errors, or as mutating-operation exit `2`
+  conflicts. Never work around one by relaunching, resetting or editing state.
 - **Two lanes, two kinds of evidence.** PEFT results carry `bundleSha256` lineage
   and paired evaluation reports; managed MLX jobs carry a `job-…` ID and an
   `artifact-job-…` adapter with no paired evaluation. Do not merge or compare them

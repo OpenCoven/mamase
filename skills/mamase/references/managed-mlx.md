@@ -54,6 +54,8 @@ not belong to this run; report it, do not edit either side.
 
 `nextAction.step: "test"` points to the local Model playground (`#/testing`).
 Replies there are experiment evidence, not evaluation scores. Managed runs have no
-paired PEFT evaluation; the human decides whether to plan an identity-bound PEFT
-experiment next. `human-review` stays `pending` until they do — you cannot advance
-it.
+paired PEFT evaluation, so no review decision can be recorded against them and the
+receipt's `human-review` step stays `pending` permanently: `trained` with
+`nextAction.step: "test"` is the terminal receipt state for this lane. The human
+decides outside the receipt whether to plan an identity-bound PEFT experiment next;
+`evidence-ready` exists only on the PEFT lane.

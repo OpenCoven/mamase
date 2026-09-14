@@ -41,8 +41,8 @@ npm run ops -- export-recipe --workspace ... --run run-1 --out recipe.json   # m
 Lane selection happens here:
 
 - `familiarId` + `instanceId` bound, or `workflow: "cli"` → **peft** lane.
-- `workflow: "managed"` (LoRA only; `managed-unsupported-recipe` otherwise) →
-  **managed-mlx** lane.
+- `workflow: "managed"` → **managed-mlx** lane. LoRA only: `create-recipe`
+  rejects a non-LoRA managed recipe with exit `1` and nothing is saved.
 - Neither → `unselected`; the receipt will ask you to decide before anything else.
 
 Replaying `create-recipe` with the same content is `unchanged`; the same ID with a
