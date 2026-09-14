@@ -72,8 +72,6 @@ try {
   assert.equal(await page.getByLabel("Base model", { exact: true }).inputValue(), "");
   assert.equal(await page.locator("#recipe-advanced").evaluate((element) => element.open), false);
   await page.getByLabel("Run name", { exact: true }).fill("Local training diagnostic");
-  await page.getByLabel("Familiar ID", { exact: true }).fill("fixture");
-  await page.getByLabel("Coven instance ID", { exact: true }).fill("diagnostic-coven");
   await page.getByLabel("Training objective", { exact: true }).fill("Verify real LoRA optimization and artifact registration, not model quality.");
   await page.getByLabel("Base model", { exact: true }).fill(fixture.modelPath);
   await page.getByLabel("Training dataset", { exact: true }).selectOption(datasetId);
@@ -88,7 +86,11 @@ try {
   await page.getByRole("button", { name: "Save recipe & review", exact: true }).click();
   await page.waitForURL(/sessions\/run-/);
   const runUrl = page.url();
-  const runId = await page.evaluate((key) => JSON.parse(localStorage.getItem(key)).runs[0].id, STORAGE_KEY);
+  const plannedRun = await page.evaluate((key) => JSON.parse(localStorage.getItem(key)).runs[0], STORAGE_KEY);
+  const runId = plannedRun.id;
+  assert.equal(plannedRun.recipe.workflow, "managed");
+  assert.equal(plannedRun.recipe.familiarId, "");
+  assert.equal(plannedRun.recipe.instanceId, "");
   await page.getByRole("heading", { name: "Recipe saved. Training has not started.", exact: true }).waitFor({ timeout: 45000 });
   assert.equal(await page.locator("#run-measurements").isVisible(), false);
   await page.getByRole("button", { name: "Review & start training", exact: true }).click();

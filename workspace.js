@@ -357,7 +357,6 @@ export function exportRecipe(run, workspace) {
     name: run.name,
     execution: run.localJobId ? "local-mlx" : "external",
     ...(run.localJobId ? { localJobId: run.localJobId } : {}),
-<<<<<<< Updated upstream
     description: run.localJobId
       ? "Recipe for the recorded managed local MLX job. Exporting does not start training."
       : "External execution only. Prepare this recipe with npm run lab -- prepare; training requires an explicit local Python command.",
@@ -366,12 +365,6 @@ export function exportRecipe(run, workspace) {
     splitPolicy: run.localJobId
       ? "The managed MLX worker shuffles source indices with seed 42, reserves the recorded holdout count, and writes separate training and validation files."
       : "The Mamase prepare command orders unique prompts by SHA-256(seed + prompt), reserves the recorded holdout count, and writes disjoint train/holdout files. Other trainers must apply an equivalent leakage-free split.",
-=======
-    description: run.localJobId ? "Recipe for a managed local MLX job; its output is tracked on local disk." : "Prepare this recipe with npm run lab -- prepare; CLI training requires an explicit local Python command. Managed MLX training can also be launched from the saved run.",
-    recipe: run.recipe,
-    dataset: { ...dataset, split: splitCounts(dataset), splitSeed: 42 },
-    splitPolicy: run.localJobId ? "Managed MLX shuffles source records with Python Random(42), reserves the recorded holdout count, and writes train.jsonl and valid.jsonl beside the original data." : "The Mamase prepare command orders unique prompts by SHA-256(seed + prompt), reserves the recorded holdout count, and writes disjoint train/holdout files. Other trainers must apply an equivalent leakage-free split.",
->>>>>>> Stashed changes
     distillation: run.recipe.method === "distillation" ? "Supervised LoRA training on pre-generated teacher responses; no online generation or logit/KL matching." : null,
     estimatedOptimizerSteps: estimatedSteps(run.recipe, dataset),
   };
