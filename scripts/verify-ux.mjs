@@ -22,6 +22,16 @@ const external = [];
 let browser;
 let currentPage;
 let layouts = 0;
+const newContext = async (options = {}) => {
+  const context = await browser.newContext({ ...options, serviceWorkers: "block" });
+  await context.route("**/*", (route) => {
+    const url = new URL(route.request().url());
+    if (url.origin === base || url.protocol === "blob:") return route.continue();
+    external.push("Blocked non-loopback request");
+    return route.abort("blockedbyclient");
+  });
+  return context;
+};
 const capture = async (page, name) => {
   if (screenshots) await page.screenshot({ path: join(screenshots, `${name}.png`), fullPage: true });
 };
@@ -484,7 +494,7 @@ try {
   assert.deepEqual(await stored(pairedPage), backupWorkspace);
   assert.equal(await pairedPage.locator("html").getAttribute("data-theme-preference"), "light");
   await pairedContext.close();
-  await verifyReviewUx({ browser, base, watch, downloaded, bounds });
+  await verifyReviewUx({ newContext, base, watch, downloaded, bounds });
 
   const populated = await browser.newContext({ viewport: { width: 1440, height: 900 }, colorScheme: "dark" });
   await populated.addInitScript((workspace) => {

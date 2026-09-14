@@ -2,9 +2,10 @@ import assert from "node:assert/strict";
 import { reviewFixture } from "../tests/fixtures/evaluation-fixture.js";
 import { STORAGE_KEY } from "../workspace.js";
 
-export async function verifyReviewUx({ browser, base, watch, downloaded, bounds }) {
+export async function verifyReviewUx({ newContext, base, watch, downloaded, bounds }) {
   const { workspace, source, report } = reviewFixture();
-  const context = await browser.newContext({ viewport: { width: 1440, height: 1000 } });
+  const context = await newContext({ viewport: { width: 1440, height: 1000 } });
+  let completed = false;
   try {
     await context.addInitScript(({ workspace, key }) => {
       if (localStorage.getItem(key) === null) localStorage.setItem(key, JSON.stringify(workspace));
@@ -182,7 +183,9 @@ export async function verifyReviewUx({ browser, base, watch, downloaded, bounds 
     assert.equal(JSON.parse(backup).workspace.evaluations[0].reviews.length, 1);
     await page.reload();
     await noRawDom();
+    completed = true;
   } finally {
-    await context.close();
+    // The owning runner needs a failed page alive for bounded screenshot evidence.
+    if (completed) await context.close();
   }
 }
