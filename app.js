@@ -4,11 +4,12 @@ import {
   validateDataset, splitCounts, createRun, recordProgress, validateArtifact,
   validateEvaluation, exportRecipe, escapeHtml as esc, runsCsv, estimatedSteps,
 } from "./workspace.js";
-import { icon, button, link, field, select, badge, empty, table, formatDate, formatBytes, progress, sigil } from "./ui.js";
+import { icon, button, link, field, select, badge, empty, table, formatDate, formatBytes, progress, distillationArt } from "./ui.js";
 
 const app = document.querySelector("#app");
 const dialog = document.querySelector("#dialog");
 const toast = document.querySelector("#toast");
+const theme = window.mamaseTheme;
 let workspace;
 let savedSource;
 let storageError = "";
@@ -55,10 +56,27 @@ function sidebar(page) {
       <button class="icon-button" type="button" data-action="toggle-sidebar" aria-label="${ui.collapsed ? "Expand" : "Collapse"} navigation">${icon("panel")}</button></div>
     <div class="workspace-label"><span class="tiny-mark">${icon("spark")}</span><span>${esc(workspace?.name || "The Coven")}</span><span class="workspace-tag">LOCAL</span></div>
     <nav>${links.map(([id, label, glyph], index) => `${index === 7 ? '<div class="nav-section">Workspace</div>' : ""}<a href="#/${id}" class="nav-link ${page === id ? "active" : ""}" ${page === id ? 'aria-current="page"' : ""} aria-label="${label}" title="${label}">${icon(glyph)}<span>${label}</span>${id === "sessions" && workspace?.runs.length ? `<span class="nav-count">${workspace.runs.length}</span>` : ""}</a>`).join("")}</nav>
-    <div class="sidebar-bottom"><div class="local-status"><span class="status-dot"></span><span>Local workspace</span></div>
+    <div class="sidebar-bottom"><div class="sidebar-appearance"><span>Appearance</span>${themePicker("sidebar")}</div><div class="local-status"><span class="status-dot"></span><span>Local workspace</span></div>
       <p>Knowledge stays in the coven.</p>
       <a class="profile" href="#/settings"><span class="avatar">C</span><span><strong>${esc(workspace?.name || "The Coven")}</strong><small>On this browser</small></span>${icon("settings")}</a></div>
   </aside>`;
+}
+
+function themePicker(location) {
+  return `<div class="theme-picker" role="group" aria-label="${location === "sidebar" ? "Quick appearance" : "Appearance mode"}">${[
+    ["system", "System", "local"], ["light", "Light", "light"], ["dark", "Dark", "dark"],
+  ].map(([value, label, glyph]) => `<button type="button" data-action="theme" data-theme-value="${value}" aria-pressed="${theme.preference === value}" title="${label} theme">${icon(glyph)}<span>${label}</span></button>`).join("")}</div>`;
+}
+
+function syncThemeControls() {
+  document.querySelectorAll("[data-theme-value]").forEach((element) => {
+    element.setAttribute("aria-pressed", String(element.dataset.themeValue === theme.preference));
+  });
+  const description = document.querySelector("#theme-description");
+  if (description) description.textContent = theme.preference === "system"
+    ? `Following your device. Currently using ${document.documentElement.dataset.theme} mode.`
+    : `${theme.preference === "dark" ? "Dark" : "Light"} mode stays on regardless of your device setting.`;
+  if (theme.error) notify(theme.error, true);
 }
 
 function header(title, actions = "", subtitle = "") {
@@ -77,9 +95,9 @@ function homePage() {
     <section class="home-stage"><div class="home-copy"><p class="home-kicker">Less model. <strong>More of us.</strong></p>
       <h1>Distill knowledge.<br>Make it our own.</h1>
       <p class="home-intro">A home for the coven's next generation of local models. Distill from teachers, shape with LoRA, and follow every experiment from first example to final weights.</p>
-      <div class="actions">${link("Open the lab", "#/playground", "lab", "primary")}${link("Explore the workflow", "#/resources", "arrow", "quiet")}</div>
+      <div class="actions">${link("Open the lab", "#/playground", "lab", "primary")}${link("The workflow", "#/resources", "arrow", "quiet")}</div>
       <div class="hero-caption"><span></span>Small models. Shared knowledge. Our own way.</div></div>
-      <div class="hero-art">${sigil()}</div></section>
+      <div class="hero-art">${distillationArt()}</div></section>
     <section class="metrics overview-metrics" aria-label="Workspace progress">
       ${metric("Training runs", num(workspace.runs.length), `${active} active · ${completed} completed`, "runs")}
       ${metric("Curated examples", num(workspace.datasets.reduce((sum, dataset) => sum + dataset.records, 0)), `Across ${workspace.datasets.length} datasets`, "datasets")}
@@ -87,7 +105,7 @@ function homePage() {
       ${metric("Evaluations", num(workspace.evaluations.length), "Recorded benchmark results", "evaluations")}
     </section>
     <section class="home-grid"><article class="home-panel"><div class="section-heading"><h2>${icon("runs")} Recent experiments</h2><a href="#/sessions" class="subtle-link">View all ${icon("arrow")}</a></div>
-      ${workspace.runs.length ? `<div class="recent-list">${workspace.runs.slice(-3).reverse().map((run) => `<a class="recent-run" href="#/sessions/${run.id}"><span class="item-icon">${icon(run.recipe.method === "lora" ? "spark" : "lab")}</span><div><strong>${esc(run.name)}</strong><small>${METHODS[run.recipe.method]} · ${esc(run.recipe.student.split("/").at(-1))}</small></div>${badge(run.status)}</a>`).join("")}</div>` : empty("Every model starts with an experiment.", "Plan your first run. Your real progress will appear here.", link("Create a training recipe", "#/playground", "plus"), "runs", true)}
+      ${workspace.runs.length ? `<div class="recent-list">${workspace.runs.slice(-2).reverse().map((run) => `<a class="recent-run" href="#/sessions/${run.id}"><span class="item-icon">${icon(run.recipe.method === "lora" ? "spark" : "lab")}</span><div><strong>${esc(run.name)}</strong><small>${METHODS[run.recipe.method]} · ${esc(run.recipe.student.split("/").at(-1))}</small></div>${badge(run.status)}</a>`).join("")}</div>` : empty("Every model starts with an experiment.", "Plan your first run. Your real progress will appear here.", link("Create a training recipe", "#/playground", "plus"), "runs", true)}
     </article><article class="home-panel"><div class="section-heading"><h2>${icon("lab")} From teacher to familiar</h2><span class="muted">The workflow</span></div>
       <ol class="workflow"><li><span>1</span><div><a href="#/datasets">Curate the knowledge</a><p>Bring your examples or a teacher's responses.</p></div></li>
       <li><span>2</span><div><a href="#/playground">Shape a smaller model</a><p>Set the student, LoRA adapter, and training recipe.</p></div></li>
@@ -146,9 +164,9 @@ function lossChart(run) {
   const x = (point) => 46 + point.step / run.totalSteps * 690;
   const y = (point) => 190 - point.loss / maxLoss * 155;
   return `<svg class="loss-chart" viewBox="0 0 780 232" role="img" aria-label="Recorded training loss over optimizer steps">
-    ${[0, 0.5, 1].map((tick) => `<line x1="46" y1="${190 - tick * 155}" x2="736" y2="${190 - tick * 155}" stroke="#e8e8e5"/><text x="4" y="${194 - tick * 155}">${(maxLoss * tick).toFixed(2)}</text>`).join("")}
-    <polyline points="${points.map((point) => `${x(point)},${y(point)}`).join(" ")}" fill="none" stroke="#4658b8" stroke-width="2.5"/>
-    ${points.map((point) => `<circle cx="${x(point)}" cy="${y(point)}" r="4" fill="#4658b8"><title>Step ${point.step}: ${point.loss}</title></circle>`).join("")}
+    ${[0, 0.5, 1].map((tick) => `<line x1="46" y1="${190 - tick * 155}" x2="736" y2="${190 - tick * 155}"/><text x="4" y="${194 - tick * 155}">${(maxLoss * tick).toFixed(2)}</text>`).join("")}
+    <polyline points="${points.map((point) => `${x(point)},${y(point)}`).join(" ")}" fill="none" stroke-width="2.5"/>
+    ${points.map((point) => `<circle cx="${x(point)}" cy="${y(point)}" r="4"><title>Step ${point.step}: ${point.loss}</title></circle>`).join("")}
     <text x="46" y="220">0</text><text x="640" y="220">${run.totalSteps} steps</text></svg>`;
 }
 
@@ -260,7 +278,8 @@ function resourcesPage() {
 
 function settingsPage() {
   return `${header("Workspace settings", "", "A local home for the coven's experiments.")}
-    <div class="settings-grid"><section class="card"><h2>Workspace identity</h2><form data-form="workspace">${field("Workspace name", "workspaceName", workspace.name, { attrs: 'maxlength="80"' })}<button class="button primary" type="submit">Save name</button><p class="form-error" role="alert" hidden></p></form></section>
+    <div class="settings-grid"><section class="card appearance-card"><h2>Appearance</h2><p>Settle into the light that suits you. System follows your device automatically.</p>${themePicker("settings")}<p class="help" id="theme-description"></p><p class="help">Saved on this browser, independently of workspace backups.</p></section>
+    <section class="card"><h2>Workspace identity</h2><form data-form="workspace">${field("Workspace name", "workspaceName", workspace.name, { attrs: 'maxlength="80"' })}<button class="button primary" type="submit">Save name</button><p class="form-error" role="alert" hidden></p></form></section>
     <section class="card"><h2>Backups &amp; portability</h2><p>Recipes, dataset fingerprints, recorded results, and artifact references are saved in this browser. No cloud sync or accounts are configured.</p><div class="actions">${button("Export workspace", "export-workspace", "download")}${button("Restore backup", "restore-workspace", "upload")}</div><p class="help">Restoring replaces this workspace after confirmation. Dataset contents and model weights are never included.</p></section>
     <section class="card"><h2>Execution boundary</h2><dl class="facts"><dt>Trainer</dt><dd>External / not connected</dd><dt>Inference</dt><dd>Not connected</dd><dt>Storage</dt><dd>Browser localStorage</dd><dt>Workspace size</dt><dd>${formatBytes(new TextEncoder().encode(JSON.stringify(workspace)).length)} / 4 MB</dd></dl><p>No pretend API keys, credits, running jobs, or benchmark scores.</p></section>
     <section class="card"><h2>Reset workspace</h2><p>Remove this browser's saved metadata and start fresh. Your datasets and local model files are not touched.</p>${button("Reset local workspace", "reset-workspace", "", "danger")}</section></div>`;
@@ -282,6 +301,7 @@ function render() {
     <div class="mobile-header"><button type="button" class="icon-button" data-action="toggle-menu" aria-controls="navigation" aria-expanded="${ui.menu}" aria-label="Open navigation">${icon("panel")}</button><a class="brand" href="#/home">mamase.</a><span class="workspace-tag">LOCAL LAB</span></div>
     <main class="main ${page === "home" ? "main-home" : ""}" id="main" tabindex="-1">${content}</main></div>`;
   updateSidebarAccess();
+  syncThemeControls();
 }
 
 function updateSidebarAccess() {
@@ -336,6 +356,7 @@ function importDialog(title, form, description, context = {}) {
 }
 
 const actions = {
+  theme: (element) => theme.setPreference(element.dataset.themeValue),
   "toggle-sidebar": () => {
     const mobile = matchMedia("(max-width: 760px)").matches;
     if (mobile) ui.menu = false; else ui.collapsed = !ui.collapsed;
@@ -569,4 +590,5 @@ document.addEventListener("click", (event) => {
 window.addEventListener("hashchange", () => { ui.menu = false; closeModal(); render(); window.scrollTo(0, 0); document.querySelector("#main").focus({ preventScroll: true }); });
 window.addEventListener("resize", updateSidebarAccess);
 window.addEventListener("storage", (event) => { if (event.key === STORAGE_KEY) notify("This workspace changed in another tab. Reload before saving.", true); });
+document.addEventListener("mamase:themechange", syncThemeControls);
 render();

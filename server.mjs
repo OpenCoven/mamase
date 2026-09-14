@@ -8,6 +8,7 @@ const files = new Map([
   ["/index.html", ["index.html", "text/html"]],
   ["/styles.css", ["styles.css", "text/css"]],
   ["/app.js", ["app.js", "text/javascript"]],
+  ["/theme.js", ["theme.js", "text/javascript"]],
   ["/ui.js", ["ui.js", "text/javascript"]],
   ["/workspace.js", ["workspace.js", "text/javascript"]],
   ["/favicon.svg", ["favicon.svg", "image/svg+xml"]],

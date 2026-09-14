@@ -24,6 +24,8 @@ const paths = {
   close: '<path d="m6 6 12 12M6 18 18 6"/>',
   local: '<rect x="3" y="4" width="18" height="13" rx="2"/><path d="M8 21h8m-4-4v4"/>',
   clock: '<circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/>',
+  light: '<circle cx="12" cy="12" r="4"/><path d="M12 2v2m0 16v2M2 12h2m16 0h2M5 5l1.5 1.5m11 11L19 19M5 19l1.5-1.5m11-11L19 5"/>',
+  dark: '<path d="M20.5 13.5A8.5 8.5 0 0 1 10.5 3a8.5 8.5 0 1 0 10 10.5Z"/>',
 };
 
 export function icon(name) {
@@ -75,11 +77,40 @@ export function progress(run) {
   return `<div class="progress-cell"><progress max="${run.totalSteps}" value="${run.step}" aria-label="${esc(run.name)} progress"></progress><span>${percent}%</span></div>`;
 }
 
-export function sigil() {
-  return `<svg class="coven-mark" viewBox="0 0 590 440" role="img" aria-label="An ink-black familiar with indigo, sage and clay companions">
-    <path fill="#191917" d="M104 45C42 45 29 69 29 132v91c0 68 19 103 72 116 53 13 85-31 105-79 11-26 22-51 49-51 28 0 27 22 20 46-12 39 12 54 41 83 30 29 45 68 70 65 29-3 46-47 45-83-2-49-5-70 8-108 16-48 24-125-18-151-24-15-55-16-94-16Z"/>
-    <path fill="#4658b8" d="M417 77c57-26 118-6 129 29 14 44-31 83-57 102-29 23-55 17-85 0-49-28-42-81 13-131Z"/>
-    <ellipse fill="#669b7d" cx="237" cy="366" rx="40" ry="48" transform="rotate(28 237 366)"/>
-    <ellipse fill="#c75e3d" cx="492" cy="351" rx="43" ry="50" transform="rotate(-5 492 351)"/>
+export function distillationArt() {
+  return `<svg class="distillation-art" viewBox="0 0 590 460" role="img" aria-labelledby="distillation-art-title distillation-art-description">
+    <title id="distillation-art-title">Knowledge, distilled for the coven</title>
+    <desc id="distillation-art-description">An alchemical glass flask holds a constellation of knowledge. A curved condenser carries it into a smaller, lavender-colored vessel containing a bright local-model familiar.</desc>
+    <circle class="art-halo" cx="295" cy="229" r="181"/>
+    <circle class="art-orbit" cx="295" cy="229" r="203" stroke-dasharray="2 9"/>
+    <path class="art-orbit" d="M75 367C177 423 402 430 520 354M96 118C189 47 388 39 495 133"/>
+    <g class="art-ticks"><path d="M88 219h18m-9-9v18M493 219h18m-9-9v18M295 12v12M295 434v12"/></g>
+    <path class="art-pipe" d="M242 145h35c24 0 30 20 43 37l38 51c9 12 21 16 36 16h22v19"/>
+    <path class="art-pipe-inner" d="M242 145h35c24 0 30 20 43 37l38 51c9 12 21 16 36 16h22v19"/>
+    <path class="art-condensation" d="m299 167 9-7m-2 18 10-7m-2 18 10-7m-2 18 10-7m-2 18 10-7"/>
+    <path class="art-glass" d="M181 98h56v72c33 21 53 48 53 84 0 51-38 90-81 90s-84-39-84-90c0-36 23-63 56-84Z"/>
+    <path class="art-liquid" d="M139 250c26-22 49 16 77 2 23-12 44-17 60-8 8 47-24 86-67 86-40 0-74-36-70-80Z"/>
+    <path class="art-liquid-line" d="M139 250c26-22 49 16 77 2 23-12 44-17 60-8"/>
+    <path class="art-glass-shine" d="M192 119v58c-30 20-53 41-54 72"/>
+    <rect class="art-rim" x="173" y="87" width="72" height="15" rx="7.5"/>
+    <g class="art-constellation"><path d="m166 224 38-34 43 27-43 18-38-11m38-34v45l28 42"/>
+      <circle cx="166" cy="224" r="5"/><circle cx="204" cy="190" r="6"/><circle cx="247" cy="217" r="4"/><circle cx="204" cy="235" r="4"/><circle cx="232" cy="277" r="4"/>
+    </g>
+    <g class="art-bubbles"><circle cx="179" cy="287" r="5"/><circle cx="198" cy="306" r="3"/><circle cx="248" cy="298" r="3"/></g>
+    <path class="art-stand" d="M148 351h122m-99 0-13 30m89-30 13 30M140 383h139"/>
+    <path class="art-spark" d="m210 356 7 11-7 12-7-12Z"/>
+    <path class="art-glass" d="M394 299h44v16c14 10 24 24 24 41 0 26-20 45-46 45s-46-19-46-45c0-17 10-31 24-41Z"/>
+    <path class="art-student" d="M381 352c15-10 20 5 36 0 13-5 26-6 34-1 4 24-10 38-35 38-23 0-38-13-35-37Z"/>
+    <rect class="art-rim" x="386" y="291" width="60" height="12" rx="6"/>
+    <path class="art-drop" d="M416 267c-4 6-8 10-8 14a8 8 0 0 0 16 0c0-4-4-8-8-14Z"/>
+    <path class="art-familiar" d="m416 325 7 20 17 7-17 7-7 21-7-21-17-7 17-7Z"/>
+    <path class="art-eyes" d="M410 349v4m12-4v4"/>
+    <g class="art-ticks"><path d="M371 407h90M427 89h20m-10-10v20M110 305h12m-6-6v12"/></g>
+    <circle class="art-moon" cx="432" cy="113" r="21"/>
+    <path class="art-moon-cutout" d="M440 92a21 21 0 0 0 13 35 21 21 0 0 1-13-35Z"/>
+    <circle class="art-spark" cx="128" cy="142" r="5"/>
+    <text class="art-label" x="209" y="68" text-anchor="middle">THE TEACHER</text>
+    <text class="art-label" x="416" y="428" text-anchor="middle">OUR LOCAL MODEL</text>
+    <text class="art-annotation" x="364" y="156" transform="rotate(53 364 156)">knowledge, refined</text>
   </svg>`;
 }

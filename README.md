@@ -100,6 +100,21 @@ attempt. Status updates never start, stop, or pause a real training process.
 
 ## Local data and boundaries
 
+### Appearance
+
+Choose **System**, **Light**, or **Dark** in the sidebar or Workspace settings.
+System is the default and follows device appearance changes immediately.
+Explicit choices persist across reloads under `mamase.appearance.v1`, separately
+from workspace backups and resets. The saved theme is applied before the first
+paint. All views, dialogs, charts, and the original distillation-vessel hero
+illustration use a purple/lavender palette and adapt to the selected theme without
+external image or font requests. The overview is bounded to the viewport and a
+maximum content width of 1800px, with explicit hero width/height limits. Compact
+screens show the latest two experiments and keep the full workflow available
+through the handbook link rather than stacking additional panels below the fold.
+
+### Workspace storage
+
 Workspace metadata is saved in this browser's `localStorage`, under
 `mamase.coven-lab.v1` (4 MB maximum). **Export a workspace backup from Settings**
 before clearing browser data or changing browsers/ports. Restoring a validated

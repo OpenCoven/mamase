@@ -9,7 +9,7 @@ test("local server serves the complete app and only public assets", async (conte
   await once(server, "listening");
   context.after(() => new Promise((resolve, reject) => server.close((error) => error ? reject(error) : resolve())));
   const base = `http://127.0.0.1:${server.address().port}`;
-  for (const path of ["/", "/index.html", "/app.js", "/ui.js", "/workspace.js", "/styles.css", "/favicon.svg"]) {
+  for (const path of ["/", "/index.html", "/app.js", "/theme.js", "/ui.js", "/workspace.js", "/styles.css", "/favicon.svg"]) {
     const response = await fetch(`${base}${path}`);
     assert.equal(response.status, 200, path);
     assert.match(response.headers.get("content-security-policy"), /default-src 'self'/);
