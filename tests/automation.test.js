@@ -129,3 +129,20 @@ test("workflow uses shared gates, stable jobs and an exact failure-artifact allo
   assert.deepEqual(paths, [".validation/run-*/summary.json", ".validation/run-*/browser/failure.json", ".validation/run-*/browser/failure.png"]);
   assert.ok(!/pull_request_target|secrets\.|actions\/cache|permissions: write/.test(workflow));
 });
+
+test("Node gates bound concurrent browser fixtures without excluding test files", async () => {
+  const gate = await readFile(join(root, "scripts/validate.mjs"), "utf8");
+  const args = /run\(job, node, (\["--test", [^\n]*\]), "node [^\n]*explicit Node-only mode/.exec(gate)?.[1];
+  assert.ok(args, "The Node-only invocation must remain explicit.");
+  assert.deepEqual(JSON.parse(args), ["--test", "--test-concurrency=1", "--test-reporter=tap"]);
+});
+
+test("CPU gate bounds model-runtime concurrency without removing required files", async () => {
+  const gate = await readFile(join(root, "scripts/validate.mjs"), "utf8");
+  const args = /run\(job, node, (\["--test", [^\n]*"tests\/preflight\.test\.js"\])/.exec(gate)?.[1];
+  assert.ok(args, "The required CPU invocation must remain explicit.");
+  assert.deepEqual(JSON.parse(args), [
+    "--test", "--test-concurrency=1", "--test-reporter=tap",
+    "tests/lab.test.js", "tests/evaluation.test.js", "tests/preflight.test.js",
+  ]);
+});

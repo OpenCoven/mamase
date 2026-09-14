@@ -62,14 +62,27 @@ export function compareEvaluations(first, second) {
   if (first.benchmark.trim() !== second.benchmark.trim()) reasons.push("Benchmark and version differ.");
   if (first.maximum !== second.maximum) reasons.push("Score scales differ.");
   if (first.samples !== second.samples) reasons.push("Sample counts differ.");
-  if (!first.notes.trim() || !second.notes.trim()) reasons.push("Both evaluations need explicit conditions and sample-set details.");
-  else if (first.notes.trim() !== second.notes.trim()) reasons.push("Recorded conditions or sample-set details differ.");
+  if (!first.comparison && !second.comparison) {
+    if (!first.notes.trim() || !second.notes.trim()) reasons.push("Both evaluations need explicit conditions and sample-set details.");
+    else if (first.notes.trim() !== second.notes.trim()) reasons.push("Recorded conditions or sample-set details differ.");
+  }
   if (first.comparison || second.comparison) {
     if (!first.comparison || !second.comparison) reasons.push("Manual observations and paired reports use different scoring protocols.");
     else {
       const baseline = first.comparison;
       const candidate = second.comparison;
+      if (baseline.suite.name !== candidate.suite.name) reasons.push("Evaluation suite names differ.");
+      if (baseline.suite.version !== candidate.suite.version || (baseline.suite.schema ?? "mamase.eval-suite.v1") !== (candidate.suite.schema ?? "mamase.eval-suite.v1")) reasons.push("Evaluation suite versions or schemas differ.");
       if (baseline.suite.sha256 !== candidate.suite.sha256) reasons.push("Evaluation suite fingerprints differ.");
+      const left = baseline.suite.governance;
+      const right = candidate.suite.governance;
+      if (left?.classification === "declared-v2" && right?.classification === "declared-v2") {
+        if (left.trainingLineage.sha256 !== right.trainingLineage.sha256) reasons.push("Declared training task-lineage inventories differ.");
+        if (JSON.stringify([...left.knownExposedFamilyIds].sort()) !== JSON.stringify([...right.knownExposedFamilyIds].sort())
+          || left.independence !== right.independence || left.history.status !== right.history.status || left.journalStatus !== right.journalStatus) {
+          reasons.push("Recorded suite exposure or independence conditions differ.");
+        }
+      }
       if (["doSample", "numBeams", "maxNewTokens", "seed"].some((key) => baseline.decoding[key] !== candidate.decoding[key])) reasons.push("Paired decoding settings differ.");
       if (baseline.familiarId !== candidate.familiarId || baseline.instanceId !== candidate.instanceId) reasons.push("Familiar or Coven instance bindings differ.");
       if (!sameFamiliarContext(baseline.familiarContext, candidate.familiarContext)) reasons.push("Familiar context scope or fingerprints differ.");

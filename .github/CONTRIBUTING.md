@@ -156,6 +156,9 @@ focus outlines, dialog dismissal/focus return and recoverable errors. Delaying
 both `File.text()` and `File.arrayBuffer()` during paired imports, closing and
 reopening the dialog, then releasing the old read must leave the exact prior
 workspace intact; a subsequent retry succeeds.
+Malformed paired JSON must produce content-free diagnostics, never raw file
+excerpts in the dialog or toast. A dismissed read must report cancellation
+before parsing or validating the previously selected report.
 
 Playwright keyboard events and accessibility snapshots **are not a human
 keyboard-only or screen-reader review**. No VoiceOver, NVDA, JAWS, TalkBack,

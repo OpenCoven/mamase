@@ -9,6 +9,7 @@ import { createAuthApi } from "../auth-api.mjs";
 import { createWorkspace, createRun, recordProgress, STORAGE_KEY } from "../workspace.js";
 import { DRAFT_KEY } from "../experience.js";
 import { MAX_BACKUP_BYTES } from "../backups.js";
+import { verifyReviewUx } from "./verify-review-ux.mjs";
 import { contrastRatio, writeFailureEvidence } from "./ux-evidence.mjs";
 
 const server = createAppServer({ auth: createAuthApi({ env: {} }) });
@@ -449,6 +450,44 @@ try {
   await pairedPage.locator("#dialog .form-error").waitFor({ state: "visible" });
   assert.deepEqual(await stored(pairedPage), beforeInvalid);
   await pairedPage.keyboard.press("Escape");
+  for (const dismiss of [false, true]) {
+    await pairedPage.getByRole("button", { name: "Import paired report", exact: true }).click();
+    await reportModal.getByLabel("JSON file", { exact: true }).setInputFiles({
+      name: "synthetic-malformed-report.json", mimeType: "application/json",
+      buffer: Buffer.from("RAWCASE-CANARY is malformed synthetic JSON"),
+    });
+    await pairedPage.evaluate(() => {
+      window.originalMalformedRead = File.prototype.text;
+      window.pendingMalformedForm = document.querySelector('[data-form="paired-evaluation"]');
+      File.prototype.text = function() {
+        return new Promise((resolve, reject) => { window.releaseMalformedRead = () => window.originalMalformedRead.call(this).then(resolve, reject); });
+      };
+    });
+    await reportModal.getByRole("button", { name: "Import", exact: true }).click();
+    await pairedPage.waitForFunction(() => typeof window.releaseMalformedRead === "function");
+    if (dismiss) {
+      await pairedPage.keyboard.press("Escape");
+      await pairedPage.getByRole("button", { name: "Import paired report", exact: true }).click();
+    }
+    await pairedPage.evaluate(() => {
+      File.prototype.text = window.originalMalformedRead;
+      window.releaseMalformedRead();
+    });
+    await pairedPage.waitForFunction(() => !window.pendingMalformedForm.hasAttribute("aria-busy"));
+    assert.ok(!(await pairedPage.locator("body").textContent()).includes("RAWCASE"), "Malformed paired JSON must never copy file excerpts into the DOM");
+    assert.deepEqual(await stored(pairedPage), beforeInvalid);
+    if (dismiss) {
+      await pairedPage.locator("#toast").getByText(/form was closed.*No changes were made/).waitFor();
+      assert.equal(await reportModal.locator(".form-error").isVisible(), false);
+    } else await reportModal.getByText("The report contains invalid JSON. No changes were made.", { exact: true }).waitFor();
+    assert.equal(await reportModal.locator('[type="submit"]').isEnabled(), true);
+    await pairedPage.keyboard.press("Escape");
+    await pairedPage.evaluate(() => {
+      delete window.pendingMalformedForm;
+      delete window.releaseMalformedRead;
+      delete window.originalMalformedRead;
+    });
+  }
   for (const method of ["text", "arrayBuffer"]) {
     await pairedPage.getByRole("button", { name: "Import paired report", exact: true }).click();
     await pairedPage.evaluate((method) => {
@@ -648,6 +687,7 @@ try {
   assert.deepEqual(await stored(pairedPage), backupWorkspace);
   assert.equal(await pairedPage.locator("html").getAttribute("data-theme-preference"), "light");
   await pairedContext.close();
+  await verifyReviewUx({ newContext, base, watch, downloaded, bounds });
 
   const populated = await newContext({ viewport: { width: 1440, height: 900 }, colorScheme: "dark" });
   await populated.addInitScript((workspace) => {

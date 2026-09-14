@@ -1,5 +1,6 @@
 import { assert, text, number, date, id } from "./validation.js";
 import { validateTrainingLineage, validateComparison, artifactFromTrainingResult, evaluationFromReport } from "./results.js";
+import { validateHumanDecision } from "./human-review.js";
 
 export { assert } from "./validation.js";
 export const STORAGE_KEY = "mamase.coven-lab.v1";
@@ -280,7 +281,7 @@ export function validateEvaluation(input, workspace) {
     assert(input.score === comparison.adapterPassed && maximum === comparison.samples && input.samples === comparison.samples, "Evaluation score does not match paired results.");
     assert(input.benchmark === `${comparison.suite.name} / ${comparison.suite.version}`, "Evaluation benchmark does not match its suite.");
   }
-  return {
+  const evaluation = {
     id: id(input.id),
     artifactId: input.artifactId,
     benchmark: text(input.benchmark, "Benchmark and version", 200),
@@ -291,6 +292,13 @@ export function validateEvaluation(input, workspace) {
     createdAt: date(input.createdAt),
     ...(comparison ? { comparison } : {}),
   };
+  if (input.reviews !== undefined) {
+    assert(comparison && Array.isArray(input.reviews) && input.reviews.length <= 100, "Invalid human decision history.");
+    const ids = input.reviews.map((review) => id(review?.id));
+    assert(new Set(ids).size === ids.length, "Duplicate human decision ID.");
+    evaluation.reviews = input.reviews.map((review) => validateHumanDecision(review, evaluation));
+  }
+  return evaluation;
 }
 
 export function importTrainingResult(workspace, result, metadata) {
