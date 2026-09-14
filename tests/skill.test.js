@@ -5,7 +5,7 @@ import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { fileURLToPath } from "node:url";
 import { runOperation } from "../ops.mjs";
-import { STEP_STATES } from "../workflow-receipt.mjs";
+import { LANES, STEP_STATES } from "../workflow-receipt.mjs";
 import { validateWorkspace } from "../workspace.js";
 import { prepareReview, recordHumanDecision } from "../human-review.js";
 import { sha256 } from "../familiar-context.mjs";
@@ -48,7 +48,7 @@ test("the skill only names operations, codes, states, commands and references th
   assert.match(frontmatter[1], /^name: mamase$/m);
   assert.match(frontmatter[1], /^description: .*Mamase.*Do not use for unrelated/m);
   const known = await knownVocabulary();
-  const kebab = new Set([...known.operations, ...known.codes, ...known.states, ...known.steps, ...known.runtimeStates, ...known.jobStatuses, ...known.labCommands]);
+  const kebab = new Set([...known.operations, ...known.codes, ...known.states, ...known.steps, ...known.runtimeStates, ...known.jobStatuses, ...known.labCommands, ...LANES]);
   assert.ok(kebab.has("evidence-ready") && kebab.has("stale-revision") && kebab.has("source-changed"), "vocabulary extraction found states and codes");
 
   for (const { path, text } of documents) {
