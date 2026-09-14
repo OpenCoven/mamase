@@ -137,6 +137,8 @@ def load_completed_bundle(directory):
     bundle, rows = load_bundle(directory)
     require(result.get("runId") == bundle["runId"], "Training result run ID mismatch.")
     require(result.get("familiar") == bundle["identity"], "Training result familiar identity mismatch.")
+    require(result.get("familiarContext") == bundle.get("familiarContext"), "Training result familiar context mismatch.")
+    require(("familiarContext" in result) == ("familiarContext" in bundle), "Legacy context must remain identity-files-only.")
     require(result.get("datasetSha256") == bundle["dataset"]["sha256"], "Training result dataset fingerprint mismatch.")
     require(result.get("holdoutSha256") == bundle["files"]["holdout.jsonl"], "Training result holdout fingerprint mismatch.")
     require(result.get("promotion") == "not-authorized", "Training result must not authorize promotion.")
@@ -331,6 +333,7 @@ def evaluate(args):
         "decoding": {"doSample": False, "numBeams": 1, "maxNewTokens": max_new_tokens, "seed": 42},
         "device": args.device, "versions": package_versions(recipe["adapter"]),
         "promotion": "not-authorized", "cases": cases,
+        **({"familiarContext": result["familiarContext"]} if "familiarContext" in result else {}),
         "summary": {
             "samples": len(cases), "basePassed": sum(case["base"]["passed"] for case in cases),
             "adapterPassed": sum(case["adapter"]["passed"] for case in cases),

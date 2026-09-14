@@ -421,6 +421,81 @@ identity or role/skill configuration, provisions tools, or grants authority.
 The instance ID is operator-supplied; there is no Coven registry connection
 that attests it. Output directories must be new and their parent must exist.
 
+### Optional selected familiar context
+
+The command above retains the historical `mamase.local-bundle.v1` contract,
+displayed as **legacy identity-files-only**. It does not include the familiar's
+role/skill configuration or imply full runtime parity. To bind additional
+familiar-owned instructions, explicitly create a local selection manifest:
+
+```json
+{
+  "schema": "mamase.context-selection.v1",
+  "familiarId": "cody",
+  "instanceId": "YOUR_INSTANCE_ID",
+  "lane": "coding",
+  "role": "Code familiar.",
+  "coverage": "selected-sources",
+  "sources": [
+    { "path": "IDENTITY.md", "role": "identity" },
+    { "path": "SOUL.md", "role": "soul" },
+    { "path": "ROLE.md", "role": "role" },
+    { "path": "skills/evidence/SKILL.md", "role": "skill" }
+  ]
+}
+```
+
+This is a format example, not a real familiar configuration. Use the exact
+instance/familiar labels from the recipe, and a role matching any structured
+`Role:` declarations in the selected sources. Structured `Lane:`, `Familiar ID:`
+and `Instance ID:` declarations, when present, must also agree. Each declaration
+may occur once per file. These labels are operator declarations, not
+authentication or proof of semantic consistency.
+
+```sh
+npm run lab -- inspect-context \
+  --recipe /absolute/path/exported-recipe.json \
+  --identity-dir /absolute/path/to/cody \
+  --context-manifest /absolute/path/context-selection.json
+```
+
+Inspection does not write files or train. Review its displayed source
+roles/order and exact context fingerprint. Then run **prepare** with the
+original dataset, a new output directory, the same `--context-manifest`, and
+`--context-sha256 SHA_FROM_PREVIEW`. A changed source or declaration requires
+inspection and confirmation again; omitting confirmation never falls back.
+
+IDENTITY.md and SOUL.md must be the first two sources. Extra roles are `role`,
+`skill` or `instructions`; root files are restricted to ROLE.md, SKILL.md,
+AGENTS.md or INSTRUCTIONS.md, or Markdown under `roles/`, `skills/` and
+`instructions/`. Sources must be regular UTF-8 files in the selected familiar
+directory, without symlinks; no neighboring workspace is scanned. Private
+memory, user/profile, secret/credential/token, history/session and hidden
+harness paths are excluded. Choose only familiar-owned, authorized instruction
+text: filename restrictions cannot detect private content disguised as a role
+file. Limits are 16 sources, 128 KiB each and 512 KiB combined. Preflight and
+tokenization still refuse context overflow rather than truncating identity.
+
+Context preparation creates a new `mamase.local-bundle.v2` with private
+`context.json`. That snapshot stores the original selection file hash, exact
+source bytes/hashes, declared roles/order, `ordered-sections-v1` composition and
+composed prompt hash. Keep the selected files and original manifest available:
+preflight, training and paired evaluation revalidate them, including the end
+of execution. Changed/deleted/reordered sources cannot inherit old evidence.
+
+The optional `familiarContext` field on training results, paired reports and
+persisted summaries is `mamase.familiar-context-summary.v1`. It contains only
+approved labels, ordered source roles, scope, context SHA-256 and prompt SHA-256,
+not source text, filenames or machine-specific source paths. Its context hash
+uses compact, recursively key-sorted UTF-8 JSON of the binding descriptor;
+source order remains significant. The browser rejects mismatched contexts and
+does not rank them as equivalent. Legacy records are not rewritten or upgraded.
+Managed MLX and manual references remain unbound; matching labels alone cannot
+grant context-bound status. Neither identical context, review approval nor any
+fingerprint proves useful learning, familiar fidelity or permission to deploy.
+
+### Check and explicitly train
+
 Before loading weights, run the read-only offline preflight with the **same local
 snapshot and device** you intend to train:
 

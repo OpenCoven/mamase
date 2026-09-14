@@ -298,6 +298,7 @@ def preflight(args):
             "path": str(bundle_dir), "runId": bundle["runId"], "sha256": fingerprint(bundle_dir / "bundle.json"),
             "files": bundle["files"], "identity": bundle["identity"],
             "datasetSha256": bundle["dataset"]["sha256"], "adapter": recipe["adapter"], "method": recipe["method"],
+            "familiarContext": bundle.get("familiarContext", {"scope": "identity-files-only"}),
         }
         report.check("bundle.used", lambda: unused_bundle(bundle_dir))
         facts["plannedOptimizerSteps"] = optimizer_steps(len(rows["train"]), recipe["batchSize"], recipe["accumulation"], recipe["epochs"])
