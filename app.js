@@ -1153,9 +1153,17 @@ async function submitForm(form) {
     message = "Artifact reference registered. Local files were not changed.";
   } else if (type === "training-result" || type === "paired-evaluation") {
     const { file, source } = await readFile(form, MAX_IMPORT_BYTES);
-    const report = JSON.parse(source);
+    assert(form.isConnected && dialog.open, "The form was closed before saving. No changes were made.");
+    let report;
+    try {
+      report = JSON.parse(source);
+    } catch (error) {
+      if (!(error instanceof SyntaxError)) throw error;
+      throw new Error("The report contains invalid JSON. No changes were made.");
+    }
     if (context.runId) assert(report.runId === context.runId, "Training result belongs to another run.");
     const metadata = { id: newId(type === "training-result" ? "artifact" : "evaluation"), sha256: await fileDigest(file), createdAt: now() };
+    assert(form.isConnected && dialog.open, "The form was closed before saving. No changes were made.");
     next = type === "training-result" ? importTrainingResult(next, report, metadata) : importEvaluationReport(next, report, metadata);
     destination = type === "training-result" ? "#/checkpoints" : "#/evaluations";
     message = type === "training-result" ? "Adapter lineage and holdout results imported. No model was promoted." : "Paired evaluation summary imported. Private prompts and outputs were not stored.";
