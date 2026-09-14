@@ -20,6 +20,36 @@ Transformers 5.17.0, Tokenizers 0.23.2, NumPy 2.5.3, Safetensors 0.8.0,
 SentencePiece 0.2.2, Protobuf 7.36.1, PyYAML 6.0.3, Jinja2 3.1.6 and
 Hugging Face Hub 1.31.0. No PyTorch or Hugging Face datasets dependency is used.
 
+### Separate PEFT preflight
+
+`training/requirements.txt` is the managed MLX environment above.
+`training/requirements-peft.txt` is the separate PyTorch/PEFT environment for
+`train.py`, `evaluate.py` and the read-only bundle preflight:
+
+```sh
+.venv/bin/python training/preflight.py \
+  --bundle .lab/experiment --model /absolute/local/peft-snapshot --device cpu
+```
+
+The command emits `mamase.preflight.v1` JSON to stdout with `ready`, `errors`,
+`warnings`, `facts` and `skipped` checks; exit 1 means blocked. It does not write
+reports or instantiate models, adapters, trainers or optimizers. Safetensors
+headers are inspected without reading tensor payloads; memory is not estimated.
+It is not an OOM guarantee, training evidence, or permission to promote.
+
+That interface accepts **prepared identity-bound PEFT bundles, not MLX jobs**.
+It reuses PEFT training validation and the evaluator's context budget, not this
+worker's distinct data/adapter implementation. Both paths share the pure
+standard model/tokenizer metadata guards; calling these does not import MLX
+or invoke a model loader. The managed availability probe
+only checks runtime imports/Metal availability; it is not a read-only bundle
+preflight and initializes server state. This worker's manifest/source/model
+checks remain part of actual execution, before training; model and tokenizer
+loading are coupled in `load_local_model`, so it is not a no-weight-load probe.
+The browser does not independently inspect hardware. In particular, this
+worker's MLX LoRA loop and original-source messages do not implement PEFT's
+adapter-variant switch or prepared canonical-identity prompt injection.
+
 ## Parent invocation and lifetime
 
 Use the actual virtual-environment executable, not the default `python3`:

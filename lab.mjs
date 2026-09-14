@@ -115,13 +115,13 @@ async function main() {
     },
   });
   if (values.help || !positionals.length) {
-    console.log("Usage: npm run lab -- prepare --recipe recipe.json --dataset examples.jsonl --identity-dir /path/familiar --out .lab/experiment\nCreate the output parent first. Preparation never downloads models or starts training. Then run:\n.venv/bin/python training/train.py --bundle .lab/experiment --model /path/local-model");
+    console.log("Usage: npm run lab -- prepare --recipe recipe.json --dataset examples.jsonl --identity-dir /path/familiar --out .lab/experiment\nCreate the output parent first. Preparation never downloads models or starts training.\nUse the PEFT environment (training/requirements-peft.txt), not managed MLX. Check readiness without loading weights or writing reports:\n.venv/bin/python training/preflight.py --bundle .lab/experiment --model /path/local-model --device cpu\nRead its JSON errors/warnings/facts; exit 1 means blocked. A ready preflight is not an OOM guarantee or a run report. Then explicitly train with the same model/device:\n.venv/bin/python training/train.py --bundle .lab/experiment --model /path/local-model --device cpu");
     return;
   }
   assert(positionals.length === 1 && positionals[0] === "prepare", "Only the prepare command is supported.");
   for (const key of ["recipe", "dataset", "identity-dir", "out"]) assert(values[key], `Missing --${key}.`);
   const result = await prepareBundle({ recipePath: values.recipe, datasetPath: values.dataset, identityDir: values["identity-dir"], outputDir: values.out });
-  console.log(`Prepared ${result.path}\n${result.bundle.split.train} train / ${result.bundle.split.holdout} holdout. No training started.`);
+  console.log(`Prepared ${result.path}\n${result.bundle.split.train} train / ${result.bundle.split.holdout} holdout. No training started.\nBefore training, run training/preflight.py with --bundle, --model and an explicit --device in your PEFT environment. It emits readiness JSON, not a training report.`);
 }
 
 if (process.argv[1] === fileURLToPath(import.meta.url)) {

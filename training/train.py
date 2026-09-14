@@ -12,9 +12,12 @@ import platform
 import re
 
 os.environ["HF_HUB_OFFLINE"] = "1"
+os.environ["TRANSFORMERS_OFFLINE"] = "1"
 os.environ["HF_DATASETS_OFFLINE"] = "1"
 os.environ["HF_HUB_DISABLE_TELEMETRY"] = "1"
 os.environ["TOKENIZERS_PARALLELISM"] = "false"
+
+TRAINING_PACKAGES = ("torch", "transformers", "peft", "accelerate", "tokenizers", "safetensors", "numpy")
 
 
 def require(condition, message):
@@ -34,12 +37,16 @@ def fingerprint_tree(directory):
     return {str(path.relative_to(directory)): fingerprint(path) for path in sorted(directory.rglob("*")) if path.is_file()}
 
 
-def validate_device(torch, technique, device):
+def validate_device_request(technique, device):
     require(device in ("cpu", "mps", "cuda"), "Unsupported device.")
     require(int(os.environ.get("WORLD_SIZE", "1")) == 1, "This runner supports one device, not distributed execution.")
+    require(technique != "qlora" or device == "cuda", "QLoRA in this runner requires CUDA and bitsandbytes. Use LoRA, rsLoRA, or DoRA on CPU/MPS.")
+
+
+def validate_device(torch, technique, device):
+    validate_device_request(technique, device)
     require(device != "cuda" or torch.cuda.is_available(), "CUDA is not available.")
     require(device != "mps" or torch.backends.mps.is_available(), "MPS is not available.")
-    require(technique != "qlora" or device == "cuda", "QLoRA in this runner requires CUDA and bitsandbytes. Use LoRA, rsLoRA, or DoRA on CPU/MPS.")
     if technique == "qlora":
         try:
             importlib.metadata.version("bitsandbytes")
@@ -82,8 +89,23 @@ def adapter_config(recipe):
 
 
 def package_versions(technique):
-    names = ["torch", "transformers", "peft", "accelerate", "tokenizers", "safetensors", "numpy"]
-    return {name: importlib.metadata.version(name) for name in names + (["bitsandbytes"] if technique == "qlora" else [])}
+    return {name: importlib.metadata.version(name) for name in TRAINING_PACKAGES + (("bitsandbytes",) if technique == "qlora" else ())}
+
+
+def validate_recipe(recipe):
+    require(isinstance(recipe, dict), "Recipe must be an object.")
+    require(recipe.get("adapter") in ("lora", "qlora", "rslora", "dora"), "Unsupported adapter.")
+    require(recipe.get("method") in ("lora", "distillation"), "Unsupported training objective.")
+    require(isinstance(recipe.get("student"), str) and recipe["student"].strip(), "Recipe student must be a nonempty model label.")
+    bounds = {"rank": (4, 256), "alpha": (1, 1024), "epochs": (1, 100),
+              "batchSize": (1, 128), "accumulation": (1, 1024), "maxSequence": (128, 131072)}
+    for key, (minimum, maximum) in bounds.items():
+        value = recipe.get(key)
+        require(type(value) is int and minimum <= value <= maximum, f"Recipe {key} must be an integer in {minimum}..{maximum}.")
+    require(recipe["rank"] in (4, 8, 16, 32, 64, 128, 256), "Recipe rank must be a power of two from 4 to 256.")
+    rate = recipe.get("learningRate")
+    require(type(rate) in (int, float) and math.isfinite(rate) and 0.00000001 <= rate <= 1,
+            "Recipe learningRate must be finite and in 0.00000001..1.")
 
 
 def write_json(path, value):
@@ -99,7 +121,9 @@ def write_json(path, value):
 def load_bundle(directory):
     directory = directory.resolve(strict=True)
     bundle = json.loads((directory / "bundle.json").read_text(encoding="utf-8"))
+    require(isinstance(bundle, dict), "Bundle must be a JSON object.")
     require(bundle.get("schema") == "mamase.local-bundle.v1", "Unsupported bundle schema.")
+    validate_recipe(bundle.get("recipe"))
     expected = {"train.jsonl", "holdout.jsonl", "identity.json", "recipe.json"}
     require(set(bundle["files"]) == expected, "Bundle file inventory is invalid.")
     for name, digest in bundle["files"].items():
@@ -135,8 +159,6 @@ def load_bundle(directory):
             require(key not in prompt_sets[split], "Duplicate prompt within a split.")
             prompt_sets[split].add(key)
     require(prompt_sets["train"].isdisjoint(prompt_sets["holdout"]), "Train/holdout prompt leakage.")
-    require(bundle["recipe"]["adapter"] in ("lora", "qlora", "rslora", "dora"), "Unsupported adapter.")
-    require(bundle["recipe"]["method"] in ("lora", "distillation"), "Unsupported training objective.")
     if bundle["recipe"]["method"] == "distillation":
         require(bundle["dataset"]["kind"] == "teacher" and bundle["dataset"]["teacher"] == bundle["recipe"]["teacher"], "Teacher provenance mismatch.")
     return bundle, rows
@@ -148,7 +170,10 @@ def tokenize_rows(rows, tokenizer, max_length):
     for row in rows:
         prefix = tokenizer.apply_chat_template(row["prompt"], tokenize=False, add_generation_prompt=True)
         full = tokenizer.apply_chat_template(row["prompt"] + row["completion"], tokenize=False, add_generation_prompt=False)
+        require(isinstance(prefix, str) and prefix.strip() and isinstance(full, str), "Chat template must render a nonempty text prompt.")
         require(full.startswith(prefix), "Chat template has no stable prompt/completion boundary; use a compatible template.")
+        require(all(message["content"] in prefix for message in row["prompt"]), "Chat template drops or rewrites identity/prompt content; use a compatible template.")
+        require(row["completion"][0]["content"] in full[len(prefix):], "Chat template drops or rewrites completion content; use a compatible template.")
         prompt_ids = tokenizer.encode(prefix, add_special_tokens=False)
         input_ids = tokenizer.encode(full, add_special_tokens=False)
         require(input_ids[:len(prompt_ids)] == prompt_ids, "Tokenizer merges across the response boundary; cannot safely mask the prompt.")
@@ -191,7 +216,7 @@ def train(args):
         from peft import get_peft_model, prepare_model_for_kbit_training
         from transformers import Trainer, TrainerCallback, TrainingArguments, set_seed
     except ImportError as error:
-        raise RuntimeError("Training dependencies are missing. Install training/requirements.txt in a local virtual environment.") from error
+        raise RuntimeError("Training dependencies are missing. Install training/requirements-peft.txt in a local virtual environment (not the managed MLX runtime).") from error
 
     recipe = bundle["recipe"]
     validate_device(torch, recipe["adapter"], args.device)

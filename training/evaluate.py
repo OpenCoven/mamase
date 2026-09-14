@@ -186,7 +186,7 @@ def context_limit(config, tokenizer):
         for key in ("max_position_embeddings", "n_positions", "max_seq_len", "max_sequence_length", "seq_length")
     ]
     limits = [value for value in limits if type(value) is int and 0 < value < 10**9]
-    require(limits, "Cannot establish the local model's context limit; evaluation refuses an unknown context budget.")
+    require(limits, "Cannot establish the local model's context limit; refusing an unknown context budget.")
     token_limit = getattr(tokenizer, "model_max_length", None)
     if type(token_limit) is int and 0 < token_limit < 10**9:
         limits.append(token_limit)
@@ -294,7 +294,7 @@ def evaluate(args):
         import torch
         from transformers import set_seed
     except ImportError as error:
-        raise RuntimeError("Evaluation dependencies are missing. Use the training/requirements.txt virtual environment.") from error
+        raise RuntimeError("Evaluation dependencies are missing. Use the training/requirements-peft.txt virtual environment (not the managed MLX runtime).") from error
     recipe = source["bundle"]["recipe"]
     validate_device(torch, recipe["adapter"], args.device)
     set_seed(42)
