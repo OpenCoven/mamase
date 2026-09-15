@@ -1,7 +1,8 @@
 # Evaluation evidence (PEFT lane)
 
 ```bash
-.venv/bin/python training/evaluate.py --bundle .lab/experiment --suite suite.json --out .lab/experiment-eval --device cpu
+.venv/bin/python training/evaluate.py --bundle .lab/experiment --suite suite.json \
+  --history journal.json --task-lineage lineage.json --out .lab/experiment-eval --device cpu
 npm run ops -- import-evaluation --workspace ... --expected-revision <sha256> --file .lab/experiment-eval/evaluation-report.json
 ```
 
@@ -13,6 +14,22 @@ responses, `resultSha256` binding it to the imported result and `bundleSha256` t
 the bundle. The importer refuses reports for unknown results, mismatched bundles or
 duplicate prompts — do not edit a report to satisfy it; regenerate it from the
 right inputs.
+
+## Independence depends on two optional flags
+
+`--history` (a shared exposure journal) and `--task-lineage` (a declared training
+inventory) are optional to the parser but decisive for governance. A
+`mamase.eval-suite.v2` suite reports
+`governance.independence: "mechanically-eligible"` only when both are supplied and
+every declaration is complete — the suite history and journal are
+`complete-declared`, lineage coverage is `complete-declared`, the suite is `final`,
+reviewed and not synthetic, and no family overlaps a recorded exposure. Omit either
+flag and the report is pinned to `"unverified"` with
+`governance.journalStatus: "unavailable"`, which is the weakest evidence the lane
+can produce. Omitting them is a valid choice; doing so unknowingly is not.
+
+Eligibility is an unauthenticated declaration check, never proof of independence.
+A `mamase.eval-suite.v1` suite is always `"unverified"` (`legacy-development`).
 
 After import, `receipt` shows `evaluate: done` with `reportSha256`, `suiteSha256`
 and the `regressions` count, and `nextAction.step: "human-review"`

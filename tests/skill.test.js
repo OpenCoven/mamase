@@ -23,6 +23,28 @@ async function skillDocuments() {
 // Backticked kebab-case tokens that are evaluation categories, context scopes, review decisions or prose, not codes/states/commands.
 const proseTokens = new Set(["tool-boundary", "identity-files-only", "selected-sources", "needs-more-evidence", "not-started", "not-authorized", "identity-bound", "read-only", "append-only", "training-result"]);
 
+// Schema identifiers the shipped code actually reads or writes. Tests and scripts are excluded so their
+// deliberate negative fixtures (mamase.eval-suite.v99, mamase.workspace-backup.v9) never become documentable.
+const skipDirectories = new Set(["node_modules", ".git", "tests", "scripts", "dist", "skills", ".venv"]);
+
+async function sourceFiles(directory) {
+  const entries = await readdir(directory, { withFileTypes: true });
+  const found = [];
+  for (const entry of entries) {
+    const path = join(directory, entry.name);
+    if (entry.isDirectory()) {
+      if (!skipDirectories.has(entry.name)) found.push(...(await sourceFiles(path)));
+    } else if (/\.(mjs|js|py)$/.test(entry.name)) found.push(path);
+  }
+  return found;
+}
+
+async function productionSchemas() {
+  const files = await sourceFiles(root);
+  const texts = await Promise.all(files.map((path) => readFile(path, "utf8")));
+  return new Set(texts.flatMap((text) => [...text.matchAll(/"(mamase\.[a-z-]+\.v\d+)"/g)].map((match) => match[1])));
+}
+
 async function knownVocabulary() {
   const catalog = await runOperation("catalog");
   const [ops, receipt, lab] = await Promise.all(["ops.mjs", "workflow-receipt.mjs", "lab.mjs"].map((name) => readFile(join(root, name), "utf8")));
@@ -30,14 +52,22 @@ async function knownVocabulary() {
   for (const script of ["preflight", "train", "evaluate"]) pythonFlags[`training/${script}.py`] = new Set([...(await readFile(join(root, "training", `${script}.py`), "utf8")).matchAll(/add_argument\("(--[a-z-]+)"/g)].map((match) => match[1]));
   const source = `${ops}\n${receipt}`;
   const codes = new Set([...source.matchAll(/(?:blocked|blocker|OperationError)\("([a-z-]+)"/g)].map((match) => match[1]));
-  const states = new Set([...STEP_STATES, ...receipt.matchAll(/return "([a-z-]+)"/g)].map((item) => Array.isArray(item) ? item[1] : item));
+  // Every state overallState can return, including the ternary branches ("failed"/"cancelled") that a bare /return "x"/ never sees.
+  const overall = receipt.match(/function overallState\([\s\S]*?\n}/);
+  assert.ok(overall, "workflow-receipt.mjs still defines overallState");
+  const states = new Set([...STEP_STATES, ...[...overall[0].matchAll(/"([a-z-]+)"/g)].map((match) => match[1])]);
   const steps = new Set([...receipt.matchAll(/step\("([a-z-]+)"/g)].map((match) => match[1]));
   const runtimeStates = new Set([...receipt.matchAll(/state: "([a-z]+)"/g)].map((match) => match[1]));
   const labCommands = new Set([...lab.matchAll(/\["prepare", "inspect-context"\]/g)].length ? ["prepare", "inspect-context"] : []);
-  const labFlags = new Set([...lab.matchAll(/(--[a-z-]+)/g)].map((match) => match[1]));
-  const schemas = new Set([catalog.schema, catalog.workspaceFileSchema, catalog.backupSchema, catalog.recipeSchema, catalog.workflowReceiptSchema, "mamase.operation-receipt.v1", "mamase.training-result.v1", "mamase.evaluation-report.v1", "mamase.local-bundle.v1", "mamase.run-report.v1"]);
+  // Only the parseArgs options block: lab.mjs's usage text embeds python flags (--model/--device/--bundle) that parseArgs rejects in strict mode.
+  const labOptions = lab.match(/options: \{([\s\S]*?)\n    \},/);
+  assert.ok(labOptions, "lab.mjs still declares a parseArgs options block");
+  const labFlags = new Set([...labOptions[1].matchAll(/(?:"([a-z-]+)"|\b([a-z]+)):\s*\{\s*type:/g)].map((match) => `--${match[1] ?? match[2]}`));
+  const schemas = new Set([catalog.schema, catalog.workspaceFileSchema, catalog.backupSchema, catalog.recipeSchema, catalog.workflowReceiptSchema, ...(await productionSchemas())]);
+  // Governance vocabulary lives in Python; the JS receipt only echoes it, so harvest it from the source of truth.
+  const governance = new Set([...(await readFile(join(root, "training", "eval_suites.py"), "utf8")).matchAll(/"([a-z]+(?:-[a-z]+)+)"/g)].map((match) => match[1]));
   const jobStatuses = new Set(["starting", "running", "cancelling", "completed", "failed", "cancelled"]);
-  return { catalog, operations: new Set(catalog.operations.map((operation) => operation.name)), codes, states, steps, runtimeStates, labCommands, labFlags, pythonFlags, schemas, jobStatuses };
+  return { catalog, operations: new Set(catalog.operations.map((operation) => operation.name)), codes, states, steps, runtimeStates, labCommands, labFlags, pythonFlags, schemas, jobStatuses, governance };
 }
 
 test("the skill only names operations, codes, states, commands and references that exist", async () => {
@@ -48,16 +78,16 @@ test("the skill only names operations, codes, states, commands and references th
   assert.match(frontmatter[1], /^name: mamase$/m);
   assert.match(frontmatter[1], /^description: .*Mamase.*Do not use for unrelated/m);
   const known = await knownVocabulary();
-  const kebab = new Set([...known.operations, ...known.codes, ...known.states, ...known.steps, ...known.runtimeStates, ...known.jobStatuses, ...known.labCommands, ...LANES]);
+  const kebab = new Set([...known.operations, ...known.codes, ...known.states, ...known.steps, ...known.runtimeStates, ...known.jobStatuses, ...known.labCommands, ...known.governance, ...LANES]);
   assert.ok(kebab.has("evidence-ready") && kebab.has("stale-revision") && kebab.has("source-changed"), "vocabulary extraction found states and codes");
 
   for (const { path, text } of documents) {
     for (const match of text.matchAll(/npm run ops -- ([a-z-]+)/g)) assert.ok(known.operations.has(match[1]), `${path} names unknown operation ${match[1]}`);
-    for (const match of text.matchAll(/npm run lab -- ([a-z-]+)((?: --[a-z-]+(?: \S+)?)*)/g)) {
+    for (const match of text.matchAll(/npm run lab -- ([a-z-]+)((?:\\\n|[^\n`])*)/g)) {
       assert.ok(known.labCommands.has(match[1]), `${path} names unknown lab command ${match[1]}`);
       for (const flag of match[2].matchAll(/--[a-z-]+/g)) assert.ok(known.labFlags.has(flag[0]), `${path} names unknown lab flag ${flag[0]}`);
     }
-    for (const match of text.matchAll(/(training\/(?:preflight|train|evaluate)\.py)((?: --[a-z-]+(?: \S+)?)*)/g)) {
+    for (const match of text.matchAll(/(training\/(?:preflight|train|evaluate)\.py)((?:\\\n|[^\n`])*)/g)) {
       for (const flag of match[2].matchAll(/--[a-z-]+/g)) assert.ok(known.pythonFlags[match[1]].has(flag[0]), `${path} passes unknown flag ${flag[0]} to ${match[1]}`);
     }
     for (const match of text.matchAll(/`([^`\n]+)`/g)) {

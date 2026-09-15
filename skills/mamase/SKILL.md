@@ -60,7 +60,11 @@ The receipt's `lane` decides the reference: `peft`, `managed-mlx`, or
 - **Your judgment is a recommendation.** Only a human records a review decision
   in the Mamase UI. Never write a review, call evidence "approved", grant tools,
   replace an identity or deploy an adapter. `evidence-ready` means ready for a
-  human, nothing more.
+  human, nothing more. This one is convention, not enforcement: the importer
+  checks a decision's shape and its binding to exact evidence, but nothing
+  attests that a human authored it, and a decision you fabricate is
+  indistinguishable from a recorded one. The boundary holds only because you
+  keep it.
 - **Private text stays private.** Case prompts, responses and familiar sources are
   read only when the user names the file and scope. Receipts, backups, commit
   messages and logs carry fingerprints, IDs and counts — never the text.
