@@ -1145,9 +1145,14 @@ handoff, recovery) that only invoke the commands above — `npm run ops`, `npm r
 lab` and `training/*.py` — and never reconstruct workspace JSON, launch training
 on their own, write human decisions, or grant deployment or tools. Point your
 harness at the directory (or a symlink to it) instead of copying it;
-`tests/skill.test.js` fails if the skill names an operation, error code, schema or
-runtime state that the catalog and receipts do not have, and drives a synthetic
-plan-only → evidence → human-handoff scenario through the same operations.
+`tests/skill.test.js` fails if the skill names an operation, error code, schema,
+state, command or flag that the shipped code does not have — every vocabulary is
+derived from source (the catalog, `workflow-receipt.mjs`, `lab.mjs`'s `parseArgs`
+options, `training/*.py` argparse and `eval_suites.py` governance values) rather
+than restated in the test, so the guard cannot drift from the code it guards.
+Deliberate negative fixtures under `tests/` and `scripts/` are excluded, and the
+test also drives a synthetic plan-only → evidence → human-handoff scenario
+through the same operations.
 
 ## Development checks
 

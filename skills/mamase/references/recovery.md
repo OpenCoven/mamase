@@ -12,7 +12,7 @@ already encodes the recovery path; follow it rather than reasoning from memory.
 | Result from another bundle | `bundle-changed` | keep both attempts distinct | delete either |
 | Managed launch response lost | `job` step, `lookup: GET /api/training/runs/<runId>` | look up by run ID, then `import-job` | relaunch |
 | Server does not know the job | `job-missing` | check `outputRoot` / other server | relaunch |
-| Job failed / interrupted | `job-failed`, `state: failed` | report; a new run only on request | resume, retrain to "fix" the record |
+| Job failed / interrupted | `job-failed`, `state: "failed"` | report; a new run only on request | resume, retrain to "fix" the record |
 | Job cancelled | `job-cancelled` | report | treat partial outputs as an adapter |
 | Duplicate import (progress, result, job, backup) | `unchanged` | nothing — this is the idempotent path | re-import with altered IDs |
 | Import conflict | `progress-conflict`, `run-conflict`, `dataset-conflict`, `job-conflict` | report both sides by ID | rewrite either record |
