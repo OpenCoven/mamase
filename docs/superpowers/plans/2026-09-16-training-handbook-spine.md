@@ -285,7 +285,10 @@ test("the model's steps equal the receipt's steps exactly", () => {
     receipt.steps.map(({ id, state }) => ({ id, state })),
     "The page must never disagree with npm run ops -- receipt",
   );
-  assert.equal(model.next?.id ?? null, receipt.next?.id ?? null);
+  assert.ok(model.next, "This run genuinely has a next step");
+  assert.equal(model.next.id, receipt.nextAction.step);
+  assert.equal(model.next.state, "next");
+  assert.ok(model.next.title, "The next step must go through decorate()");
 });
 
 test("every rendered step carries copy, and every receipt step ID is covered", () => {
@@ -294,7 +297,7 @@ test("every rendered step carries copy, and every receipt step ID is covered", (
     assert.ok(step.title, `${step.id} has no title`);
     assert.ok(step.purpose, `${step.id} has no purpose`);
   }
-  for (const id of ["plan", "prepare", "preflight", "train", "evaluate", "human-review", "launch", "job", "register", "test", "select-lane"]) {
+  for (const id of ["plan", "prepare", "preflight", "train", "evaluate", "human-review", "capability", "launch", "job", "register", "test", "select-lane"]) {
     assert.ok(STEP_COPY[id]?.title, `Missing copy for receipt step ${id}`);
   }
 });
@@ -303,11 +306,11 @@ test("the managed lane is derived with capability and job, never with a bundle",
   const workspace = workspaceWith({ workflow: "managed", familiarId: "", instanceId: "" });
   const model = handbookModel(workspace, { capability: { enabled: true, available: true, hosted: false } });
   assert.equal(model.lane, "managed-mlx");
-  assert.deepEqual(model.steps.map((step) => step.id), ["plan", "launch", "job", "register", "test", "human-review"]);
+  assert.deepEqual(model.steps.map((step) => step.id), ["plan", "capability", "launch", "job", "register", "test", "human-review"]);
 });
 
 test("an unselected lane blocks and offers no next action", () => {
-  const workspace = workspaceWith({ workflow: "", familiarId: "", instanceId: "" });
+  const workspace = workspaceWith({ workflow: undefined, familiarId: "", instanceId: "" });
   const model = handbookModel(workspace, {});
   assert.equal(model.lane, "unselected");
   assert.ok(model.blockers.length);
@@ -444,10 +447,13 @@ export function handbookModel(workspace, { runId, capability, job } = {}) {
   } catch (error) {
     return { empty: false, run, choices, lane, steps: [], next: null, blockers: [{ code: "receipt-unavailable", message: error.message }] };
   }
+  const nextStep = receipt.nextAction ? receipt.steps.find((step) => step.id === receipt.nextAction.step) : null;
   return {
     empty: false, run, choices, lane,
     steps: receipt.steps.map(decorate),
-    next: receipt.next ? decorate(receipt.next) : null,
+    // The receipt exposes `nextAction` as { step, requiresApproval, command?, note? } —
+    // the id is under `.step`, and it is not a step object. Resolve it back to the real step.
+    next: nextStep ? decorate(nextStep) : null,
     blockers: receipt.blockers,
     state: receipt.state,
   };
