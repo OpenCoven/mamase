@@ -19,20 +19,21 @@ export function agentPrompt({ filename, run, lane }) {
   const file = SAFE(filename, 200) || "coven-workspace.json";
   const id = SAFE(run?.id, 80);
   const name = SAFE(run?.name, 120);
+  const cleanLane = SAFE(lane, 40);
   const path = `~/Downloads/${file}`;
   const lines = [
     "Use the mamase skill in this repo (skills/mamase/SKILL.md).",
     "",
     `Workspace : ${path}  (wherever your browser saved it)`,
     `Run       : ${id}${name ? ` "${name}"` : ""}`,
-    `Lane      : ${SAFE(lane, 40)}`,
+    `Lane      : ${cleanLane}`,
     "",
     "Start here:",
     `  npm run ops -- inspect --workspace ${path}`,
     `  npm run ops -- receipt --workspace ${path} --run ${id}`,
     "",
   ];
-  if (lane === "unselected") {
+  if (cleanLane === "unselected") {
     lines.push(
       "This run's lane is not selected, so there is no next action yet.",
       "Report what the receipt says is missing. Do not choose the lane for me.",

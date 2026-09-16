@@ -48,6 +48,14 @@ test("an unselected lane asks for the lane instead of a next action", () => {
   assert.ok(!prompt.includes("train.py"), "Nothing may suggest training before a lane exists");
 });
 
+test("a lane that only differs from 'unselected' by whitespace or control characters still takes the unselected branch", () => {
+  for (const lane of ["unselected\n", " unselected "]) {
+    const prompt = agentPrompt({ filename: "w.json", run, lane });
+    assert.ok(!prompt.includes("train.py"), `lane ${JSON.stringify(lane)} must not mention train.py`);
+    assert.match(prompt, /lane is not selected/i, `lane ${JSON.stringify(lane)} must say the lane is not selected`);
+  }
+});
+
 test("the filename carries the date and stays a safe single segment", () => {
   assert.equal(handoffFilename(new Date("2026-09-16T10:20:30Z")), "coven-workspace-2026-09-16.json");
   assert.ok(!handoffFilename(new Date()).includes("/"));
