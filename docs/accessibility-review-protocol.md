@@ -61,8 +61,9 @@ through them in order; later flows depend on state the earlier ones create.
 
 ### 1. Workspace creation and recovery
 
-Settings → change the workspace name → save. Then export a backup, reset the
-workspace, and restore from the file.
+Settings → **Workspace identity** → change the name → **Save name**. Then
+**Export workspace**, **Reset local workspace**, and **Restore backup** from the
+exported file.
 
 - Does the screen reader say the name was **saved**, or only re-read the field?
 - On restore, is the preview (source format, collection counts) announced
@@ -71,8 +72,9 @@ workspace, and restore from the file.
 
 ### 2. Identity-bound preparation
 
-Playground → fill the recipe: familiar ID, coven instance ID, dataset, base
-model, hyperparameters. Submit with a field deliberately left blank.
+Playground → fill the recipe: **Familiar ID**, **Coven instance ID**, dataset,
+base model, hyperparameters → **Save recipe & review**. Submit once with a
+required field deliberately left blank.
 
 - When validation rejects the form, does focus move to the offending field, and
   is the error read with it — or is the error announced with focus still on the
@@ -82,7 +84,9 @@ model, hyperparameters. Submit with a field deliberately left blank.
 
 ### 3. Training launch and interruption
 
-Launch a run, then interrupt it (close the terminal, or cancel).
+Open the saved run → **Start training**, then interrupt it: cancel it from the
+page, or stop the local trainer process. Managed MLX only; a terminal-trained
+run reports through import instead, which flow 4 covers.
 
 - `#live-progress-text` announces streamed progress. Over a run of any length,
   is that a useful heartbeat or a barrage? A `role="status"` that fires on every
@@ -94,9 +98,9 @@ Launch a run, then interrupt it (close the terminal, or cancel).
 
 ### 4. Paired report import, including the delayed-import dialog-close path
 
-Import a paired report. Then repeat it, closing the dialog *while the import is
-still resolving* — this is the path #6 fixed and the one most likely to strand a
-non-visual user.
+Evaluations → **Import paired report**. Then repeat it, closing the dialog
+*while the import is still resolving* — this is the path #6 fixed and the one
+most likely to strand a non-visual user.
 
 - `#report-summary` announces new / duplicate / conflict counts. If you closed
   the dialog early, is the outcome still announced, or did it announce into a
@@ -108,12 +112,16 @@ non-visual user.
 
 ### 5. Human review decision recording
 
-Review → open a paired case → record an approve and a reject, each with a
-rationale.
+There is no Review page; the decision is a dialog. Evaluations → an evaluation
+that already has an imported paired report → **Inspect report** → select the
+original `evaluation-report.json` from disk → record an **Approved (review
+opinion only)** and a **Rejected**, each with a rationale.
 
 - The decision is the one thing on this site a machine must never record. Is it
   unambiguous, by ear alone, which candidate you are deciding on?
 - Are the evidence and the limitations read before the decision buttons?
+- Per-case text is temporary and is cleared on close or navigation. Is that
+  conveyed before you start typing a rationale, or only discovered by losing it?
 - After recording, is the new state announced, or must you go looking?
 
 ### 6. Backup restore preview
