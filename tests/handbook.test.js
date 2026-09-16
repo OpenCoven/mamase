@@ -51,6 +51,27 @@ test("the model's steps equal the receipt's steps exactly", () => {
   assert.ok(model.next.title.length, "model.next must be decorated");
 });
 
+test("every branch returns exactly the documented eight keys, with an honest state and lane", () => {
+  const KEYS = ["blockers", "choices", "empty", "lane", "next", "run", "state", "steps"];
+
+  const empty = handbookModel(createWorkspace(), {});
+  assert.deepEqual(Object.keys(empty).sort(), KEYS, "empty-workspace branch");
+  assert.equal(empty.state, null, "no receipt ran, so state must not be invented");
+
+  const missingDataset = workspaceWith();
+  missingDataset.datasets = [];
+  const errored = handbookModel(missingDataset, {});
+  assert.deepEqual(Object.keys(errored).sort(), KEYS, "receipt-unavailable branch");
+  assert.equal(errored.state, null, "no receipt ran, so state must not be invented");
+
+  const workspace = workspaceWith();
+  const model = handbookModel(workspace, {});
+  const receipt = workflowReceipt(workspace, workspace.runs[0]);
+  assert.deepEqual(Object.keys(model).sort(), KEYS, "success branch");
+  assert.equal(model.state, receipt.state);
+  assert.equal(model.lane, receipt.lane);
+});
+
 test("every rendered step carries copy, and every receipt step ID is covered", () => {
   const model = handbookModel(workspaceWith(), {});
   for (const step of model.steps) {

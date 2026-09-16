@@ -93,7 +93,10 @@ function subject(workspace, runId) {
 export function handbookModel(workspace, { runId, capability, job } = {}) {
   const run = subject(workspace, runId);
   const choices = (workspace?.runs || []).map(({ id, name }) => ({ id, name }));
-  if (!run) return { empty: true, run: null, choices, lane: null, steps: FIRST_RUN, next: FIRST_RUN[0], blockers: [] };
+  if (!run) return { empty: true, run: null, choices, lane: null, steps: FIRST_RUN, next: FIRST_RUN[0], blockers: [], state: null };
+  // `lane` here decides the call shape below (and is reused in the error branch,
+  // where no receipt exists to ask). On the success path we return receipt.lane
+  // instead, so the module never reports a second, independently computed lane.
   const { lane } = detectLane(run);
   let receipt;
   try {
@@ -101,11 +104,14 @@ export function handbookModel(workspace, { runId, capability, job } = {}) {
       ? workflowReceipt(workspace, run, { capability, job })
       : workflowReceipt(workspace, run);
   } catch (error) {
-    return { empty: false, run, choices, lane, steps: [], next: null, blockers: [{ code: "receipt-unavailable", message: error.message }] };
+    // No receipt ran, so there is no state to report. `null` is the honest
+    // value; inventing one (e.g. "blocked") would be exactly the
+    // recomputation this module exists to avoid — read blockers.length instead.
+    return { empty: false, run, choices, lane, steps: [], next: null, blockers: [{ code: "receipt-unavailable", message: error.message }], state: null };
   }
   const nextStep = receipt.nextAction ? receipt.steps.find((step) => step.id === receipt.nextAction.step) : null;
   return {
-    empty: false, run, choices, lane,
+    empty: false, run, choices, lane: receipt.lane,
     steps: receipt.steps.map(decorate),
     next: nextStep ? decorate(nextStep) : null,
     blockers: receipt.blockers,
