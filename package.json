@@ -12,7 +12,7 @@
     "build:hosted": "node scripts/build-hosted.mjs",
     "lab": "node lab.mjs",
     "ops": "node ops.mjs",
-    "test": "node --test",
+    "test": "node --test --test-concurrency=1",
     "test:e2e": "node scripts/verify-ux.mjs",
     "test:training": "node scripts/verify-training.mjs",
     "validate": "node scripts/validate.mjs"
