@@ -687,16 +687,43 @@ function evaluationsPage() {
 
 const STEP_MARK = { done: "✓", next: "▸", blocked: "!", pending: "○", "not-applicable": "–" };
 
-function handbookStep(step, index) {
+// The steps whose action genuinely happens in this browser, not a terminal.
+// The old prose page linked to these; the spine's step copy (handbook.js,
+// owned separately) does not, so the link lives here instead. One link per
+// step, in the existing link() style -- never a rewrite of the step's own
+// copy or of the receipt's note, which stays exactly as workflow-receipt.mjs
+// wrote it for CLI parity.
+const STEP_LINKS = {
+  curate: () => link("Import a dataset", "#/datasets", "upload", "small quiet"),
+  plan: () => link("Open the lab", "#/playground", "lab", "small quiet"),
+  "human-review": () => link("Go to evaluations", "#/evaluations", "arrow", "small quiet"),
+};
+
+// "launch"'s receipt note is written for an agent (POST a command token to an
+// HTTP endpoint); the actual browser action is the launch button on this run's
+// own session page, so that step needs the run to link to rather than a fixed route.
+function handbookStepLink(step, run) {
+  if (step.id === "launch") return run ? link("Open this run's session", `#/sessions/${run.id}`, "arrow", "small quiet") : "";
+  return STEP_LINKS[step.id]?.() ?? "";
+}
+
+function handbookStep(step, index, run) {
+  const stepLink = handbookStepLink(step, run);
+  // handbookCapabilityState latches "failed" until this button (or a full
+  // reload) resets it, so a probe that failed before `npm run dev` was
+  // started would otherwise never get retried for the rest of the session.
+  const retryTrainer = step.id === "capability" && step.evidence?.state === "unreachable";
   return `<li class="handbook-step" data-step-state="${esc(step.state)}" data-step-id="${esc(step.id)}">
     <span class="handbook-mark" aria-hidden="true">${STEP_MARK[step.state] || "○"}</span>
     <div class="handbook-body">
       <h3>${String(index + 1).padStart(2, "0")} · ${esc(step.title)}<span class="handbook-state">${esc(step.state)}</span></h3>
       <p>${esc(step.purpose)}</p>
+      ${stepLink ? `<p class="handbook-step-link">${stepLink}</p>` : ""}
       ${step.requiresApproval ? `<p class="handbook-approval">${icon("local")} Needs your explicit go-ahead.</p>` : ""}
       ${step.command ? `<div class="handbook-command"><pre>${esc(step.command)}</pre>${button("Copy", "copy-command", "copy", "small quiet", `data-command="${esc(step.command)}" aria-label="Copy the ${esc(step.title)} command"`)}</div>
         ${hosted ? '<p class="help">Run this on your Mac. This hosted site cannot run or monitor training.</p>' : ""}` : ""}
       ${step.note ? `<p class="help">${esc(step.note)}</p>` : ""}
+      ${retryTrainer ? `<p class="handbook-step-link">${button("Check trainer connection", "handbook-capability-retry", "local", "small quiet")}</p>` : ""}
       ${step.setup ? `<details id="handbook-setup-${esc(step.id)}" class="disclosure"><summary>One-time setup <span>Run in a terminal inside the Mamase folder</span></summary><pre>${esc(step.setup.commands)}</pre><p class="help">${esc(step.setup.note)}</p></details>` : ""}
       ${step.boundaries ? `<details class="disclosure"><summary>What this does not do</summary><p>${esc(step.boundaries)}</p></details>` : ""}
     </div></li>`;
@@ -752,7 +779,7 @@ function resourcesPage() {
         ${picker}
       </div>
       ${model.blockers.length ? `<div class="notice" role="status"><div><strong>Blocked</strong>${model.blockers.map((item) => `<p>${esc(item.message)}</p>`).join("")}</div></div>` : ""}
-      <ol id="handbook-steps" class="handbook-steps">${model.steps.map(handbookStep).join("")}</ol>
+      <ol id="handbook-steps" class="handbook-steps">${model.steps.map((step, index) => handbookStep(step, index, model.run)).join("")}</ol>
       <p class="help handbook-boundary">${HANDBOOK_BOUNDARY} ${model.empty ? "Import a dataset to begin." : "This page reads your saved workspace. It never inspects prepared bundles on disk; pass --bundle to npm run ops -- receipt to verify those files."}</p>
     </section>
     <section class="card"><h2>Work with an agent</h2>
@@ -1007,6 +1034,10 @@ const actions = {
   "reload-workspace": () => openModal("Reload the latest workspace?", `<p>Unsubmitted settings and dialog edits will be lost. Recipe drafts remain in this tab. Export the open workspace first if you need its older saved records.</p><div class="actions">${button("Cancel", "close-dialog", "", "quiet")}${button("Reload latest data", "confirm-reload", "", "primary")}</div>`),
   "confirm-reload": () => location.reload(),
   "local-refresh": (element) => { void training.watch(byId(workspace.runs, element.dataset.id), true); },
+  // Resets the latch in handbookCapabilityState so a probe that failed before
+  // `npm run dev` was running gets asked again, instead of reporting
+  // "unreachable" for the rest of the session with no way to retry.
+  "handbook-capability-retry": () => { handbookCapabilityState = "unset"; render(); void refreshHandbookCapability(); },
   "local-sync": flushTrainingUpdates,
   "run-details": () => {
     const details = document.querySelector("#run-technical");

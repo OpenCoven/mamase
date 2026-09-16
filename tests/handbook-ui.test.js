@@ -148,6 +148,56 @@ test("an empty workspace renders the first-run path", async (context) => {
   assert.deepEqual(errors, []);
 });
 
+test("the first-run curate and plan steps link to the browser pages that take those actions", async (context) => {
+  const { page, errors, base } = await fixture(context, createWorkspace());
+  await page.goto(`${base}/#/resources`);
+  await page.locator("#handbook-steps").waitFor();
+  await page.locator('[data-step-id="curate"] a[href="#/datasets"]').waitFor();
+  await page.locator('[data-step-id="plan"] a[href="#/playground"]').waitFor();
+  assert.deepEqual(errors, []);
+});
+
+test("the human-review step links to the evaluations page a human records the decision on", async (context) => {
+  const { page, errors, base } = await fixture(context, seeded());
+  await page.goto(`${base}/#/resources`);
+  await page.locator("#handbook-steps").waitFor();
+  await page.locator('[data-step-id="human-review"] a[href="#/evaluations"]').waitFor();
+  assert.deepEqual(errors, []);
+});
+
+test("the managed-mlx launch step links to this run's session page, where the launch button actually is", async (context) => {
+  const { page, errors, base } = await fixture(context, seededManaged());
+  await page.goto(`${base}/#/resources`);
+  await page.locator("#handbook-steps").waitFor();
+  await page.locator('[data-step-id="launch"] a[href="#/sessions/run-managed"]').waitFor();
+  assert.deepEqual(errors, []);
+});
+
+// handbookCapabilityState (app.js) is a module-level latch: once a probe
+// throws, the handbook used to report the runtime unreachable for the rest of
+// the session with no way to ask again, even after `npm run dev` was started.
+// Fail the first /api/training/capabilities request, then let it succeed, and
+// confirm the page's own "Check trainer connection" affordance recovers
+// without a reload.
+test("a capability probe that failed before the trainer started can be retried without a reload", async (context) => {
+  const { page, errors, base } = await fixture(context, seededManaged());
+  let attempt = 0;
+  await page.route("**/api/training/capabilities", (route) => {
+    attempt += 1;
+    if (attempt === 1) return route.abort();
+    return route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ enabled: true, available: true, busy: false, hosted: false }) });
+  });
+  await page.goto(`${base}/#/resources`);
+  await page.locator("#handbook-steps").waitFor();
+  const retry = page.locator('[data-action="handbook-capability-retry"]');
+  await retry.waitFor();
+  await retry.click();
+  await page.locator('[data-step-id="capability"][data-step-state="done"]').waitFor();
+  assert.equal(await page.locator('[data-action="handbook-capability-retry"]').count(), 0, "the retry affordance should disappear once the probe succeeds");
+  assert.ok(attempt >= 2, "the retry must issue a fresh request, not replay the cached failure");
+  assert.deepEqual(errors, []);
+});
+
 test("handing off exports the workspace and copies a prompt naming it", async (context) => {
   const { page, errors, base } = await fixture(context, seeded());
   await page.context().grantPermissions(["clipboard-read", "clipboard-write"]);
