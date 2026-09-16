@@ -1091,6 +1091,29 @@ const actions = {
   },
   "export-runs": () => download("coven-training-runs.csv", runsCsv(selectRuns(workspace.runs, ui)), "text/csv"),
   "export-workspace": () => download("coven-workspace.json", exportWorkspaceBackup(workspace, now())),
+  "agent-handoff": async () => {
+    const model = handbookState();
+    assert(model.run, "Save a recipe before handing this workspace to an agent.");
+    const filename = handoffFilename(now());
+    download(filename, exportWorkspaceBackup(workspace, now()));
+    const prompt = agentPrompt({ filename, run: model.run, lane: model.lane });
+    try {
+      await navigator.clipboard.writeText(prompt);
+      notify(`Workspace exported as ${filename}. The agent prompt is on your clipboard.`);
+    } catch {
+      openModal("Copy the agent prompt", `<p>The workspace was exported as <code>${esc(filename)}</code>, but this browser refused clipboard access. Copy the prompt below and hand it to an agent using <code>skills/mamase/SKILL.md</code>.</p><textarea class="handoff-prompt" rows="14" readonly>${esc(prompt)}</textarea>`);
+    }
+  },
+  "copy-command": async (element) => {
+    const command = element.dataset.command || "";
+    assert(command, "This step has no command to copy.");
+    try {
+      await navigator.clipboard.writeText(command);
+      notify("Command copied.");
+    } catch {
+      openModal("Copy the command", `<textarea class="handoff-prompt" rows="4" readonly>${esc(command)}</textarea>`);
+    }
+  },
   "restore-workspace": () => openModal("Restore a workspace backup", `<p>Choose a versioned Mamase backup or a legacy workspace v1 JSON file. Preview its source and collection counts before confirming replacement. The workspace payload must fit the 4 MB storage budget.</p>${field("Workspace JSON backup", "file", "", { type: "file", attrs: 'accept=".json,application/json"' })}${formFooter("Preview backup")}`, "restore"),
   "reset-workspace": () => openModal("Reset local workspace", `<p class="warning">All recorded programs, dataset metadata, runs, artifacts, and evaluations in this browser will be removed. Export a backup first.</p>${field("Type RESET to confirm", "confirmation")}${formFooter("Reset workspace")}`, "reset"),
   "raw-backup": () => { const raw = localStorage.getItem(STORAGE_KEY); assert(raw !== null, "No stored data is available to download."); download("mamase-recovery.json", raw); },
@@ -1285,7 +1308,8 @@ document.addEventListener("click", (event) => {
     assert(!gated() || GATE_ACTIONS.has(element.dataset.action), "This workspace stays closed until an approved account is signed in.");
     const action = actions[element.dataset.action];
     assert(action, "This action is unavailable.");
-    action(element);
+    const result = action(element);
+    if (result && typeof result.then === "function") result.catch((error) => notify(error.message, true));
   } catch (error) {
     notify(error.message, true);
   }
@@ -1381,6 +1405,7 @@ document.addEventListener("change", (event) => {
     modalContext.suggestedPath = run.recipe.outputPath;
     return;
   }
+  else if (event.target.name === "handbook-run") { ui.handbookRun = event.target.value; render(); return; }
   else return;
   ui.runPage = 1;
   updateRunResults();
