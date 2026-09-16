@@ -11,6 +11,16 @@ const oneLine = (value, limit = 120) =>
     .slice(0, limit)
     .trim();
 
+// filename and run.id become bare, unquoted command-line arguments below, so
+// `~/Downloads/...` still expands (`~` does not expand inside double quotes).
+// Quoting cannot make an arbitrary string safe here either: quotes stop word
+// splitting but not an embedded quote, `$(...)`, a backtick or `/` from
+// breaking out of the argument or escaping the Downloads folder
+// (`../../.ssh/id_rsa`). Constrain both to this class instead; anything that
+// does not match falls back to a known-safe value.
+const SAFE_ARG = /^[A-Za-z0-9._-]+$/;
+const safeArg = (value, fallback) => (SAFE_ARG.test(value) ? value : fallback);
+
 /** A dated, single-segment filename so repeated handoffs stay distinguishable. */
 export function handoffFilename(date) {
   return `coven-workspace-${new Date(date).toISOString().slice(0, 10)}.json`;
@@ -33,8 +43,8 @@ const ACTION_LANES = ["peft", "managed-mlx"];
  * by construction — only the three fields below are read.
  */
 export function agentPrompt({ filename, run, lane }) {
-  const file = oneLine(filename, 200) || "coven-workspace.json";
-  const id = oneLine(run?.id, 80) || "MISSING-RUN-ID";
+  const file = safeArg(oneLine(filename, 200), "coven-workspace.json");
+  const id = safeArg(oneLine(run?.id, 80), "MISSING-RUN-ID");
   const name = oneLine(run?.name, 120);
   const cleanLane = oneLine(lane, 40);
   const path = `~/Downloads/${file}`;
@@ -46,8 +56,8 @@ export function agentPrompt({ filename, run, lane }) {
     `Lane      : ${cleanLane}`,
     "",
     "Start here:",
-    `  npm run ops -- inspect --workspace "${path}"`,
-    `  npm run ops -- receipt --workspace "${path}" --run ${id}`,
+    `  npm run ops -- inspect --workspace ${path}`,
+    `  npm run ops -- receipt --workspace ${path} --run ${id}`,
     "",
   ];
   if (ACTION_LANES.includes(cleanLane)) {

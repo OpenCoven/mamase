@@ -26,8 +26,8 @@ test("the prompt is structurally well-formed: one line per field, two well-forme
 
   const inspectLine = prompt.split("\n").find((l) => l.includes("inspect --workspace"));
   const receiptLine = prompt.split("\n").find((l) => l.includes("receipt --workspace"));
-  assert.match(inspectLine, /^ {2}npm run ops -- inspect --workspace "[^"]+"$/);
-  assert.match(receiptLine, /^ {2}npm run ops -- receipt --workspace "[^"]+" --run run-4f2a$/);
+  assert.match(inspectLine, /^ {2}npm run ops -- inspect --workspace ~\/Downloads\/[A-Za-z0-9._-]+$/);
+  assert.match(receiptLine, /^ {2}npm run ops -- receipt --workspace ~\/Downloads\/[A-Za-z0-9._-]+ --run run-4f2a$/);
 });
 
 test("the prompt never carries secrets, workspace contents, or any other caller-supplied field", () => {
@@ -88,21 +88,47 @@ test("a missing filename or run id falls back to an obvious placeholder, never a
   }
 });
 
-test("long values are clamped and slicing never leaves a trailing space inside a quoted command", () => {
-  // The 200th character is a space, so a naive trim-before-slice would cut
-  // right after it and leave a dangling space before the closing quote.
-  const filename = `${"x".repeat(199)} ${"y".repeat(50)}`;
-  const prompt = agentPrompt({ filename, run, lane: "peft" });
+test("the ordinary case emits an unquoted workspace path so ~ expands, and legitimate values pass through unchanged", () => {
+  const prompt = agentPrompt({ filename: "coven-workspace-2026-09-16.json", run, lane: "peft" });
   const inspectLine = prompt.split("\n").find((l) => l.includes("inspect --workspace"));
-  assert.match(inspectLine, /^ {2}npm run ops -- inspect --workspace "[^"\s][^"]*[^"\s]"$/);
-  const captured = inspectLine.match(/Downloads\/([^"]*)"/)[1];
-  assert.equal(captured.length, 199, "the clamp must trim after slicing, not before");
+  const receiptLine = prompt.split("\n").find((l) => l.includes("receipt --workspace"));
+  assert.equal(inspectLine, "  npm run ops -- inspect --workspace ~/Downloads/coven-workspace-2026-09-16.json");
+  assert.equal(receiptLine, "  npm run ops -- receipt --workspace ~/Downloads/coven-workspace-2026-09-16.json --run run-4f2a");
 });
 
-test("a workspace path containing a space stays a single quoted command argument", () => {
-  const prompt = agentPrompt({ filename: "my file.json", run, lane: "peft" });
-  const inspectLine = prompt.split("\n").find((l) => l.includes("inspect --workspace"));
-  assert.equal(inspectLine, '  npm run ops -- inspect --workspace "~/Downloads/my file.json"');
+test("a filename that could become more than one shell argument is rejected and falls back", () => {
+  const hostileFilenames = [
+    "my file.json",
+    'x".json',
+    "$(whoami).json",
+    "`whoami`.json",
+    "../../.ssh/id_rsa",
+  ];
+  for (const filename of hostileFilenames) {
+    const prompt = agentPrompt({ filename, run, lane: "peft" });
+    assert.ok(!prompt.includes(filename), `hostile filename ${JSON.stringify(filename)} must not reach the output`);
+    assert.match(prompt, /coven-workspace\.json/, `hostile filename ${JSON.stringify(filename)} must fall back`);
+  }
+});
+
+test("a run id that could become more than one shell argument is rejected and falls back", () => {
+  const hostileIds = ["run 1", "$(whoami)", 'run"1', "run;rm -rf ~"];
+  for (const id of hostileIds) {
+    const prompt = agentPrompt({ filename: "w.json", run: { id, name: "X" }, lane: "peft" });
+    assert.ok(!prompt.includes(id), `hostile run id ${JSON.stringify(id)} must not reach the output`);
+    assert.match(prompt, /MISSING-RUN-ID/, `hostile run id ${JSON.stringify(id)} must fall back`);
+  }
+});
+
+test("a long run name is clamped and slicing never leaves a trailing space inside the quotes", () => {
+  // The 120th character is a space, so a naive trim-before-slice would cut
+  // right after it and leave a dangling space before the closing quote.
+  const name = `${"x".repeat(119)} ${"y".repeat(50)}`;
+  const prompt = agentPrompt({ filename: "w.json", run: { id: "run-1", name }, lane: "peft" });
+  const runLine = fieldLine(prompt, "Run");
+  assert.match(runLine, /^Run\s+:\s+run-1\s+"[^"\s][^"]*[^"\s]"$/);
+  const captured = runLine.match(/"([^"]*)"$/)[1];
+  assert.equal(captured.length, 119, "the clamp must trim after slicing, not before");
 });
 
 test("handoffFilename produces a dated, single-segment name", () => {
