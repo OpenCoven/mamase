@@ -940,6 +940,33 @@ try {
     assert.equal(await structurePage.evaluate(() => document.activeElement?.textContent?.trim()), "Import JSONL",
       `closing the dialog with ${dismiss} must return focus to the control that opened it`);
   }
+  // A successful submission re-renders the page, which destroys whatever the keyboard was on. The
+  // toast announces the outcome either way, so nothing on screen reveals that focus was lost -- but
+  // a keyboard user is returned to the first Tab stop and has to walk back, nineteen stops on
+  // settings. Both shapes are covered: an in-page form, and a dialog form that does not navigate.
+  await go(structurePage, "settings");
+  const nameField = structurePage.getByLabel("Workspace name", { exact: true });
+  await nameField.fill("Focus after submit");
+  await keyboardActivate(structurePage, structurePage.getByRole("button", { name: "Save name", exact: true }));
+  await structurePage.locator("#toast").waitFor();
+  assert.notEqual(await structurePage.evaluate(() => document.activeElement === document.body), true,
+    "saving the workspace name must leave focus on a control, not drop it to <body>");
+
+  await go(structurePage, "datasets");
+  await keyboardActivate(structurePage, structurePage.getByRole("button", { name: "Import JSONL", exact: true }));
+  await structurePage.locator("dialog[open]").waitFor();
+  await structurePage.getByLabel("Dataset name", { exact: true }).fill("Focus after dialog submit");
+  await structurePage.locator('dialog[open] input[type="file"]').setInputFiles({
+    name: "focus.jsonl", mimeType: "application/x-ndjson",
+    buffer: Buffer.from(Array.from({ length: 12 }, (_, index) =>
+      JSON.stringify({ prompt: `Question ${index}`, response: `Answer ${index}` })).join("\n")),
+  });
+  await structurePage.getByLabel("Provenance & permission", { exact: true }).fill("Synthetic focus fixture.");
+  await structurePage.getByRole("button", { name: "Import dataset", exact: true }).click();
+  await structurePage.locator("dialog[open]").waitFor({ state: "hidden" });
+  assert.notEqual(await structurePage.evaluate(() => document.activeElement === document.body), true,
+    "a dialog that saves without navigating must hand focus back, not drop it to <body>");
+
   await structureContext.close();
 
   const statusData = fixture();

@@ -32,3 +32,20 @@ export function mergeTrainingJob(workspace, job) {
   }
   return next;
 }
+
+// What a training run shows versus what it says. The visible count changes on every reported step,
+// which is right to look at and wrong to listen to: as a live region it queued one announcement per
+// flush -- up to five a second -- and a screen reader falls behind the run reading a backlog of step
+// counts. `milestone` only changes each tenth of the way, or when the status does, so the announced
+// region is written far less often than the visible one. The exact count stays available on demand
+// through the progress bar's aria-valuetext.
+export function trainingProgress(step, totalSteps, status) {
+  const percent = totalSteps > 0 ? Math.floor(Math.min(step, totalSteps) / totalSteps * 100) : 0;
+  const tenth = Math.floor(percent / 10) * 10;
+  return {
+    percent,
+    text: `${step} of ${totalSteps} learning updates reported`,
+    milestone: `${tenth}:${status}`,
+    announcement: `${status}, ${percent}% \u2014 ${step} of ${totalSteps} learning updates reported`,
+  };
+}

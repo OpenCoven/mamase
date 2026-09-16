@@ -88,13 +88,24 @@ Open the saved run → **Start training**, then interrupt it: cancel it from the
 page, or stop the local trainer process. Managed MLX only; a terminal-trained
 run reports through import instead, which flow 4 covers.
 
-- `#live-progress-text` announces streamed progress. Over a run of any length,
-  is that a useful heartbeat or a barrage? A `role="status"` that fires on every
-  reported step can make the page unusable while training.
-- When the run is interrupted, does the reader learn it **stopped**, and does it
-  distinguish cancelled from failed?
-- `#live-progress-bar` is a `progressbar` with an accessible name. Does VoiceOver
-  give you a percentage, or just the name?
+Progress is deliberately split here, and this flow is where that split gets its
+only real test:
+
+| Element | Changes | Announced |
+|---|---|---|
+| `#live-progress-text` | every reported step | no — visible only |
+| `#live-progress-announcement` | each tenth, and on any status change | yes, politely |
+| `#live-progress-bar` `aria-valuetext` | every reported step | on demand, when you ask |
+
+- Is one announcement per tenth the right cadence — too sparse to follow, or
+  still too much? It was one per reported step, throttled to 200ms, which is up
+  to five queued announcements a second; over a 500-step run the split takes 501
+  announcements down to 11.
+- When you ask the progress bar for its value, do you get the exact count
+  (`aria-valuetext`), or only the percentage the browser computes?
+- When the run is interrupted, does the reader learn it **stopped** at once, and
+  does it distinguish cancelled from failed? A status change is supposed to
+  announce immediately rather than wait for the next tenth.
 
 ### 4. Paired report import, including the delayed-import dialog-close path
 
@@ -133,6 +144,37 @@ corrupt one.
   reader convey that **nothing was changed**? An atomic failure that sounds like
   a partial one is worse than a crash.
 - Is the version mismatch (v1 vs current) audible, or only visible?
+
+## What a keyboard-only sweep already established
+
+A scripted keyboard-only pass over these flows ran before this document was
+finalised. It is not the pass this issue asks for — it cannot judge whether an
+announcement is useful — but it settles the mechanical questions so you do not
+spend the session on them:
+
+- Every flow above is completable with Tab, Enter, Space and Escape. No step
+  needed a pointer, and no control was unreachable.
+- Rejecting the recipe form moves focus to the first invalid field, marks every
+  invalid field `aria-invalid`, and `#recipe-readiness` names exactly what is
+  missing.
+- Both destructive dialogs focus their confirmation control on open and return
+  focus to the opener on Escape.
+- The review evidence dialog moves focus to its own title once evidence loads,
+  and puts provenance, cases and limitations ahead of the decision controls in
+  reading order.
+- One defect was found and fixed: **every submission that did not navigate left
+  focus on `<body>`** — the toast announced the outcome, so nothing on screen
+  revealed it, but the keyboard returned to the first Tab stop, nineteen of them
+  from the settings form.
+
+So the open questions are the ones about judgement, which is the whole point:
+cadence, sufficiency, and whether an outcome that sounds like success was one.
+
+One the sweep could not answer and is worth your attention: the warning that
+per-case review text is temporary appears on the file-selection dialog, before
+any evidence loads, and is gone by the time you are typing a rationale in the
+next dialog. That is the same for sighted users, so it is a design question
+rather than an accessibility defect — but it is a rationale you can lose.
 
 ## Recording findings
 

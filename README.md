@@ -1296,6 +1296,15 @@ evidence of real model training.
 See [the comprehensive UI/UX audit](UI-UX-AUDIT.md) for the findings, implemented
 enhancements, and review boundaries.
 
+Training progress is deliberately split between what is shown and what is said.
+`#live-progress-text` changes on every reported step and is **not** a live
+region; `#live-progress-announcement` announces each tenth of the way and on any
+status change; and the exact count stays available on demand through the
+progress bar's `aria-valuetext`. Announcing every step made the page unusable
+with a screen reader — flushes are throttled to 200ms, so a polite region
+queued up to five announcements a second and the reader fell behind the run.
+Over a 500-step run the split is 11 announcements instead of 501.
+
 `npm run test:e2e` also sweeps every route, using `scripts/ux-structure.mjs`, for
 the structure a keyboard-only or screen-reader user navigates by: one `h1` per page, no skipped heading levels, an
 accessible name and a visible focus indicator on every Tab stop, one `main`

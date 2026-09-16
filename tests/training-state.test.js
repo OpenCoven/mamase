@@ -1,7 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { createWorkspace, createRun, recordProgress, validateWorkspace, validateRecipe } from "../workspace.js";
-import { trainingIdentity, mergeTrainingJob, managedRecipeIssue } from "../training-state.js";
+import { trainingIdentity, mergeTrainingJob, managedRecipeIssue, trainingProgress } from "../training-state.js";
 import { exportWorkspaceBackup, parseWorkspaceBackup } from "../backups.js";
 
 function fixture() {
@@ -57,4 +57,37 @@ test("workflow selection persists without adding fields to legacy recipe identit
   assert.throws(() => validateRecipe({ ...recipe, workflow: "cli" }, workspace), /familiar/i);
   assert.throws(() => validateRecipe({ ...recipe, workflow: "managed", adapter: "dora" }, workspace), /LoRA/);
   assert.match(managedRecipeIssue({ ...recipe, workflow: "cli" }), /terminal|CLI/);
+});
+
+// #44: what a run shows versus what it says. The visible step count and the announced milestone are
+// driven from the same call, so the only thing that keeps a screen reader from reading a backlog of
+// step counts is that the milestone changes far less often. That ratio is the contract.
+test("training progress is shown every step but announced only each tenth of the way", () => {
+  const totalSteps = 500;
+  const shown = new Set();
+  const announced = new Set();
+  for (let step = 0; step <= totalSteps; step++) {
+    const progress = trainingProgress(step, totalSteps, "running");
+    shown.add(progress.text);
+    announced.add(progress.milestone);
+  }
+  assert.equal(shown.size, totalSteps + 1, "the visible count must still change on every reported step");
+  // 0,10,...,100 -- eleven, not five hundred. This is the whole point of the split.
+  assert.equal(announced.size, 11, `announced ${announced.size} times over ${totalSteps} steps`);
+});
+
+test("a status change announces immediately, without waiting for the next tenth", () => {
+  const running = trainingProgress(37, 100, "running");
+  const cancelled = trainingProgress(37, 100, "cancelled");
+  assert.equal(running.percent, cancelled.percent);
+  assert.notEqual(running.milestone, cancelled.milestone,
+    "stopping must be announced at once; a run that ends mid-tenth would otherwise stay silent");
+  assert.match(cancelled.announcement, /cancelled/);
+});
+
+test("the announcement always carries the exact count, and degenerate totals do not divide by zero", () => {
+  assert.match(trainingProgress(42, 500, "running").announcement, /42 of 500 learning updates reported/);
+  assert.equal(trainingProgress(0, 0, "planned").percent, 0);
+  // A trainer that over-reports must not produce more than 100%.
+  assert.equal(trainingProgress(700, 500, "running").percent, 100);
 });
