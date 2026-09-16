@@ -102,42 +102,53 @@ gh issue list --repo OpenCoven/mamase --label status:blocked
 gh issue list --repo OpenCoven/mamase --milestone "Reliable local experiments v1"
 ```
 
-## Automation and required checks
+## Validation and required checks
 
-`.github/workflows/validation.yml` runs the same `scripts/validate.mjs` commands
-as the [complete local gate](../README.md#reproducible-validation), on PRs,
-pushes to `main`, and manual dispatch. Expected check names are stable:
+There is no hosted CI. `.github/workflows/validation.yml` was removed because
+this repository is private and the organization's Actions spending limit refuses
+to provision runners for it: every job was rejected before its first step with
+"the job was not started because recent account payments have failed or your
+spending limit needs to be increased". A workflow that cannot start is not a
+gate, and a permanently red check is worse than an honest absence of one.
 
-| Check | Executed scope |
+The gate is therefore local and mandatory, and it is the same one the workflow
+ran:
+
+```bash
+npm run validate -- all
+```
+
+| Lane | Executed scope |
 | --- | --- |
-| `Node 22 / workspace` | Full existing Node suite; two explicitly excluded optional ML cases |
-| `Node 24 / workspace` | Same suite on Node 24, including local WorkOS/auth/hosted fixtures |
-| `Python 3.14 / CPU adapters` | Python 3.14.7, exact pinned requirements, actual CPU adapters/evaluator/preflight, zero skips |
-| `Chromium / UX and protocol` | Existing `verify-ux.mjs` plus `verify-training.mjs --protocol-fixture`; no real MLX claim |
+| `node-22` | Full existing Node suite; two explicitly excluded optional ML cases |
+| `node-24` | Same suite on Node 24, including local WorkOS/auth/hosted fixtures |
+| `cpu` | Python 3.14.7, exact pinned requirements, actual CPU adapters/evaluator/preflight, zero skips |
+| `browser` | Existing `verify-ux.mjs` plus `verify-training.mjs --protocol-fixture`; no real MLX claim |
 
-Permissions are `contents: read`; checkout does not retain credentials. Jobs
-have 15/30-minute limits; newer runs cancel superseded runs for the same PR/ref.
+`all` runs every lane in one process and needs `MAMASE_NODE_22` and
+`MAMASE_NODE_24` pointing at installed Node 22 and 24 executables; a lane that
+cannot run is reported as unrun, never as passing. Single lanes remain available
+as `npm run validate -- node|cpu|browser`. `npm test` is pinned to
+`--test-concurrency=1` so it matches the gate rather than racing shared fixtures.
+
+Each run writes a bounded `mamase.local-validation.v1` summary under
+`.validation/run-*/`, recording the commit, whether the tree was dirty, and each
+lane's steps. It records local command execution only: it is not a hosted
+approval, a branch-protection status, or permission to promote an adapter.
+
 No secrets, real model downloads, provider accounts, or private fixtures are
-needed. Install dependencies from the committed lockfiles/pins; there is no
-cache of familiar data or model outputs.
+needed. Install dependencies from the committed lockfiles/pins. Browser evidence
+stays local: new synthetic contexts, service workers disabled, non-loopback
+requests blocked. Datasets, identity files, cases/reports, `.lab`, `.mamase`,
+workspaces, environments and caches are never collected.
 
-Only a failed browser job uploads evidence, retained for three days: the gate
-summary, a small synthetic failure JSON, and at most one CSS-resolution
-viewport PNG capped at 2 MiB. The artifact paths are an explicit allowlist.
-No traces, HAR, DOM/storage dumps, console logs, datasets, identity files,
-cases/reports, `.lab`, `.mamase`, general workspaces, environments or caches
-are uploaded. The runner uses new synthetic browser contexts, disables service
-workers and blocks non-loopback requests before transmission. Legacy optional
-`MAMASE_SCREENSHOTS` captures are local-only and are not passed through the gate
-or included in CI uploads.
-
-A maintainer must first observe all four genuine PR checks, review failure
-behavior/evidence, then manually select their exact check names in the intended
-branch protection/ruleset if required. This implementation does not change
-protections. Billing/provider refusal remains an operator-owned external
-blocker; a successful local gate neither bypasses that policy nor supplies
-hosted review approval. Missing dependency/interpreter and intentional browser
-failure paths are reproducible in `node --test tests/automation.test.js`.
+Billing/provider refusal remains an operator-owned external blocker; a successful
+local gate neither bypasses that policy nor supplies hosted review approval. If
+the Actions spending limit is later raised, restoring a workflow is a deliberate
+choice to be made then — it should invoke `npm run validate -- all` as one job,
+since per-job checkout, install and browser setup are metered on a private
+repository. Missing dependency/interpreter and intentional browser failure paths
+remain reproducible in `node --test tests/automation.test.js`.
 
 ## Accessibility evidence and limits
 
