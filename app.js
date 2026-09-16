@@ -8,7 +8,7 @@ import {
 import { icon, button, link, field, select, badge, empty, table, formatDate, formatBytes, progress, lossChart } from "./ui.js";
 import { DRAFT_KEY, RUN_PAGE_SIZE, parseRoute, runUrl, selectRuns, searchWorkspace, compareEvaluations, readRecipeDraft } from "./experience.js";
 import { TrainingClient, encodeDataset, localJobActive } from "./training-client.js";
-import { mergeTrainingJob, trainingIdentity, managedRecipeIssue } from "./training-state.js";
+import { mergeTrainingJob, trainingIdentity, managedRecipeIssue, trainingProgress } from "./training-state.js";
 import { trainingWorkflow, runGuidance, formatLoss, lossReading, modelName } from "./training-guide.js";
 import { MAX_BACKUP_BYTES, exportWorkspaceBackup, parseWorkspaceBackup } from "./backups.js";
 import { AuthClient } from "./auth-client.js";
