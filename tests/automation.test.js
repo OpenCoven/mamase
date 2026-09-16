@@ -120,11 +120,15 @@ test("existing browser runner produces real bounded synthetic failure artifacts"
 
 test("workflow uses shared gates, stable jobs and an exact failure-artifact allowlist", async () => {
   const workflow = await readFile(join(root, ".github/workflows/validation.yml"), "utf8");
+  // One job, not four: this repo is private, so every duplicated checkout/npm ci/Chromium/torch
+  // install was metered. Coverage is unchanged - validate.mjs "all" runs all four lanes in-process,
+  // and MAMASE_NODE_22/24 must both stay wired or a Node major would silently stop being tested.
   for (const required of ["contents: read", "persist-credentials: false", "cancel-in-progress: true",
-    "node: [22, 24]", "python-version: '3.14.7'", "Node ${{ matrix.node }} / workspace",
-    "Python 3.14 / CPU adapters", "Chromium / UX and protocol", "timeout-minutes: 15",
-    "timeout-minutes: 30", "npm run validate -- node", "npm run validate -- cpu",
-    "npm run validate -- browser", "if: failure()", "retention-days: 3"]) assert.ok(workflow.includes(required), required);
+    "python-version: '3.14.7'", "Node 22 & 24 / CPU adapters / Chromium", "timeout-minutes: 45",
+    "node-version: 22", "node-version: 24", "MAMASE_NODE_22", "MAMASE_NODE_24",
+    "npm run validate -- all", "if: failure()", "retention-days: 3"]) assert.ok(workflow.includes(required), required);
+  const jobNames = [...(workflow.split(/^jobs:$/m)[1] ?? "").matchAll(/^  ([a-z][a-z0-9-]*):$/gm)].map((match) => match[1]);
+  assert.deepEqual(jobNames, ["validate"], "validation stays a single metered job");
   const paths = workflow.split("          path: |\n")[1].split("          retention-days:")[0].trim().split("\n").map((line) => line.trim());
   assert.deepEqual(paths, [".validation/run-*/summary.json", ".validation/run-*/browser/failure.json", ".validation/run-*/browser/failure.png"]);
   assert.ok(!/pull_request_target|secrets\.|actions\/cache|permissions: write/.test(workflow));
