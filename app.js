@@ -693,10 +693,16 @@ const STEP_MARK = { done: "✓", next: "▸", blocked: "!", pending: "○", "not
 // step, in the existing link() style -- never a rewrite of the step's own
 // copy or of the receipt's note, which stays exactly as workflow-receipt.mjs
 // wrote it for CLI parity.
+const docsLink = (label, href) => `<a class="button small quiet" href="${esc(href)}" target="_blank" rel="noreferrer">${icon("external")}${label}</a>`;
+
 const STEP_LINKS = {
   curate: () => link("Import a dataset", "#/datasets", "upload", "small quiet"),
   plan: () => link("Open the lab", "#/playground", "lab", "small quiet"),
   "human-review": () => link("Go to evaluations", "#/evaluations", "arrow", "small quiet"),
+  // The prose page this spine replaced carried these two references; the steps
+  // that name the techniques are where they belong.
+  train: () => docsLink("PEFT adapter techniques", "https://huggingface.co/docs/peft/main/en/package_reference/lora"),
+  job: () => docsLink("MLX-LM documentation", "https://github.com/ml-explore/mlx-lm"),
 };
 
 // "launch"'s receipt note is written for an agent (POST a command token to an
