@@ -489,7 +489,26 @@ git log -1 --pretty='%h %G?'
 **Files:**
 - Modify: `app.js` (imports, `ui` object, replace `resourcesPage`)
 - Modify: `styles.css`
+- Modify: `public-assets.mjs` (serve the two new browser modules)
+- Modify: `scripts/verify-ux.mjs` (its assertions target the page being replaced)
 - Test: `tests/handbook-ui.test.js`
+
+**Before anything else — the page cannot load without this.** `app.js` now imports
+`./handbook.js` and `./agent-handoff.js`, and `public-assets.mjs` is an explicit
+allowlist: a module missing from it is a 404 and the page dies on load. Add both:
+
+```js
+  ["/handbook.js", ["handbook.js", "text/javascript"]],
+  ["/agent-handoff.js", ["agent-handoff.js", "text/javascript"]],
+```
+
+**The UX gate asserts against the page you are deleting.** `scripts/verify-ux.mjs`
+checks the old prose page by heading text ("Check before loading weights."), a
+literal preflight `<pre>`, and a list of caveat substrings. Replacing
+`resourcesPage()` breaks all of it. Re-point those assertions at the new spine and
+preserve their intent: the boundaries must still be present (now inside the
+per-step disclosures), and rendering the handbook must still write nothing to the
+workspace.
 
 - [ ] **Step 1: Write the failing test**
 
