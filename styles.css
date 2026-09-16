@@ -863,7 +863,13 @@ dialog.case-review { width: min(1100px, calc(100vw - 32px)); max-width: 1100px; 
 .handbook-step { display: flex; gap: 14px; padding: 16px 0; border-top: 1px solid var(--line); }
 .handbook-step:first-child { border-top: none; padding-top: 4px; }
 .handbook-mark { flex-shrink: 0; width: 22px; height: 22px; display: grid; place-items: center; border-radius: 50%; background: var(--selected); font-size: 12px; }
-.handbook-step[data-step-state="pending"] { opacity: .66; }
+/* De-emphasise pending steps without dropping text below AA contrast: opacity
+   composited already-muted text over the card surface fell to ~2.8:1 (light)
+   and ~3.4:1 (dark). Reuse --muted/--wash, which already meet 4.5:1 on
+   --surface, instead of dimming everything including the readable text. */
+.handbook-step[data-step-state="pending"] .handbook-mark { background: var(--wash); }
+.handbook-step[data-step-state="pending"] h3 { color: var(--muted); }
+.handbook-step[data-step-state="pending"] .disclosure > summary { color: var(--muted); }
 .handbook-body { min-width: 0; flex: 1; }
 .handbook-body h3 { margin: 2px 0 6px; font-size: 14px; display: flex; gap: 10px; align-items: baseline; }
 .handbook-state { font: 9px/1.5 var(--font-mono); text-transform: uppercase; letter-spacing: 1.2px; color: var(--muted); }
