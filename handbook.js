@@ -13,8 +13,8 @@ export const STEP_COPY = {
   },
   prepare: {
     title: "Prepare the bundle",
-    purpose: "Freeze the recipe, dataset split and declared familiar context into a bundle directory.",
-    boundaries: "Preparation does not train, download models, or authenticate coven membership. Selected familiar context needs inspect-context review and --context-sha256.",
+    purpose: "Freeze the recipe, dataset split and declared familiar context into a bundle directory. Selected familiar context needs inspect-context review and --context-sha256.",
+    boundaries: "Preparation does not train, download models, or authenticate coven membership.",
   },
   preflight: {
     title: "Preflight",
@@ -24,17 +24,17 @@ export const STEP_COPY = {
   train: {
     title: "Train",
     purpose: "Run the identity-bound trainer yourself against the prepared bundle.",
-    boundaries: "This is the only step that trains, and it needs your explicit go-ahead for this run. Finishing is not approval to deploy.",
+    boundaries: "It needs your explicit go-ahead for this run, and finishing is not approval to deploy.",
   },
   evaluate: {
     title: "Evaluate",
-    purpose: "Compare base and adapter on an independent, versioned suite and import the report.",
-    boundaries: "Rule checks are not semantic certification. Independence depends on declared suite lineage and history.",
+    purpose: "Compare base and adapter responses on a versioned suite and import the report.",
+    boundaries: "Rule checks are not semantic certification, and the report's independence is \"unverified\" unless both --history and --task-lineage were supplied when it was generated.",
   },
   "human-review": {
     title: "Human review",
     purpose: "A person reads the private outputs and records a decision.",
-    boundaries: "Only a human records a decision. An agent judgment is a recommendation, never a human opinion, and no decision here deploys or promotes anything.",
+    boundaries: "An agent judgment is a recommendation, never a human opinion, and no decision here deploys or promotes anything.",
   },
   capability: {
     title: "Check the local runtime",
@@ -68,35 +68,52 @@ export const STEP_COPY = {
   },
 };
 
+// The "plan" entry is sourced from STEP_COPY, not duplicated, so the two copies
+// of this step's wording cannot drift apart again.
 const FIRST_RUN = [
   {
     id: "curate", state: "next", title: "Curate the examples",
     purpose: "Import JSONL with messages or prompt/response records, and set a holdout aside before training.",
     boundaries: "Import saves a description and fingerprint, not the examples themselves. Do not train on private material without permission.",
   },
-  {
-    id: "plan", state: "pending", title: "Plan a recipe",
-    purpose: "Choose the dataset, base model and configuration for your first attempt.",
-    boundaries: "Saving a recipe starts nothing.",
-  },
+  { id: "plan", state: "pending", ...STEP_COPY.plan },
 ];
 
-const decorate = (step) => ({ ...step, ...(STEP_COPY[step.id] || { title: step.id, purpose: "", boundaries: "" }) });
+// A fresh array of fresh objects on every call: FIRST_RUN and its entries are
+// module-level and must never be handed out by reference, or mutating one
+// caller's copy would poison every later model.
+const firstRun = () => FIRST_RUN.map((step) => ({ ...step }));
 
-/** The run the handbook adopts: an explicit choice, else the most recently updated. */
+// Copy first, receipt last: a colliding key (e.g. a copy entry that happened to
+// be named `note` or `requiresApproval`) can never shadow real receipt data.
+const decorate = (step) => ({ ...(STEP_COPY[step.id] || { title: step.id, purpose: "", boundaries: "" }), ...step });
+
+/**
+ * The run the handbook adopts: an explicit choice when it still exists, else the
+ * most recently updated. A stale or unknown runId (a deep link to a deleted run)
+ * falls back to the most recent run rather than to the empty branch, which would
+ * falsely claim the workspace has no runs while `choices` lists real ones.
+ */
 function subject(workspace, runId) {
   if (!workspace?.runs?.length) return null;
-  if (runId) return workspace.runs.find((run) => run.id === runId) || null;
-  return [...workspace.runs].sort((left, right) => String(left.updatedAt).localeCompare(String(right.updatedAt))).at(-1);
+  const chosen = runId ? workspace.runs.find((run) => run.id === runId) : null;
+  if (chosen) return chosen;
+  // A missing updatedAt sorts as "" (oldest), never as the most recent.
+  return [...workspace.runs].sort((left, right) => (left.updatedAt || "").localeCompare(right.updatedAt || "")).at(-1);
 }
 
 export function handbookModel(workspace, { runId, capability, job } = {}) {
   const run = subject(workspace, runId);
   const choices = (workspace?.runs || []).map(({ id, name }) => ({ id, name }));
-  if (!run) return { empty: true, run: null, choices, lane: null, steps: FIRST_RUN, next: FIRST_RUN[0], blockers: [], state: null };
-  // `lane` here decides the call shape below (and is reused in the error branch,
-  // where no receipt exists to ask). On the success path we return receipt.lane
-  // instead, so the module never reports a second, independently computed lane.
+  if (!run) {
+    const steps = firstRun();
+    return { empty: true, run: null, choices, lane: null, steps, next: steps[0], blockers: [], state: null };
+  }
+  // workflowReceipt calls this same pure detectLane on this same run, so the
+  // local `lane` and receipt.lane cannot diverge; on success we still return
+  // receipt.lane below so this module never reports a second, independently
+  // computed value. `lane` itself decides the call shape just below, and is
+  // also what the error branch reports, since no receipt exists there to ask.
   const { lane } = detectLane(run);
   let receipt;
   try {
@@ -109,11 +126,15 @@ export function handbookModel(workspace, { runId, capability, job } = {}) {
     // recomputation this module exists to avoid — read blockers.length instead.
     return { empty: false, run, choices, lane, steps: [], next: null, blockers: [{ code: "receipt-unavailable", message: error.message }], state: null };
   }
-  const nextStep = receipt.nextAction ? receipt.steps.find((step) => step.id === receipt.nextAction.step) : null;
+  const steps = receipt.steps.map(decorate);
+  // Resolved from the already-decorated steps, so model.next is always the
+  // same object reference as its entry in model.steps — identity is
+  // consistent with the empty branch above, where next === steps[0].
+  const next = receipt.nextAction ? steps.find((step) => step.id === receipt.nextAction.step) || null : null;
   return {
     empty: false, run, choices, lane: receipt.lane,
-    steps: receipt.steps.map(decorate),
-    next: nextStep ? decorate(nextStep) : null,
+    steps,
+    next,
     blockers: receipt.blockers,
     state: receipt.state,
   };
