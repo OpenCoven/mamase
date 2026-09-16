@@ -31,7 +31,7 @@ test("account setup is explicit and the offline workspace remains usable", async
   assert.equal(await page.evaluate(() => document.documentElement.scrollWidth), 390);
 });
 
-test("signed-in account controls escape profile text and sign out without deleting local records", async (context) => {
+test("an approved account reaches the workspace and signing out returns to the gate", async (context) => {
   let authenticated = true;
   let logoutRequests = 0;
   const auth = async (request, response, pathname) => {
@@ -44,7 +44,7 @@ test("signed-in account controls escape profile text and sign out without deleti
       authenticated = false;
       response.end(JSON.stringify({ logoutUrl: `http://${request.headers.host}/#/settings` }));
     } else response.end(JSON.stringify({
-      configured: true, authenticated,
+      configured: true, authenticated, approved: authenticated,
       user: authenticated ? { id: "user_fixture", email: "coven@example.test", firstName: "<b>Coven</b>", lastName: "Member" } : null,
     }));
     return true;
@@ -58,26 +58,56 @@ test("signed-in account controls escape profile text and sign out without deleti
   assert.match(await page.locator("#account-panel").innerText(), /coven@example.test/);
   assert.match(await page.locator("#account-panel").innerText(), /not.*sync|not.*isolated/i);
   await page.getByRole("button", { name: "Sign out", exact: true }).click();
-  await page.locator('#account-panel[data-phase="signed-out"]').waitFor();
+  await page.locator('main.gate[data-access="sign-in"]').waitFor();
+  assert.equal(await page.locator(".sidebar").count(), 0, "Signing out closes the workspace behind the gate");
+  assert.equal(await page.getByRole("button", { name: "Sign in", exact: true }).count(), 1);
   assert.equal(logoutRequests, 1);
   assert.deepEqual(await page.evaluate((key) => JSON.parse(localStorage.getItem(key)), STORAGE_KEY), workspace);
 });
 
-test("account errors are actionable without resetting workspace records", async (context) => {
+test("an account waiting for approval cannot move past the gate into any workspace view", async (context) => {
+  const auth = async (_request, response, pathname) => {
+    if (!pathname.startsWith("/api/auth/")) return false;
+    response.writeHead(200, { "Content-Type": "application/json" });
+    response.end(JSON.stringify({
+      configured: true, authenticated: true, approved: false,
+      user: { id: "user_pending", email: "outsider@example.test", firstName: "Out", lastName: "Sider" },
+      message: "Your account is not on the approved list for this deployment.",
+    }));
+    return true;
+  };
+  const { page, workspace, base } = await browserFixture(context, auth);
+  await page.goto(`${base}/#/home`);
+  const gate = page.locator('main.gate[data-access="pending"]');
+  await gate.waitFor();
+  assert.match(await gate.innerText(), /approval/i);
+  assert.match(await gate.innerText(), /outsider@example.test/);
+  assert.equal(await page.locator(".sidebar").count(), 0);
+  assert.equal(await page.getByRole("link", { name: "Datasets" }).count(), 0);
+  for (const view of ["sessions", "datasets", "checkpoints", "settings", "playground", "testing"]) {
+    await page.goto(`${base}/#/${view}`);
+    await gate.waitFor();
+    assert.equal(await page.locator(".sidebar, #account-panel, table").count(), 0, `The ${view} view must stay behind the gate`);
+  }
+  await page.keyboard.press("Control+k");
+  assert.equal(await page.locator("dialog[open]").count(), 0, "Workspace search stays closed behind the gate");
+  assert.deepEqual(await page.evaluate((key) => JSON.parse(localStorage.getItem(key)), STORAGE_KEY), workspace);
+});
+
+test("account errors keep the workspace closed and stay actionable", async (context) => {
   let unavailable = true;
   const auth = async (_request, response, pathname) => {
     if (!pathname.startsWith("/api/auth/")) return false;
     response.writeHead(unavailable ? 503 : 200, { "Content-Type": "application/json" });
-    response.end(JSON.stringify(unavailable ? { error: "Account service unavailable. Try again." } : { configured: true, authenticated: false }));
+    response.end(JSON.stringify(unavailable ? { error: "Account service unavailable. Try again." } : { configured: true, authenticated: false, approved: false }));
     return true;
   };
   const { page, workspace, base } = await browserFixture(context, auth);
   await page.goto(`${base}/#/settings`);
-  await page.locator("#main h1").waitFor();
-  assert.equal(await page.getByRole("heading", { name: "Account", exact: true }).count(), 1);
-  await page.locator('#account-panel[data-phase="error"]').waitFor();
+  await page.locator('main.gate[data-access="error"]').waitFor();
+  assert.equal(await page.locator(".sidebar").count(), 0, "An unreachable account service must not open the workspace");
   unavailable = false;
-  await page.getByRole("button", { name: "Retry account connection", exact: true }).click();
-  await page.locator('#account-panel[data-phase="signed-out"]').waitFor();
+  await page.getByRole("button", { name: "Try again", exact: true }).click();
+  await page.locator('main.gate[data-access="sign-in"]').waitFor();
   assert.deepEqual(await page.evaluate((key) => JSON.parse(localStorage.getItem(key)), STORAGE_KEY), workspace);
 });

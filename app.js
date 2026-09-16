@@ -12,6 +12,7 @@ import { mergeTrainingJob, trainingIdentity, managedRecipeIssue } from "./traini
 import { trainingWorkflow, runGuidance, formatLoss, lossReading, modelName } from "./training-guide.js";
 import { MAX_BACKUP_BYTES, exportWorkspaceBackup, parseWorkspaceBackup } from "./backups.js";
 import { AuthClient } from "./auth-client.js";
+import { accessPhase, accessGateView, GATE_TITLES } from "./access-gate.js";
 import { syntheticSuiteTemplate, suiteAssessment } from "./evaluation-suites.js";
 import { readReviewFile, prepareReview, recordHumanDecision } from "./human-review.js";
 import { suiteFacts, decisionHistory, reviewBody, reviewAnnotations } from "./review-view.js";
@@ -23,7 +24,7 @@ const dialog = document.querySelector("#dialog");
 const toast = document.querySelector("#toast");
 const theme = window.mamaseTheme;
 const hosted = document.querySelector('meta[name="mamase-runtime"]')?.content === "hosted";
-const account = new AuthClient({ onChange: syncAccountControls });
+const account = new AuthClient({ onChange: accountChanged });
 const pendingTraining = new Map();
 const trainingSyncErrors = new Map();
 let submissionCount = 0;
@@ -145,6 +146,23 @@ function accountContent() {
 
 function accountSettings() {
   return `<section class="card account-card" id="account-panel" data-phase="${account.state.phase}" aria-live="polite">${accountContent()}</section>`;
+}
+
+function renderAccessGate(phase) {
+  modelPlayground.deactivate();
+  training.forget();
+  delete app.dataset.viewKey;
+  document.title = `${GATE_TITLES[phase] || "Access"} · Mamasé`;
+  app.innerHTML = accessGateView(phase, account.state, { busy: account.busy });
+}
+
+const GATE_ACTIONS = new Set(["sign-in", "sign-out", "auth-refresh"]);
+const gated = () => accessPhase(account.state) !== "open";
+
+function accountChanged() {
+  const gate = accessPhase(account.state);
+  if (gate !== "open" || app.querySelector(".gate-shell")) { render(); return; }
+  syncAccountControls();
 }
 
 function syncAccountControls() {
@@ -678,6 +696,8 @@ function settingsPage() {
 const pages = { home: homePage, projects: projectsPage, datasets: datasetsPage, sessions: runsPage, checkpoints: modelsPage, playground: labPage, testing: () => '<div id="model-playground"></div>', evaluations: evaluationsPage, resources: resourcesPage, settings: settingsPage };
 
 function render() {
+  const gate = accessPhase(account.state);
+  if (gate !== "open") { renderAccessGate(gate); return; }
   const { page, id } = route();
   if (page !== "testing" || storageError) modelPlayground.deactivate();
   const viewKey = `${page}/${id || ""}`;
@@ -714,6 +734,7 @@ function render() {
 function updateSidebarAccess() {
   const mobile = matchMedia("(max-width: 760px)").matches;
   const sidebar = document.querySelector(".sidebar");
+  if (!sidebar) return;
   const expanded = mobile && ui.menu;
   const toggle = document.querySelector('[data-action="toggle-menu"]');
   const focusWasInSidebar = sidebar.contains(document.activeElement);
@@ -735,6 +756,7 @@ function updateSidebarAccess() {
 
 function updateStorageNotice() {
   const notice = document.querySelector("#workspace-alert");
+  if (!notice) return;
   notice.hidden = !ui.conflict;
   document.querySelector("#main").classList.toggle("has-workspace-alert", ui.conflict);
   if (ui.conflict && !notice.childElementCount) notice.innerHTML = `<div><strong>This workspace changed in another tab.</strong><p>Your open forms have been kept. Reload the latest data before saving to avoid overwriting changes.</p><div class="actions">${button("Export open workspace", "export-workspace", "download", "small")}${button("Reload workspace", "reload-workspace", "", "small")}</div></div>`;
@@ -856,7 +878,8 @@ const actions = {
   "auth-refresh": () => account.refresh(),
   "sign-in": () => {
     assert(account.state.phase === "signed-out", "Check the account connection before signing in.");
-    location.assign(`/api/auth/login?returnTo=${encodeURIComponent("/#/settings")}`);
+    const returnTo = /^#\/[A-Za-z0-9/_-]{0,200}$/.test(location.hash) ? `/${location.hash}` : "/#/settings";
+    location.assign(`/api/auth/login?returnTo=${encodeURIComponent(returnTo)}`);
   },
   "sign-out": async () => location.assign(await account.logout()),
   theme: (element) => theme.setPreference(element.dataset.themeValue),
@@ -1223,6 +1246,7 @@ document.addEventListener("click", (event) => {
   const element = event.target.closest("[data-action]");
   if (!element) return;
   try {
+    assert(!gated() || GATE_ACTIONS.has(element.dataset.action), "This workspace stays closed until an approved account is signed in.");
     const action = actions[element.dataset.action];
     assert(action, "This action is unavailable.");
     action(element);
@@ -1235,6 +1259,7 @@ document.addEventListener("submit", async (event) => {
   const form = event.target.closest("[data-form]");
   if (!form) return;
   event.preventDefault();
+  if (gated()) { notify("This workspace stays closed until an approved account is signed in.", true); return; }
   const errorBox = form.querySelector(".form-error");
   errorBox.hidden = true;
   const submit = form.querySelector('[type="submit"]');
@@ -1326,7 +1351,7 @@ document.addEventListener("change", (event) => {
 });
 
 document.addEventListener("keydown", (event) => {
-  if ((event.metaKey || event.ctrlKey) && !event.altKey && event.key.toLowerCase() === "k" && workspace) {
+  if ((event.metaKey || event.ctrlKey) && !event.altKey && event.key.toLowerCase() === "k" && workspace && !gated()) {
     event.preventDefault();
     if (!dialog.open) actions.search();
   }

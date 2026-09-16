@@ -1,7 +1,7 @@
 export class AuthClient {
   constructor({ onChange }) {
     this.onChange = onChange;
-    this.state = { phase: "loading", user: null, message: "" };
+    this.state = { phase: "loading", user: null, approved: false, message: "" };
     this.busy = false;
     this.pending = null;
   }
@@ -38,10 +38,11 @@ export class AuthClient {
       }
       this.state = {
         phase: !session.configured ? "unconfigured" : user ? "signed-in" : "signed-out",
-        user, message: typeof session.message === "string" ? session.message : "",
+        user, approved: session.approved === true,
+        message: typeof session.message === "string" ? session.message : "",
       };
     } catch (error) {
-      this.state = { phase: "error", user: null, message: error.message };
+      this.state = { phase: "error", user: null, approved: false, message: error.message };
     }
     this.onChange();
   }
@@ -54,7 +55,7 @@ export class AuthClient {
       const { logoutUrl } = await this.request("logout", { method: "POST", headers: { "X-Mamase-Auth": "1" } });
       const destination = new URL(logoutUrl);
       if (destination.protocol !== "https:" && destination.origin !== location.origin) throw new Error("Invalid sign-out destination. Retry account connection.");
-      this.state = { phase: "signed-out", user: null, message: "" };
+      this.state = { phase: "signed-out", user: null, approved: false, message: "" };
       return destination.href;
     } finally {
       this.busy = false;
