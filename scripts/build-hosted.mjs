@@ -8,6 +8,8 @@ import { execFileSync } from "node:child_process";
 const project = fileURLToPath(new URL("../", import.meta.url));
 const output = join(project, "dist");
 const authActions = ["login", "callback", "session", "logout"];
+const functionEntries = [...authActions.map((action) => `api/auth/${action}.js`), "api/training/capabilities.js"];
+const sharedModules = ["auth-api.mjs", "access-list.mjs", "api-access.mjs", "hosted-training.mjs", "workos-provider.mjs"];
 const assets = new Map();
 for (const name of new Set([...publicAssets.values()].map(([name]) => name))) {
   const source = join(project, name);
@@ -23,22 +25,18 @@ for (const name of new Set([...publicAssets.values()].map(([name]) => name))) {
   }
   assets.set(name, content);
 }
-const authSources = new Map();
-for (const name of ["auth-api.mjs", "access-list.mjs", "workos-provider.mjs", ...authActions.map((action) => `api/auth/${action}.js`)]) {
+const functionSources = new Map();
+for (const name of [...sharedModules, ...functionEntries]) {
   const source = join(project, name);
   const info = await lstat(source);
-  assert.ok(info.isFile() && !info.isSymbolicLink(), `Auth source must be a regular file: ${name}`);
+  assert.ok(info.isFile() && !info.isSymbolicLink(), `Function source must be a regular file: ${name}`);
   const content = await readFile(source);
   execFileSync(process.execPath, ["--check", "--input-type=module"], { input: content, stdio: "pipe" });
-  authSources.set(name, content);
+  functionSources.set(name, content);
 }
 await rm(output, { recursive: true, force: true });
 await mkdir(output);
 for (const [name, content] of assets) await writeFile(join(output, name), content);
-await writeFile(join(output, "training-capabilities.json"), JSON.stringify({
-  enabled: false, available: false, hosted: true, backend: null,
-  message: "This hosted workspace cannot run or monitor local training. Run Mamase on your Mac and use workspace export/import to move your saved recipes.",
-}));
 
 if (process.argv.includes("--prebuilt")) {
   const prebuilt = join(project, ".vercel/output");
@@ -51,14 +49,12 @@ if (process.argv.includes("--prebuilt")) {
     assert.ok(dependency.startsWith(join(project, "node_modules") + sep), "Runtime dependency must be inside node_modules.");
     assert.ok(!(await lstat(dependency)).isSymbolicLink(), "Runtime dependencies cannot be linked outside the release.");
   }
-  for (const action of authActions) {
-    const bundle = join(prebuilt, "functions/api/auth", `${action}.func`);
-    const entry = `api/auth/${action}.js`;
-    await mkdir(join(bundle, "api/auth"), { recursive: true });
-    await writeFile(join(bundle, entry), authSources.get(entry));
-    await writeFile(join(bundle, "auth-api.mjs"), authSources.get("auth-api.mjs"));
-    await writeFile(join(bundle, "access-list.mjs"), authSources.get("access-list.mjs"));
-    await writeFile(join(bundle, "workos-provider.mjs"), authSources.get("workos-provider.mjs"));
+  for (const entry of functionEntries) {
+    const directory = entry.slice(0, entry.lastIndexOf("/"));
+    const bundle = join(prebuilt, "functions", `${entry.slice(0, -3)}.func`);
+    await mkdir(join(bundle, directory), { recursive: true });
+    await writeFile(join(bundle, entry), functionSources.get(entry));
+    for (const shared of sharedModules) await writeFile(join(bundle, shared), functionSources.get(shared));
     await writeFile(join(bundle, "package.json"), JSON.stringify({ type: "module" }));
     for (const dependency of dependencies) {
       await cp(dependency, join(bundle, relative(project, dependency)), { recursive: true });
