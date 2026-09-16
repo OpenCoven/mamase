@@ -1164,6 +1164,39 @@ history and artifact guards the browser uses, so lost responses recover with the
 recorded job ID and replays are `unchanged`. Receipts end at human handoff: an
 `evidence-ready` state is not deployment, identity replacement or a tool grant.
 
+### Training handbook
+
+`#/resources` renders the same receipt as `npm run ops -- receipt` without
+`--bundle`: the adopted run's lane, every step's state, its command, and the one
+permitted next action. Both read `workflow-receipt.mjs`, so the page and the CLI
+cannot disagree about where a run stands; a test asserts their steps are equal.
+
+Because `--bundle` is omitted, bundle fingerprints and preflight results are
+absent by definition of that mode — the page reads your saved workspace and never
+inspects prepared files on disk. Pass `--bundle` to the CLI receipt to verify
+those. Each step discloses what it does **not** do, and the steps that need a
+Python environment carry the one-time setup commands for their lane. On a hosted
+deployment the commands are marked to run on your Mac.
+
+**Hand off to an agent** exports the workspace and copies a prompt naming that
+exact file, the run and its lane, pointing at
+[`skills/mamase/SKILL.md`](skills/mamase/SKILL.md). The two always match: the
+prompt names the file the click just wrote.
+
+The prompt carries no dataset contents and no local training command token. The
+filename and run ID it interpolates into shell commands are constrained to
+`[A-Za-z0-9._-]`, so a name cannot split an argument, traverse a directory or
+inject a second command; anything else falls back to a placeholder. A run whose
+lane is not selected never produces a prompt mentioning `training/train.py` —
+only `peft` and `managed-mlx` reach that wording, and every other value,
+including a missing one, falls through to the cautious branch.
+
+Handing off refuses if another tab has changed the workspace, rather than
+exporting stale state for an agent to act on. Nothing on this page trains,
+promotes or approves anything: an agent may plan, prepare and read evidence,
+training still needs your explicit go-ahead, and only a human records a review
+decision.
+
 ### Agent skill
 
 [`skills/mamase/SKILL.md`](skills/mamase/SKILL.md) is the repository-owned,
