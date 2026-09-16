@@ -2,6 +2,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { once } from "node:events";
 import { createAppServer } from "../server.mjs";
+import { createAuthApi } from "../auth-api.mjs";
 
 test("local server serves the complete app and only public assets", async (context) => {
   const server = createAppServer();
@@ -33,4 +34,23 @@ test("local server serves the complete app and only public assets", async (conte
   const healthy = await fetch(base);
   assert.equal(healthy.status, 200);
   await healthy.text();
+});
+
+test("the receipt module the CLI uses is also served to the browser", async (context) => {
+  const server = createAppServer({ auth: createAuthApi({ env: {} }) });
+  server.listen(0, "127.0.0.1");
+  await once(server, "listening");
+  context.after(() => new Promise((resolve) => server.close(resolve)));
+  const base = `http://127.0.0.1:${server.address().port}`;
+  const response = await fetch(`${base}/workflow-receipt.mjs`);
+  assert.equal(response.status, 200);
+  assert.match(response.headers.get("content-type"), /javascript/);
+  const source = await response.text();
+  assert.match(source, /export function workflowReceipt/);
+  // Derive the imports from the file so a new one cannot slip past unserved.
+  const imports = [...source.matchAll(/from "\.\/([\w.-]+)"/g)].map((match) => match[1]);
+  assert.ok(imports.length, "The module must declare the imports this test checks.");
+  for (const dependency of imports) {
+    assert.equal((await fetch(`${base}/${dependency}`)).status, 200, dependency);
+  }
 });

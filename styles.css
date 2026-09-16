@@ -551,7 +551,6 @@ input[type="file"]::file-selector-button { padding: 6px 10px; margin-right: 12px
 .filter-tabs button:focus-visible { outline-offset: -3px; }
 .resource-grid, .settings-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; margin-top: 18px; }
 .resource-grid .card, .settings-grid .card { margin-bottom: 0; padding: 20px; }
-.resource-grid h2 { margin: 14px 0 12px; font-size: 19px; font-weight: 600; }
 .resource-grid p, .settings-grid p { font-size: 12px; }
 .form-error, .error-text { color: var(--danger-ink); font-size: 12px; }
 .form-error { padding: 10px 0; margin-bottom: 0; }
@@ -856,3 +855,26 @@ dialog.case-review { width: min(1100px, calc(100vw - 32px)); max-width: 1100px; 
 @media (max-width: 760px) {
   .review-pair { grid-template-columns: minmax(0, 1fr); }
 }
+.handbook-card { padding: 22px; }
+.handbook-top { display: flex; align-items: center; justify-content: space-between; gap: 16px; flex-wrap: wrap; }
+.handbook-picker { display: flex; align-items: center; gap: 8px; font-size: 11px; color: var(--muted); }
+.handbook-steps { list-style: none; margin: 18px 0 0; padding: 0; }
+.handbook-step { display: flex; gap: 14px; padding: 16px 0; border-top: 1px solid var(--line); }
+.handbook-step:first-child { border-top: none; padding-top: 4px; }
+.handbook-mark { flex-shrink: 0; width: 22px; height: 22px; display: grid; place-items: center; border-radius: 50%; background: var(--selected); font-size: 12px; }
+/* De-emphasise pending steps without dropping text below AA contrast: opacity
+   composited already-muted text over the card surface fell to ~2.8:1 (light)
+   and ~3.4:1 (dark). Reuse --muted/--wash, which already meet 4.5:1 on
+   --surface, instead of dimming everything including the readable text. */
+.handbook-step[data-step-state="pending"] .handbook-mark { background: var(--wash); }
+.handbook-step[data-step-state="pending"] h3 { color: var(--muted); }
+.handbook-step[data-step-state="pending"] .disclosure > summary { color: var(--muted); }
+.handbook-body { min-width: 0; flex: 1; }
+.handbook-body h3 { margin: 2px 0 6px; font-size: 14px; display: flex; gap: 10px; align-items: baseline; }
+.handbook-state { font: 9px/1.5 var(--font-mono); text-transform: uppercase; letter-spacing: 1.2px; color: var(--muted); }
+.handbook-body > p { margin: 0 0 8px; color: var(--muted); }
+.handbook-command { display: flex; align-items: flex-start; gap: 8px; margin: 10px 0; }
+.handbook-command pre { flex: 1; min-width: 0; margin: 0; overflow-x: auto; }
+.handbook-approval { display: flex; align-items: center; gap: 6px; font-size: 11px; }
+.handbook-boundary { padding-top: 14px; margin-top: 16px; border-top: 1px solid var(--line); }
+.handoff-prompt { width: 100%; font: 11px/1.6 var(--font-mono); resize: vertical; }

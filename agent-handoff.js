@@ -1,0 +1,91 @@
+// Strips control characters (C0, DEL, C1) and bidi-override codepoints, then
+// collapses whitespace to one line. This exists because a run name is
+// attacker-controlled free text: without it, a run name could inject a line
+// break to forge its own `Lane      :` line, or append a bogus command under
+// `Start here:`. Slicing happens before the final trim so a value cut off
+// mid-run of whitespace never leaves a trailing space in the result.
+const oneLine = (value, limit = 120) =>
+  String(value ?? "")
+    .replace(/[\x00-\x1F\x7F-\x9F\u202A-\u202E\u2066-\u2069]+/g, " ")
+    .replace(/\s+/g, " ")
+    .slice(0, limit)
+    .trim();
+
+// filename and run.id become bare, unquoted command-line arguments below, so
+// `~/Downloads/...` still expands (`~` does not expand inside double quotes).
+// Quoting cannot make an arbitrary string safe here either: quotes stop word
+// splitting but not an embedded quote, `$(...)`, a backtick or `/` from
+// breaking out of the argument or escaping the Downloads folder
+// (`../../.ssh/id_rsa`). Constrain both to this class instead; anything that
+// does not match falls back to a known-safe value.
+const SAFE_ARG = /^[A-Za-z0-9._-]+$/;
+const safeArg = (value, fallback) => (SAFE_ARG.test(value) ? value : fallback);
+
+/** A dated, single-segment filename so repeated handoffs stay distinguishable. */
+export function handoffFilename(date) {
+  return `coven-workspace-${new Date(date).toISOString().slice(0, 10)}.json`;
+}
+
+// The two lanes that mean there is real training work to hand off, mirrored
+// from workflow-receipt.mjs's LANES ("peft", "managed-mlx", "unselected")
+// without importing it, so this module stays dependency-free. Anything else
+// -- "unselected", unknown, empty or missing -- takes the cautious branch:
+// the training branch is the exception, not the default.
+const ACTION_LANES = ["peft", "managed-mlx"];
+
+/**
+ * The prompt an operator hands to an agent. It names the exported workspace,
+ * the run and the lane, and points at the repository's own skill.
+ *
+ * It carries no workspace contents, no dataset names and no local training
+ * command token: workflow-receipt.mjs already forbids copying the token into a
+ * receipt, and the same rule applies here. Extra caller arguments are ignored
+ * by construction — only the three fields below are read.
+ */
+export function agentPrompt({ filename, run, lane }) {
+  const file = safeArg(oneLine(filename, 200), "coven-workspace.json");
+  const id = safeArg(oneLine(run?.id, 80), "MISSING-RUN-ID");
+  const name = oneLine(run?.name, 120);
+  const cleanLane = oneLine(lane, 40);
+  const backupPath = `~/Downloads/${file}`;
+  // The download is a mamase.workspace-backup.v1 envelope, not itself a
+  // mamase.workspace-file.v1 -- ops.mjs's --workspace loader rejects the
+  // former outright. The agent's own working file belongs at .lab/agent/,
+  // this repo's established location for exactly that (see
+  // skills/mamase/references/planning.md and human-handoff.md), not in the
+  // user's Downloads folder -- and a relative path is the natural form since
+  // npm run ops already runs from the repo root. `id` is already
+  // SAFE_ARG-checked above (or the safe fallback), so this concatenation
+  // stays a single, unquoted argument exactly like `backupPath`. ops.mjs's
+  // init creates .lab/agent/ itself (mkdir recursive on the parent), so
+  // nothing here needs to create it first.
+  const opsWorkspacePath = `.lab/agent/workspace-${id}.json`;
+  const lines = [
+    "Use the mamase skill in this repo (skills/mamase/SKILL.md).",
+    "",
+    `Workspace : ${backupPath}  (wherever your browser saved it)`,
+    `Run       : ${id}${name ? ` "${name}"` : ""}`,
+    `Lane      : ${cleanLane}`,
+    "",
+    "Start here (steps 1-2 make a private workspace -- skip step 1 on an",
+    "error.code \"workspace-exists\" receipt, an earlier hand-off's workspace;",
+    "step 3 needs step 2's reported revision, not the placeholder below):",
+    `  npm run ops -- init --workspace ${opsWorkspacePath}`,
+    `  npm run ops -- inspect --workspace ${opsWorkspacePath}`,
+    `  npm run ops -- import-backup --workspace ${opsWorkspacePath} --file ${backupPath} --expected-revision <revision-from-inspect>`,
+    `  npm run ops -- receipt --workspace ${opsWorkspacePath} --run ${id}`,
+    "",
+  ];
+  if (ACTION_LANES.includes(cleanLane)) {
+    lines.push(
+      "Do exactly the receipt's nextAction, or report its blockers.",
+      "Do not run training/train.py without my explicit go-ahead for this run.",
+    );
+  } else {
+    lines.push(
+      "This run's lane is not selected, so there is no next action yet.",
+      "Report what the receipt says is missing. Do not choose the lane for me.",
+    );
+  }
+  return lines.join("\n");
+}

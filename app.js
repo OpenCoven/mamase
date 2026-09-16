@@ -18,6 +18,8 @@ import { readReviewFile, prepareReview, recordHumanDecision } from "./human-revi
 import { suiteFacts, decisionHistory, reviewBody, reviewAnnotations } from "./review-view.js";
 import { familiarContextLabel } from "./context-summary.js";
 import { ModelPlayground } from "./playground.js";
+import { handbookModel, HANDBOOK_BOUNDARY } from "./handbook.js";
+import { agentPrompt, handoffFilename } from "./agent-handoff.js";
 
 const app = document.querySelector("#app");
 const dialog = document.querySelector("#dialog");
@@ -48,7 +50,7 @@ const defaults = () => ({
   maxSequence: "2048", outputPath: "./outputs/coven-adapter", objective: "",
   adapter: "lora", familiarId: "", instanceId: "", workflow: "managed",
 });
-const ui = { menu: false, collapsed: false, draft: defaults(), query: "", status: "all", program: "all", sort: "updated", runPage: 1, modelKind: "all", conflict: false };
+const ui = { menu: false, collapsed: false, draft: defaults(), query: "", status: "all", program: "all", sort: "updated", runPage: 1, modelKind: "all", conflict: false, handbookRun: "" };
 let draftBlocked = false;
 let draftMessage = "Recipe changes are saved in this tab until you save a planned run.";
 try {
@@ -379,6 +381,19 @@ function refreshManagedRun(runId) {
       const kind = focused.dataset.kind;
       render();
       if (action) document.querySelector(`[data-action="${CSS.escape(action)}"]${id ? `[data-id="${CSS.escape(id)}"]` : kind ? `[data-kind="${CSS.escape(kind)}"]` : ""}`)?.focus({ preventScroll: true });
+    } else if (current.page === "resources") {
+      // A live managed job keeps mutating and persisting `workspace` under an SSE
+      // stream that survives training.watch(null), so the handbook's adopted run
+      // (subject() picks the most-recently-updated one when no run is explicitly
+      // chosen) can silently drift out from under the user. Re-render so the
+      // screen always matches the run the hand-off button would actually export.
+      const focused = document.activeElement;
+      const isPicker = focused.name === "handbook-run";
+      const action = focused.dataset.action;
+      const id = focused.dataset.id;
+      render();
+      if (isPicker) document.querySelector('select[name="handbook-run"]')?.focus({ preventScroll: true });
+      else if (action) document.querySelector(`[data-action="${CSS.escape(action)}"]${id ? `[data-id="${CSS.escape(id)}"]` : ""}`)?.focus({ preventScroll: true });
     }
     const size = document.querySelector("#workspace-size");
     if (size) size.textContent = `${formatBytes(new TextEncoder().encode(JSON.stringify(workspace)).length)} / 4 MB`;
@@ -670,14 +685,113 @@ function evaluationsPage() {
       <p class="help">Reuse the same private history journal across suite names, versions and candidates; new or missing history is unverified. Optional <code>--task-lineage /private/task-lineage.json</code> checks a declared bundle/dataset-bound inventory, not inferred parser lineage. Import the report, then choose Inspect local report to read paired text and record a separate human opinion. Raw cases are cleared on close/navigation and never enter backups. Only identical suite fingerprints, sample counts and decoding support score comparisons.</p></details>`;
 }
 
+const STEP_MARK = { done: "✓", next: "▸", blocked: "!", pending: "○", "not-applicable": "–" };
+
+// The steps whose action genuinely happens in this browser, not a terminal.
+// The old prose page linked to these; the spine's step copy (handbook.js,
+// owned separately) does not, so the link lives here instead. One link per
+// step, in the existing link() style -- never a rewrite of the step's own
+// copy or of the receipt's note, which stays exactly as workflow-receipt.mjs
+// wrote it for CLI parity.
+const docsLink = (label, href) => `<a class="button small quiet" href="${esc(href)}" target="_blank" rel="noreferrer">${icon("external")}${label}</a>`;
+
+const STEP_LINKS = {
+  curate: () => link("Import a dataset", "#/datasets", "upload", "small quiet"),
+  plan: () => link("Open the lab", "#/playground", "lab", "small quiet"),
+  "human-review": () => link("Go to evaluations", "#/evaluations", "arrow", "small quiet"),
+  // The prose page this spine replaced carried these two references; the steps
+  // that name the techniques are where they belong.
+  train: () => docsLink("PEFT adapter techniques", "https://huggingface.co/docs/peft/main/en/package_reference/lora"),
+  job: () => docsLink("MLX-LM documentation", "https://github.com/ml-explore/mlx-lm"),
+};
+
+// "launch"'s receipt note is written for an agent (POST a command token to an
+// HTTP endpoint); the actual browser action is the launch button on this run's
+// own session page, so that step needs the run to link to rather than a fixed route.
+function handbookStepLink(step, run) {
+  if (step.id === "launch") return run ? link("Open this run's session", `#/sessions/${run.id}`, "arrow", "small quiet") : "";
+  return STEP_LINKS[step.id]?.() ?? "";
+}
+
+function handbookStep(step, index, run) {
+  const stepLink = handbookStepLink(step, run);
+  // handbookCapabilityState latches "failed" until this button (or a full
+  // reload) resets it, so a probe that failed before `npm run dev` was
+  // started would otherwise never get retried for the rest of the session.
+  const retryTrainer = step.id === "capability" && step.evidence?.state === "unreachable";
+  return `<li class="handbook-step" data-step-state="${esc(step.state)}" data-step-id="${esc(step.id)}">
+    <span class="handbook-mark" aria-hidden="true">${STEP_MARK[step.state] || "○"}</span>
+    <div class="handbook-body">
+      <h3>${String(index + 1).padStart(2, "0")} · ${esc(step.title)}<span class="handbook-state">${esc(step.state)}</span></h3>
+      <p>${esc(step.purpose)}</p>
+      ${stepLink ? `<p class="handbook-step-link">${stepLink}</p>` : ""}
+      ${step.requiresApproval ? `<p class="handbook-approval">${icon("local")} Needs your explicit go-ahead.</p>` : ""}
+      ${step.command ? `<div class="handbook-command"><pre>${esc(step.command)}</pre>${button("Copy", "copy-command", "copy", "small quiet", `data-command="${esc(step.command)}" aria-label="Copy the ${esc(step.title)} command"`)}</div>
+        ${hosted ? '<p class="help">Run this on your Mac. This hosted site cannot run or monitor training.</p>' : ""}` : ""}
+      ${step.note ? `<p class="help">${esc(step.note)}</p>` : ""}
+      ${retryTrainer ? `<p class="handbook-step-link">${button("Check trainer connection", "handbook-capability-retry", "local", "small quiet")}</p>` : ""}
+      ${step.setup ? `<details id="handbook-setup-${esc(step.id)}" class="disclosure"><summary>One-time setup <span>Run in a terminal inside the Mamase folder</span></summary><pre>${esc(step.setup.commands)}</pre><p class="help">${esc(step.setup.note)}</p></details>` : ""}
+      ${step.boundaries ? `<details class="disclosure"><summary>What this does not do</summary><p>${esc(step.boundaries)}</p></details>` : ""}
+    </div></li>`;
+}
+
+// Whether the local runtime has been asked for the managed-mlx lane's capability
+// step: "unset" (not asked yet), "loading" (a request is in flight), "ready" (an
+// answer arrived; read it from training.available) or "failed" (the request
+// itself errored, e.g. no JSON response -- the server did not answer, distinct
+// from never having asked at all).
+let handbookCapabilityState = "unset";
+
+function handbookState() {
+  // undefined = not queried (classifyCapability's "unknown"), null = queried but
+  // the server did not answer ("unreachable"), an object = the last answer. The
+  // ternary below must keep all three distinct -- collapsing null into undefined
+  // would silently hide the unreachable-server state.
+  const capability = training.available !== undefined ? training.available
+    : handbookCapabilityState === "failed" ? null
+    : undefined;
+  return handbookModel(workspace, {
+    runId: ui.handbookRun,
+    ...(capability !== undefined ? { capability } : {}),
+  });
+}
+
+// render() calls training.watch(null) on every page but the run detail page, so
+// the handbook's own capability step must ask for itself: the managed-mlx lane
+// is the only one that ever forwards a capability into the receipt (handbook.js
+// refuses it for peft/unselected), so only query there. Re-renders once the
+// answer (or failure) is in, from whatever page is still showing at that point.
+async function refreshHandbookCapability() {
+  if (handbookCapabilityState !== "unset" || handbookState().lane !== "managed-mlx") return;
+  handbookCapabilityState = "loading";
+  try {
+    await training.capability();
+    handbookCapabilityState = "ready";
+  } catch {
+    handbookCapabilityState = "failed";
+  }
+  if (route().page === "resources" && !storageError) render();
+}
+
 function resourcesPage() {
-  return `${header("Training handbook", "", "A practical path from shared knowledge to a local model.")}
-    <div class="resource-grid"><article class="card"><span class="eyebrow">01 · Curate</span><h2>Start with evidence, not volume.</h2><p>Import JSONL with <code>messages</code> or <code>prompt</code> / <code>response</code> records. Track licenses, consent, provenance, and the teacher ID. Do not train on private material without permission.</p><p>Set aside a holdout before training. The preparation CLI writes deterministic, disjoint splits and rejects duplicate prompts. Keep a separate final evaluation suite out of both splits.</p>${button("Download example JSONL", "example-dataset", "download")}</article>
-    <article class="card"><span class="eyebrow">02 · Distill</span><h2>Pass the teacher's responses on.</h2><p>Generate responses with a teacher outside Mamase. Review and filter them, then import them as teacher-generated examples. Response distillation here means supervised LoRA fine-tuning on those responses.</p><p>It is not online inference, hidden chain-of-thought extraction, or logit/KL distillation. A teacher label alone does not generate data.</p>${link("Configure a recipe", "#/playground", "arrow")}</article>
-    <article class="card"><span class="eyebrow">Explicit context</span><h2>Declare what the familiar includes.</h2><p>The default CLI binding is legacy <code>identity-files-only</code>: IDENTITY.md and SOUL.md, not a full runtime. To opt into familiar-owned role, skill or operating instructions, write a <code>mamase.context-selection.v1</code> manifest and run <code>npm run lab -- inspect-context</code> with the recipe, identity directory and <code>--context-manifest</code>.</p><p>Review the displayed source roles and order. Prepare a new bundle with the same manifest and <code>--context-sha256</code> from that preview. Changed bytes, ordering or role metadata require review again. Preflight, training and evaluation revalidate the frozen composition; imported summaries retain its scope/fingerprint, never the source text or paths. This does not authenticate membership, reproduce hidden harness context, grant tools or authorize adoption. Managed MLX is unbound.</p></article>
-    <article class="card"><span class="eyebrow">Offline preflight</span><h2>Check before loading weights.</h2><p>For identity-bound PEFT training, export the recipe and run <code>npm run lab -- prepare</code>. Install <code>training/requirements.txt</code> in <code>.venv</code>, then check the prepared bundle without loading weights:</p><pre>.venv/bin/python training/preflight.py --bundle .lab/experiment --model /path/local-model --device cpu</pre><p>The JSON separates <code>errors</code>, <code>warnings</code> and verified <code>facts</code>; <code>ready: false</code> exits 1. It checks source integrity, local model inventory, dependency/device and adapter constraints, tokenizer/template compatibility, and context/token budgets. No trainer, model weights, identity writes or output files are created. It is not a run report or an OOM guarantee, and the browser does not inspect hardware.</p><p>Review the report before explicitly running <code>training/train.py</code> with the same model/device. PEFT supports LoRA, rsLoRA, DoRA, and CUDA QLoRA. Managed Apple-silicon MLX jobs instead use <code>training/requirements-mlx.txt</code> in <code>.venv-training</code> and their own LoRA/data semantics; this preflight does not validate their jobs, memory or identity binding. A managed runtime-availability probe is not a model preflight.</p><a class="subtle-link" href="https://huggingface.co/docs/peft/main/en/package_reference/lora" target="_blank" rel="noreferrer">PEFT adapter techniques ${icon("external")}</a></article>
-    <article class="card"><span class="eyebrow">03 · Train</span><h2>Keep execution on your terms.</h2><p>On Apple Silicon, launch a managed MLX-LM LoRA job from a saved run using a local model directory and the original dataset. Install its isolated runtime with <code>python3.12 -m venv .venv-training</code> and <code>.venv-training/bin/python -m pip install -r training/requirements-mlx.txt</code>. Logs, losses and finalized adapters arrive automatically.</p><p>For canonical familiar identity binding, rsLoRA, DoRA or CUDA QLoRA, export the recipe and use <code>npm run lab -- prepare</code>, followed by <code>training/train.py</code>. Import its progress and training result from the run page. Neither workflow downloads models or calls a teacher API.</p><a class="subtle-link" href="https://github.com/ml-explore/mlx-lm" target="_blank" rel="noreferrer">MLX-LM documentation ${icon("external")}</a></article>
-    <article class="card"><span class="eyebrow">04 · Evaluate &amp; keep</span><h2>A candidate must earn its place.</h2><p>Import the completed training result to bind the actual adapter and its holdout loss. Run <code>training/evaluate.py</code> on an independent, versioned task/identity/consent/tool-boundary suite. Import its report for base/adapter comparisons and regressions.</p><p>Rule checks are not semantic certification. Review the private outputs and require explicit operator approval before any runtime change. Model manifests and browser backups retain summaries and lineage, never prompts or model weights.</p>${link("Evaluations", "#/evaluations", "arrow")}</article></div>`;
+  const model = handbookState();
+  const picker = model.choices.length > 1 && model.run
+    ? `<label class="handbook-picker">Run <select name="handbook-run">${model.choices.map((choice) => `<option value="${esc(choice.id)}" ${choice.id === model.run.id ? "selected" : ""}>${esc(choice.name)}</option>`).join("")}</select></label>`
+    : "";
+  return `${header("Training handbook", model.run ? button("Hand off to an agent", "agent-handoff", "download", "primary") : model.empty ? button("Download example dataset", "example-dataset", "download", "quiet") : "", "Where this run stands, and the next thing to do.")}
+    <section class="card handbook-card">
+      <div class="handbook-top">
+        <p id="handbook-lane" class="eyebrow">${model.empty ? "NEW WORKSPACE" : `LANE: ${esc(model.lane)} · ${esc(model.run.name)}`}</p>
+        ${picker}
+      </div>
+      ${model.blockers.length ? `<div class="notice" role="status"><div><strong>Blocked</strong>${model.blockers.map((item) => `<p>${esc(item.message)}</p>`).join("")}</div></div>` : ""}
+      <ol id="handbook-steps" class="handbook-steps">${model.steps.map((step, index) => handbookStep(step, index, model.run)).join("")}</ol>
+      <p class="help handbook-boundary">${HANDBOOK_BOUNDARY} ${model.empty ? "Import a dataset to begin." : "This page reads your saved workspace. It never inspects prepared bundles on disk; pass --bundle to npm run ops -- receipt to verify those files."}</p>
+    </section>
+    <section class="card"><h2>Work with an agent</h2>
+      <p>This repository ships a skill at <code>skills/mamase/SKILL.md</code>. Handing off exports your workspace and copies a prompt naming that file, this run and its lane.</p>
+      <p class="help">The prompt carries no dataset contents and no local training command token. An agent may plan, prepare and read evidence; only you approve training, and only a human records a review decision.</p>
+    </section>`;
 }
 
 function appearanceSettings() {
@@ -729,6 +843,7 @@ function render() {
   syncThemeControls();
   if (page === "testing" && !storageError) modelPlayground.mount(document.querySelector("#model-playground"), { artifactId: id, workspace });
   void training.watch(page === "sessions" && id && !storageError ? workspace.runs.find((run) => run.id === id) : null);
+  if (page === "resources" && !storageError) void refreshHandbookCapability();
 }
 
 function updateSidebarAccess() {
@@ -925,6 +1040,10 @@ const actions = {
   "reload-workspace": () => openModal("Reload the latest workspace?", `<p>Unsubmitted settings and dialog edits will be lost. Recipe drafts remain in this tab. Export the open workspace first if you need its older saved records.</p><div class="actions">${button("Cancel", "close-dialog", "", "quiet")}${button("Reload latest data", "confirm-reload", "", "primary")}</div>`),
   "confirm-reload": () => location.reload(),
   "local-refresh": (element) => { void training.watch(byId(workspace.runs, element.dataset.id), true); },
+  // Resets the latch in handbookCapabilityState so a probe that failed before
+  // `npm run dev` was running gets asked again, instead of reporting
+  // "unreachable" for the rest of the session with no way to retry.
+  "handbook-capability-retry": () => { handbookCapabilityState = "unset"; render(); void refreshHandbookCapability(); },
   "local-sync": flushTrainingUpdates,
   "run-details": () => {
     const details = document.querySelector("#run-technical");
@@ -1055,6 +1174,31 @@ const actions = {
   },
   "export-runs": () => download("coven-training-runs.csv", runsCsv(selectRuns(workspace.runs, ui)), "text/csv"),
   "export-workspace": () => download("coven-workspace.json", exportWorkspaceBackup(workspace, now())),
+  "agent-handoff": async () => {
+    const model = handbookState();
+    assert(model.run, "Save a recipe before handing this workspace to an agent.");
+    assertWorkspaceSource(savedSource);
+    const timestamp = now();
+    const filename = handoffFilename(timestamp);
+    download(filename, exportWorkspaceBackup(workspace, timestamp));
+    const prompt = agentPrompt({ filename, run: model.run, lane: model.lane });
+    try {
+      await navigator.clipboard.writeText(prompt);
+      notify(`Workspace exported as ${filename}. The agent prompt is on your clipboard.`);
+    } catch {
+      openModal("Copy the agent prompt", `<p>The workspace was exported as <code>${esc(filename)}</code>, but this browser refused clipboard access. Copy the prompt below and hand it to an agent using <code>skills/mamase/SKILL.md</code>.</p><textarea class="handoff-prompt" rows="14" readonly>${esc(prompt)}</textarea>`);
+    }
+  },
+  "copy-command": async (element) => {
+    const command = element.dataset.command || "";
+    assert(command, "This step has no command to copy.");
+    try {
+      await navigator.clipboard.writeText(command);
+      notify("Command copied.");
+    } catch {
+      openModal("Copy the command", `<textarea class="handoff-prompt" rows="4" readonly>${esc(command)}</textarea>`);
+    }
+  },
   "restore-workspace": () => openModal("Restore a workspace backup", `<p>Choose a versioned Mamase backup or a legacy workspace v1 JSON file. Preview its source and collection counts before confirming replacement. The workspace payload must fit the 4 MB storage budget.</p>${field("Workspace JSON backup", "file", "", { type: "file", attrs: 'accept=".json,application/json"' })}${formFooter("Preview backup")}`, "restore"),
   "reset-workspace": () => openModal("Reset local workspace", `<p class="warning">All recorded programs, dataset metadata, runs, artifacts, and evaluations in this browser will be removed. Export a backup first.</p>${field("Type RESET to confirm", "confirmation")}${formFooter("Reset workspace")}`, "reset"),
   "raw-backup": () => { const raw = localStorage.getItem(STORAGE_KEY); assert(raw !== null, "No stored data is available to download."); download("mamase-recovery.json", raw); },
@@ -1249,7 +1393,8 @@ document.addEventListener("click", (event) => {
     assert(!gated() || GATE_ACTIONS.has(element.dataset.action), "This workspace stays closed until an approved account is signed in.");
     const action = actions[element.dataset.action];
     assert(action, "This action is unavailable.");
-    action(element);
+    const result = action(element);
+    if (result && typeof result.then === "function") result.catch((error) => notify(error.message, true));
   } catch (error) {
     notify(error.message, true);
   }
@@ -1345,6 +1490,7 @@ document.addEventListener("change", (event) => {
     modalContext.suggestedPath = run.recipe.outputPath;
     return;
   }
+  else if (event.target.name === "handbook-run") { ui.handbookRun = event.target.value; render(); document.querySelector('select[name="handbook-run"]')?.focus({ preventScroll: true }); return; }
   else return;
   ui.runPage = 1;
   updateRunResults();
