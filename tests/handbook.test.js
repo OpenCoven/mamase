@@ -44,7 +44,11 @@ test("the model's steps equal the receipt's steps exactly", () => {
     receipt.steps.map(({ id, state }) => ({ id, state })),
     "The page must never disagree with npm run ops -- receipt",
   );
-  assert.equal(model.next?.id ?? null, receipt.next?.id ?? null);
+  assert.ok(model.next, "This run genuinely has a next step");
+  assert.equal(model.next.id, receipt.nextAction.step);
+  assert.equal(model.next.state, "next");
+  assert.equal(typeof model.next.title, "string");
+  assert.ok(model.next.title.length, "model.next must be decorated");
 });
 
 test("every rendered step carries copy, and every receipt step ID is covered", () => {
@@ -69,6 +73,13 @@ test("an unselected lane blocks and offers no next action", () => {
   const workspace = workspaceWith({ workflow: undefined, familiarId: "", instanceId: "" });
   const model = handbookModel(workspace, {});
   assert.equal(model.lane, "unselected");
+  assert.ok(model.blockers.length);
+  assert.equal(model.next, null);
+});
+
+test("a blocked run offers no next action", () => {
+  const workspace = workspaceWith({ workflow: undefined, familiarId: "", instanceId: "" });
+  const model = handbookModel(workspace, {});
   assert.ok(model.blockers.length);
   assert.equal(model.next, null);
 });

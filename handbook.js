@@ -103,10 +103,11 @@ export function handbookModel(workspace, { runId, capability, job } = {}) {
   } catch (error) {
     return { empty: false, run, choices, lane, steps: [], next: null, blockers: [{ code: "receipt-unavailable", message: error.message }] };
   }
+  const nextStep = receipt.nextAction ? receipt.steps.find((step) => step.id === receipt.nextAction.step) : null;
   return {
     empty: false, run, choices, lane,
     steps: receipt.steps.map(decorate),
-    next: receipt.next ? decorate(receipt.next) : null,
+    next: nextStep ? decorate(nextStep) : null,
     blockers: receipt.blockers,
     state: receipt.state,
   };
