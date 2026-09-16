@@ -881,3 +881,51 @@ Nothing may print from the `awk` line. If something does, sign the missing commi
 - **Spec coverage.** Architecture → Tasks 1–3. Browser receipt semantics → Task 3 (`workflowReceipt` called without `bundle`, and with `capability`/`job` only on the managed lane) plus its drift test. Step model → Task 3 `STEP_COPY`, covering all eleven receipt step IDs. Caveats relocated → Task 4 `handbookStep` disclosure. Run selection and empty state → Task 3 `subject`/`FIRST_RUN`, Task 4 picker, Task 5 no-write test. Handoff → Tasks 2 and 5, including the token and contents exclusion tests. Hosted → Task 4. Error handling → Task 3 missing-dataset test. Testing → every task.
 - **Type consistency.** `handbookModel(workspace, { runId, capability, job })` returns `{ empty, run, choices, lane, steps, next, blockers, state }`, and Tasks 4 and 5 read exactly those fields. `agentPrompt({ filename, run, lane })` and `handoffFilename(date)` match their call sites. Decorated steps keep the receipt's `id`, `state`, `command`, `note` and `requiresApproval`, and gain `title`, `purpose`, `boundaries`.
 - **Known risk carried from the spec.** Serving `.mjs` to the browser blurs the `.js` browser / `.mjs` node convention. Renaming the module would touch the CLI, the skill and its references, so it stays out of scope.
+
+---
+
+## Post-implementation note
+
+Every task in this plan was implemented and passed a two-stage review (spec
+compliance, then code quality). The reviews found nine defects that originated
+in this document. They are corrected above, but the pattern is worth recording
+because it was consistent.
+
+**Seven came from writing the plan off `grep` output instead of reading
+`workflow-receipt.mjs` end to end:**
+
+1. The receipt exposes `nextAction`, not `next` — and its shape is
+   `{ step, requiresApproval, command?, note? }`, not a step object, so the id
+   is under `.step`. The planned `next` field was dead and its assertion
+   compared two `undefined`-derived nulls.
+2. The managed lane emits a `capability` step: seven steps, not six.
+   `STEP_COPY` needs twelve entries, not eleven.
+3. `validateRecipe` rejects `workflow: ""`; `undefined` is how a run reaches the
+   unselected lane.
+4. `handbookModel`'s return contract omitted `state` on two of three branches.
+5. `app.js` imports `handbook.js` and `agent-handoff.js`, but neither was added
+   to `public-assets.mjs`. That file is an explicit allowlist — without the
+   entries the browser 404s on load and the feature is unreachable.
+6. `scripts/verify-ux.mjs` asserts against the prose page this work deletes, by
+   heading text and caveat substrings.
+7. Test fixtures that spread a run with a new `updatedAt` throw, because
+   `validateWorkspace` recomputes `updatedAt := createdAt` and asserts equality.
+
+**Two came from the plan's own code:**
+
+8. `agentPrompt` rendered the Lane line from the sanitised value but branched on
+   the raw one, so `lane: "unselected\n"` displayed as `unselected` while taking
+   the training branch. The later fix to allowlist the two action lanes closed a
+   second door: a missing lane also failed open into that branch.
+9. The condensation dropped setup information. The page told a user to run
+   `.venv/bin/python training/preflight.py` without saying where `.venv` comes
+   from, while `app.js:316` still told them setup lived here. The honesty claims
+   survived; the usable path did not.
+
+**What the tests did not catch.** Every defect above was found by review, never
+by a green suite. Two suites were actively misleading: the prompt builder's
+tests failed on copy-edits while surviving the removal of its length clamp, and
+the handbook model's step-coverage test read as a receipt check while being a
+hardcoded list a new step id would sail past. Mutation testing — change the
+implementation, see which tests notice — found more real problems than reading
+the code did, and is the technique worth carrying forward.
