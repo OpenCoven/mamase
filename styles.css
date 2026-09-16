@@ -333,11 +333,11 @@ code { overflow-wrap: anywhere; }
 .empty-state { min-height: 280px; display: flex; flex-direction: column; align-items: center; justify-content: center; padding: 28px 20px; text-align: center; }
 .empty-icon { display: grid; place-items: center; width: 48px; height: 48px; margin-bottom: 19px; background: var(--accent-surface); background-image: var(--glass-sheen); border: 1px solid var(--glass-border); border-radius: 15px; box-shadow: var(--glass-shadow); color: var(--indigo); }
 .empty-icon .icon { width: 21px; height: 21px; }
-.empty-state h2 { font-size: 18px; margin-bottom: 8px; }
+.empty-state :is(h1, h2) { font-size: 18px; margin-bottom: 8px; }
 .empty-state p { max-width: 460px; margin-bottom: 19px; color: var(--muted); font-size: 13px; }
 .empty-state.compact { min-height: 194px; padding: 12px 0; }
 .empty-state.compact .empty-icon { display: none; }
-.empty-state.compact h2 { font-size: 13px; font-weight: 500; }
+.empty-state.compact :is(h1, h2) { font-size: 13px; font-weight: 500; }
 .empty-state.compact p { font-size: 11px; }
 .empty-state.compact .button { min-height: 31px; font-size: 11px; }
 .card { border: 1px solid var(--line); border-radius: 8px; padding: 18px; margin-bottom: 16px; min-width: 0; background: var(--surface); background-image: var(--glass-sheen); box-shadow: var(--glass-shadow); }
@@ -787,7 +787,7 @@ input[type="checkbox"] { accent-color: var(--indigo); width: 17px; height: 17px;
   .workflow { gap: 12px; }
   .overview-metrics { padding-bottom: 12px; }
   .overview-metrics .metric { padding: 10px 12px; }
-  .home-panel .empty-state.compact h2 { margin-bottom: 4px; }
+  .home-panel .empty-state.compact :is(h1, h2) { margin-bottom: 4px; }
   .home-panel .empty-state.compact p { margin-bottom: 8px; }
 }
 
@@ -797,7 +797,7 @@ input[type="checkbox"] { accent-color: var(--indigo); width: 17px; height: 17px;
   .overview-metrics .metric { padding: 8px 10px; }
   .overview-metrics .metric > strong { margin: 2px 0; font-size: 20px; line-height: 1.2; }
   .overview-metrics .metric p { line-height: 1.4; }
-  .home-panel .empty-state.compact h2 { margin-bottom: 4px; }
+  .home-panel .empty-state.compact :is(h1, h2) { margin-bottom: 4px; }
   .home-panel .empty-state.compact p { display: none; }
 }
 

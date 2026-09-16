@@ -72,9 +72,13 @@ const liveRegions = [
 test("status regions keep the live-region announcement they depend on", async () => {
   const app = await readFile(new URL("../app.js", import.meta.url), "utf8");
   for (const [id, attribute, why] of liveRegions) {
-    const element = new RegExp(`id="${id}"[^>]*`).exec(app);
-    assert.ok(element, `app.js no longer renders #${id} (${why})`);
-    assert.ok(element[0].includes(attribute), `#${id} (${why}) must keep ${attribute} or it stops announcing`);
+    // Every render path, not just the first: a second branch that rendered the same id without the
+    // attribute would leave one of the two announcing and the other silent, which is the harder bug.
+    const elements = [...app.matchAll(new RegExp(`<[a-z]+[^>]*\\bid="${id}"[^>]*`, "g"))].map(([match]) => match);
+    assert.ok(elements.length, `app.js no longer renders #${id} (${why})`);
+    for (const element of elements) {
+      assert.ok(element.includes(attribute), `#${id} (${why}) must keep ${attribute} or it stops announcing: ${element}`);
+    }
   }
   // The progress bar is not a live region; it carries its own accessible name instead.
   assert.match(app, /<progress id="live-progress-bar" aria-label="[^"]+"/);

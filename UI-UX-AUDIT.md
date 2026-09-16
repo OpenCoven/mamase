@@ -126,6 +126,24 @@ isolated browser contexts. It covers all 11 enhancement journeys, including:
 - Compatible/incompatible evaluation selections, validation-only loss, and
   accessible observation data.
 - Persistent cross-tab conflicts, rejection of stale saves, and reload recovery.
+- Structure and keyboard reachability on every route, including the not-found
+  states reached from a stale link: exactly one `h1`, no skipped heading levels,
+  an accessible name and a visible focus indicator on every Tab stop, no
+  positive `tabindex`, no focusable control inside `[aria-hidden]` or `[inert]`,
+  one `main` landmark and a name on every `nav`. None of these change a pixel,
+  so no contrast, layout or screenshot assertion notices when one breaks.
+- The bypass link is the first Tab stop of a fresh load and moves focus into
+  `#main`; closing a dialog by Escape, its close button, or Cancel returns focus
+  to the control that opened it.
+
+The sweep itself lives in `scripts/ux-structure.mjs` and is proved by
+`tests/ux-structure.test.js`, which drives it against pages built to contain one
+defect each. A green gate is not evidence that a check works — an app-wide
+mutation trips an earlier assertion in `scripts/verify-ux.mjs` long before the
+sweep runs — so each check is shown to fail on the defect it names, and to stay
+quiet on the lookalikes that are not defects: a disabled button, a hidden
+heading, `tabindex="0"`, a bypass link that reveals itself by moving, and a page
+that never styled focus and so keeps the browser's own ring.
 
 The suite exercises 127 responsive layout cases across dark/light appearance
 and 1440x900, 1024x768, 390x844, 320x640, 320x568, and 844x390 viewports. It checks
@@ -140,6 +158,10 @@ regressions were also exercised.
 All 11 selected implementation enhancements are delivered. No hosted trainer,
 inference service, cloud synchronization, account system, simulated progress,
 model-file verification, or automatic benchmark execution was added.
+
+The structural checks above are automated observation and do not establish that
+an announcement is useful. `docs/accessibility-review-protocol.md` is the script
+for the human keyboard-only and screen-reader pass that does; issue #44 tracks it.
 
 Remaining product research should involve actual coven members performing
 training tasks, assistive-technology testing with screen-reader users, and

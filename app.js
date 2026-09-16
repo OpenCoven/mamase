@@ -120,7 +120,7 @@ function sidebar(page) {
       <button class="icon-button" type="button" data-action="toggle-sidebar" aria-label="${ui.collapsed ? "Expand" : "Collapse"} navigation">${icon("panel")}</button></div>
     <div class="workspace-label"><span class="tiny-mark">${icon("spark")}</span><span class="workspace-identity"><small class="workspace-tag">${hosted ? "HOSTED" : "LOCAL"}</small><span class="workspace-name" title="${esc(workspace?.name || "The Coven")}">${esc(workspace?.name || "The Coven")}</span></span>
       ${workspace ? `<button type="button" class="icon-button workspace-search-button" data-action="search" aria-label="Search workspace" title="Search workspace (Ctrl K)">${icon("search")}</button>` : ""}</div>
-    <nav>${links.map(([id, label, glyph], index) => `${[0, 2, nav.length].includes(index) ? `<div class="nav-section">${index === 0 ? "Workspace" : index === 2 ? "Model development" : "Resources"}</div>` : ""}<a href="#/${id}" class="nav-link ${page === id ? "active" : ""}" ${page === id ? 'aria-current="page"' : ""} aria-label="${label}" title="${label}">${icon(glyph)}<span>${label}</span>${id === "sessions" && workspace?.runs.length ? `<span class="nav-count">${workspace.runs.length}</span>` : ""}</a>`).join("")}</nav>
+    <nav aria-label="Workspace">${links.map(([id, label, glyph], index) => `${[0, 2, nav.length].includes(index) ? `<div class="nav-section">${index === 0 ? "Workspace" : index === 2 ? "Model development" : "Resources"}</div>` : ""}<a href="#/${id}" class="nav-link ${page === id ? "active" : ""}" ${page === id ? 'aria-current="page"' : ""} aria-label="${label}" title="${label}">${icon(glyph)}<span>${label}</span>${id === "sessions" && workspace?.runs.length ? `<span class="nav-count">${workspace.runs.length}</span>` : ""}</a>`).join("")}</nav>
     <div class="sidebar-bottom"><div class="local-status"><span class="status-dot"></span><span>${hosted ? "Saved in this browser" : "Local workspace"}</span></div>
       <p>Knowledge stays in the coven.</p>
       <a class="profile" id="account-profile" href="#/settings" aria-label="Account settings">${accountProfile()}</a></div>
@@ -785,6 +785,7 @@ function resourcesPage() {
         ${picker}
       </div>
       ${model.blockers.length ? `<div class="notice" role="status"><div><strong>Blocked</strong>${model.blockers.map((item) => `<p>${esc(item.message)}</p>`).join("")}</div></div>` : ""}
+      <h2 class="sr-only">Steps for this run</h2>
       <ol id="handbook-steps" class="handbook-steps">${model.steps.map((step, index) => handbookStep(step, index, model.run)).join("")}</ol>
       <p class="help handbook-boundary">${HANDBOOK_BOUNDARY} ${model.empty ? "Import a dataset to begin." : "This page reads your saved workspace. It never inspects prepared bundles on disk; pass --bundle to npm run ops -- receipt to verify those files."}</p>
     </section>
@@ -823,10 +824,10 @@ function render() {
   }
   let content;
   if (storageError) content = `${header("Workspace needs attention")}<div class="card"><p class="error-text">${esc(storageError)}</p><div class="actions">${button("Download stored data", "raw-backup", "download")}${button("Restore backup", "restore-workspace", "upload")}${button("Reset local workspace", "reset-workspace", "", "danger")}</div></div>${page === "settings" ? accountSettings() + appearanceSettings() : ""}`;
-  else if (page === "sessions" && id) content = workspace.runs.some((run) => run.id === id) ? runDetail(id) : empty("Run not found.", "This run is not in the current workspace.", link("Back to training runs", "#/sessions"));
-  else if (page === "datasets" && id) content = workspace.datasets.some((item) => item.id === id) ? datasetDetail(id) : empty("Dataset not found.", "This dataset is not in the current workspace.", link("Back to datasets", "#/datasets"));
-  else if (page === "checkpoints" && id) content = workspace.artifacts.some((item) => item.id === id) ? artifactDetail(id) : empty("Artifact not found.", "This artifact is not in the current workspace.", link("Back to model library", "#/checkpoints"));
-  else content = pages[page] ? pages[page]() : empty("Page not found.", "Choose a workspace view from the navigation.", link("Back to overview", "#/home"));
+  else if (page === "sessions" && id) content = workspace.runs.some((run) => run.id === id) ? runDetail(id) : empty("Run not found.", "This run is not in the current workspace.", link("Back to training runs", "#/sessions"), "spark", false, 1);
+  else if (page === "datasets" && id) content = workspace.datasets.some((item) => item.id === id) ? datasetDetail(id) : empty("Dataset not found.", "This dataset is not in the current workspace.", link("Back to datasets", "#/datasets"), "spark", false, 1);
+  else if (page === "checkpoints" && id) content = workspace.artifacts.some((item) => item.id === id) ? artifactDetail(id) : empty("Artifact not found.", "This artifact is not in the current workspace.", link("Back to model library", "#/checkpoints"), "spark", false, 1);
+  else content = pages[page] ? pages[page]() : empty("Page not found.", "Choose a workspace view from the navigation.", link("Back to overview", "#/home"), "spark", false, 1);
   const collection = page === "sessions" ? workspace?.runs : page === "datasets" ? workspace?.datasets : page === "checkpoints" ? workspace?.artifacts : null;
   const pageTitle = (id && collection?.find((item) => item.id === id)?.name) || nav.find(([key]) => key === page)?.[1] || (page === "settings" ? "Workspace settings" : page === "resources" ? "Training handbook" : "Mamasé");
   document.title = `${pageTitle} · Mamasé`;
