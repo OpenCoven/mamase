@@ -14,74 +14,53 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  node:
-    name: Node ${{ matrix.node }} / workspace
+  # One job, not four: this repo is private, so Actions minutes are metered and the
+  # checkout, npm ci, Chromium and CPU-runtime installs were previously paid for once
+  # per job. validate.mjs's "all" mode runs every lane in a single process instead.
+  validate:
+    name: Node 22 & 24 / CPU adapters / Chromium
     runs-on: ubuntu-24.04
-    timeout-minutes: 15
-    strategy:
-      fail-fast: false
-      matrix:
-        node: [22, 24]
+    timeout-minutes: 45
     steps:
       - uses: actions/checkout@v4
         with:
           persist-credentials: false
+
+      # Install both majors and record absolute paths. The second setup-node wins PATH,
+      # but each toolcache binary stays on disk, and "all" mode invokes them by path.
       - uses: actions/setup-node@v4
         with:
-          node-version: ${{ matrix.node }}
-      - uses: actions/setup-python@v5
-        with:
-          python-version: '3.14.7'
-      - run: npm ci --no-audit --no-fund
-      - run: npx --no-install playwright install --with-deps chromium
-      - run: npm run validate -- node
-
-  cpu:
-    name: Python 3.14 / CPU adapters
-    runs-on: ubuntu-24.04
-    timeout-minutes: 30
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          persist-credentials: false
+          node-version: 22
+      - run: echo "MAMASE_NODE_22=$(command -v node)" >> "$GITHUB_ENV"
       - uses: actions/setup-node@v4
         with:
           node-version: 24
+      - run: echo "MAMASE_NODE_24=$(command -v node)" >> "$GITHUB_ENV"
+
       - uses: actions/setup-python@v5
         with:
           python-version: '3.14.7'
+
+      # Safe to install once for both majors: the only native dependency is fsevents,
+      # which is macOS-only and optional, and package.json engines allow >=22.11.0.
       - run: npm ci --no-audit --no-fund
+      - run: npx --no-install playwright install --with-deps chromium
+
       - name: Install pinned CPU runtime in its own environment
         run: |
           python -m venv .venv
           .venv/bin/python -m pip install --no-cache-dir -r training/requirements.txt
-      - name: Require actual synthetic adapters, evaluator and preflight
+
+      - name: Run node-22, node-24, cpu and browser lanes
         env:
           MAMASE_TRAINING_PYTHON: ${{ github.workspace }}/.venv/bin/python
-        run: npm run validate -- cpu
+        run: npm run validate -- all
 
-  browser:
-    name: Chromium / UX and protocol
-    runs-on: ubuntu-24.04
-    timeout-minutes: 15
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          persist-credentials: false
-      - uses: actions/setup-node@v4
-        with:
-          node-version: 24
-      - uses: actions/setup-python@v5
-        with:
-          python-version: '3.14.7'
-      - run: npm ci --no-audit --no-fund
-      - run: npx --no-install playwright install --with-deps chromium
-      - run: npm run validate -- browser
       - name: Upload only bounded synthetic failure evidence
         if: failure()
         uses: actions/upload-artifact@v4
         with:
-          name: synthetic-browser-failure
+          name: synthetic-validation-failure
           path: |
             .validation/run-*/summary.json
             .validation/run-*/browser/failure.json
