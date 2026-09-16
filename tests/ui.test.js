@@ -56,6 +56,40 @@ test("form hints and table actions have explicit accessible associations", () =>
   assert.match(table(["Name", ""], [["Model", "Action"]], "Models"), /<span class="sr-only">Actions<\/span>/);
 });
 
+// Live regions are the only way a screen reader learns that something changed without focus moving:
+// streamed training progress, import outcomes, restore results. Dropping role/aria-live from one of
+// these leaves the UI looking identical and silently stops announcing, which no visual test notices.
+const liveRegions = [
+  ["live-progress-text", "role=\"status\"", "streamed training progress"],
+  ["run-count", "role=\"status\"", "filtered run totals"],
+  ["recipe-readiness", "role=\"status\"", "plan readiness"],
+  ["report-summary", "role=\"status\"", "paired report import outcome"],
+  ["restore-summary", "role=\"status\"", "backup restore outcome"],
+  ["account-panel", "aria-live=\"polite\"", "account/auth phase"],
+  ["comparison-result", "aria-live=\"polite\"", "evaluation comparison"],
+];
+
+test("status regions keep the live-region announcement they depend on", async () => {
+  const app = await readFile(new URL("../app.js", import.meta.url), "utf8");
+  for (const [id, attribute, why] of liveRegions) {
+    const element = new RegExp(`id="${id}"[^>]*`).exec(app);
+    assert.ok(element, `app.js no longer renders #${id} (${why})`);
+    assert.ok(element[0].includes(attribute), `#${id} (${why}) must keep ${attribute} or it stops announcing`);
+  }
+  // The progress bar is not a live region; it carries its own accessible name instead.
+  assert.match(app, /<progress id="live-progress-bar" aria-label="[^"]+"/);
+});
+
+test("toast switches role and politeness together so errors interrupt", async () => {
+  const app = await readFile(new URL("../app.js", import.meta.url), "utf8");
+  // An error toast must be alert+assertive; a normal one status+polite. Changing one without the
+  // other yields an assertive status or a polite alert, both of which announce wrongly.
+  assert.match(app, /toast\.setAttribute\("role", error \? "alert" : "status"\)/);
+  assert.match(app, /toast\.setAttribute\("aria-live", error \? "assertive" : "polite"\)/);
+  const markup = await readFile(new URL("../index.html", import.meta.url), "utf8");
+  assert.match(markup, /id="toast"[^>]*role="status"[^>]*aria-live="polite"/);
+});
+
 test("loss visualization includes validation-only records and real zeroes", () => {
   const chart = lossChart({ totalSteps: 10, history: [
     { step: 1, loss: null, evalLoss: 1.2, recordedAt: "2026-09-13T00:00:00Z" },
