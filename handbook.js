@@ -20,6 +20,15 @@ export const STEP_COPY = {
     title: "Preflight",
     purpose: "Check readiness without loading weights: sources, model inventory, dependencies, tokenizer and token budget.",
     boundaries: "Read-only. It is not a run report and not an out-of-memory guarantee.",
+    // Commands and note wording follow README.md's "Run an identity-bound
+    // experiment" section and app.js's terminal-commands disclosure ("Use the
+    // PEFT environment from training/requirements.txt"); this is the first
+    // step whose command invokes .venv/bin/python, so it is the honest home
+    // for the one-time environment setup.
+    setup: {
+      commands: "python3 -m venv .venv\n.venv/bin/python -m pip install -r training/requirements.txt",
+      note: "Requires Python 3.10+ for the separate PEFT environment. Installing the trainer downloads no model.",
+    },
   },
   train: {
     title: "Train",
@@ -40,6 +49,13 @@ export const STEP_COPY = {
     title: "Check the local runtime",
     purpose: "Confirm the local Mamase server can reach the MLX training runtime (enabled, available, not busy).",
     boundaries: "A capability probe is not proof the base model fits in memory or that training will finish.",
+    // Verbatim from app.js's own "One-time setup" disclosure (app.js:462-464)
+    // and README.md's "Managed local training on Apple Silicon" section,
+    // which already agree word for word.
+    setup: {
+      commands: "python3.12 -m venv .venv-training\n.venv-training/bin/python -m pip install -r training/requirements-mlx.txt\nnpm run dev",
+      note: "Requires Apple Silicon and Python 3.12. Installing the trainer does not download a model.",
+    },
   },
   launch: {
     title: "Launch on this Mac",
@@ -68,13 +84,21 @@ export const STEP_COPY = {
   },
 };
 
-// The "plan" entry is sourced from STEP_COPY, not duplicated, so the two copies
-// of this step's wording cannot drift apart again.
+/**
+ * The one claim that must render on every state of the page, not only the
+ * empty one: importing a dataset never keeps the private examples, and consent
+ * is required before training on them. An honesty claim that disappears once a
+ * user has a run is worse than one stated plainly everywhere.
+ */
+export const HANDBOOK_BOUNDARY = "Importing a dataset saves a description and fingerprint, not the examples themselves. Do not train on private material without permission.";
+
+// The "plan" entry is sourced from STEP_COPY, and "curate" reuses
+// HANDBOOK_BOUNDARY, so neither copy can drift apart from its other home.
 const FIRST_RUN = [
   {
     id: "curate", state: "next", title: "Curate the examples",
     purpose: "Import JSONL with messages or prompt/response records, and set a holdout aside before training.",
-    boundaries: "Import saves a description and fingerprint, not the examples themselves. Do not train on private material without permission.",
+    boundaries: HANDBOOK_BOUNDARY,
   },
   { id: "plan", state: "pending", ...STEP_COPY.plan },
 ];

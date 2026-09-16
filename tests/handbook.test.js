@@ -1,10 +1,12 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
+import { readFileSync, existsSync } from "node:fs";
 import { fileURLToPath } from "node:url";
-import { handbookModel, STEP_COPY } from "../handbook.js";
+import { handbookModel, STEP_COPY, HANDBOOK_BOUNDARY } from "../handbook.js";
 import { workflowReceipt } from "../workflow-receipt.mjs";
 import { createWorkspace, createRun } from "../workspace.js";
+
+const repoRoot = fileURLToPath(new URL("../", import.meta.url));
 
 const createdAt = "2026-09-14T00:00:00.000Z";
 
@@ -224,4 +226,44 @@ test("the most recently updated run is adopted and others are offered", () => {
   assert.equal(model.run.id, "run-2");
   assert.deepEqual(model.choices.map((choice) => choice.id).sort(), ["run-1", "run-2"]);
   assert.equal(handbookModel(workspace, { runId: "run-1" }).run.id, "run-1");
+});
+
+test("setup exists on exactly the steps that need an environment, with non-empty commands and note", () => {
+  const NEEDS_SETUP = new Set(["preflight", "capability"]);
+  for (const id of receiptStepIds()) {
+    if (NEEDS_SETUP.has(id)) {
+      assert.ok(STEP_COPY[id]?.setup, `${id} should carry setup instructions`);
+      assert.ok(STEP_COPY[id].setup.commands?.trim().length, `${id}'s setup.commands must be non-empty`);
+      assert.ok(STEP_COPY[id].setup.note?.trim().length, `${id}'s setup.note must be non-empty`);
+    } else {
+      assert.ok(!STEP_COPY[id]?.setup, `${id} should not carry setup instructions`);
+    }
+  }
+});
+
+test("no setup command names a path that does not exist in this repository", () => {
+  const checked = [];
+  for (const [id, copy] of Object.entries(STEP_COPY)) {
+    if (!copy.setup) continue;
+    // Negative lookbehind excludes ".venv-training/bin", which is not a path
+    // under the repository's training/ directory even though it contains
+    // the substring "training/".
+    const paths = [...copy.setup.commands.matchAll(/(?<![\w.-])training\/[\w.-]+/g)].map((match) => match[0]);
+    assert.ok(paths.length, `${id}'s setup should reference at least one training/ path`);
+    for (const path of paths) {
+      assert.ok(existsSync(repoRoot + path), `${id}'s setup references a path that does not exist: ${path}`);
+      checked.push(path);
+    }
+  }
+  assert.ok(checked.includes("training/requirements.txt"));
+  assert.ok(checked.includes("training/requirements-mlx.txt"));
+});
+
+test("HANDBOOK_BOUNDARY is exported, non-empty, and is what the empty state's curate step shows", () => {
+  assert.equal(typeof HANDBOOK_BOUNDARY, "string");
+  assert.ok(HANDBOOK_BOUNDARY.trim().length);
+  assert.match(HANDBOOK_BOUNDARY, /permission/i);
+  const model = handbookModel(createWorkspace(), {});
+  const curate = model.steps.find((step) => step.id === "curate");
+  assert.equal(curate.boundaries, HANDBOOK_BOUNDARY, "curate must not carry a second, divergent copy of this claim");
 });
