@@ -2,7 +2,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
 import { copyFile, mkdir, mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
-import { join } from "node:path";
+import { join, sep } from "node:path";
 import { tmpdir } from "node:os";
 import { createServer } from "node:http";
 import { once } from "node:events";
@@ -243,5 +243,29 @@ test("the isolated capability function serves approved visitors and refuses ever
     assert.match(noList.body.error, /no approved accounts|sign in/i);
   } finally {
     await rm(isolated, { recursive: true, force: true });
+  }
+});
+
+
+test("every configured function pattern matches a deployable file that .vercelignore keeps", async () => {
+  const config = JSON.parse(await readFile("vercel.json", "utf8"));
+  const entries = (await readdir("api", { recursive: true })).filter((name) => name.endsWith(".js")).map((name) => `api/${name.split(sep).join("/")}`);
+  assert.ok(entries.length, "The release needs deployable functions.");
+
+  // Vercel fails the build when a `functions` pattern matches nothing.
+  for (const pattern of Object.keys(config.functions)) {
+    const matcher = new RegExp(`^${pattern.split("*").map((part) => part.replace(/[.+?^${}()|[\]\\]/g, "\\$&")).join("[^/]*")}$`);
+    assert.ok(entries.some((entry) => matcher.test(entry)), `No function file matches "${pattern}"`);
+  }
+
+  // .vercelignore uses gitignore semantics: an unanchored directory name matches at
+  // EVERY depth, so a bare `training/` also deletes api/training/ before the build.
+  const patterns = (await readFile(".vercelignore", "utf8")).split("\n").map((line) => line.trim()).filter((line) => line && !line.startsWith("#"));
+  for (const entry of entries) {
+    for (const pattern of patterns) {
+      const bare = pattern.replace(/\/$/, "");
+      if (bare.startsWith("/") || bare.includes("*")) continue;
+      assert.ok(!entry.split("/").includes(bare), `.vercelignore "${pattern}" excludes ${entry}; anchor it as "/${bare}/"`);
+    }
   }
 });

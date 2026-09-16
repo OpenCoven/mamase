@@ -2,7 +2,7 @@
 .lab/
 .venv/
 .venv-training/
-training/
+/training/
 outputs/
 node_modules/
 .env*
