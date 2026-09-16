@@ -133,12 +133,30 @@ Run       : <run id> "<run name>"
 Lane      : <lane>
 
 Start here:
-  npm run ops -- inspect --workspace <file>
-  npm run ops -- receipt --workspace <file> --run <run id>
+  <the sequence that imports a backup into a workspace file, then reads it>
 
 Do exactly the receipt's nextAction, or report its blockers.
 Do not run training/train.py without my explicit go-ahead for this run.
 ```
+
+**Corrected after implementation.** This spec originally wrote those two lines as
+`ops -- inspect --workspace <the exported file>` followed by `ops -- receipt
+--workspace <the exported file>`. Both fail. `exportWorkspaceBackup` writes
+`mamase.workspace-backup.v1` with keys `{schema, exportedAt, workspace}`, while
+`ops.mjs`'s `--workspace` loader requires `mamase.workspace-file.v1` and rejects
+any key outside `{schema, workspace}`. A backup is `import-backup`'s input, not a
+workspace file — so the prompt must `init` a workspace file, `inspect` it for the
+revision, `import-backup` the export with `--expected-revision`, and only then
+`receipt`. The implementation carries the working sequence; this block states the
+shape rather than restating commands that can drift from it again.
+
+**Why no review caught it.** Twelve tests asserted the prompt's text, a spec
+review checked it against these requirements, a quality review mutation-tested
+it, and a security review threw thirty-six injection payloads at it. None of them
+ran the command. Every layer was correct in isolation and the artifact they
+jointly produced did not work. The guard that closes this is a test which
+extracts the command lines from the generated prompt and executes them against a
+real export — asserting behaviour, not wording.
 
 Rules:
 
