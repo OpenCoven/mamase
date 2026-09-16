@@ -107,13 +107,15 @@ gh issue list --repo OpenCoven/mamase --milestone "Reliable local experiments v1
 `.github/workflows/validation.yml` runs the same `scripts/validate.mjs` gate as
 the local command, on PRs, pushes to `main`, and manual dispatch.
 
-This repository is private, so its Actions minutes are metered against the
-organization's budget. The workflow is therefore deliberately **one job**, not a
-matrix: per-job checkout, `npm ci`, Chromium and CPU-runtime installs are each
-paid for separately, so four runners cost roughly four setups to execute the
-same four lanes. `tests/automation.test.js` fails if a second job is added, and
-also if `MAMASE_NODE_22` or `MAMASE_NODE_24` stops being wired, since dropping a
-Node major would quietly shrink coverage while still looking green.
+The workflow is deliberately **one job**, not a matrix: per-job checkout,
+`npm ci`, Chromium and CPU-runtime installs are each paid for separately, so four
+runners cost roughly four setups to execute the same four lanes. This began as a
+cost constraint while the repository was private and its minutes were metered;
+the repository is now public and its Actions minutes are free, but the shape is
+kept because it is also simply faster. `tests/automation.test.js` fails if a
+second job is added, and also if `MAMASE_NODE_22` or `MAMASE_NODE_24` stops being
+wired, since dropping a Node major would quietly shrink coverage while still
+looking green.
 
 | Lane | Executed scope |
 | --- | --- |
@@ -148,13 +150,31 @@ artifact paths are an explicit allowlist, guarded by the same test. No traces,
 HAR, DOM/storage dumps, console logs, datasets, identity files, cases/reports,
 `.lab`, `.mamase`, general workspaces, environments or caches are uploaded.
 
-A maintainer must first observe a genuine PR check, review failure
-behavior/evidence, then manually select its exact check name in the intended
-branch protection/ruleset if required. Billing/provider refusal remains an
-operator-owned external blocker: if the organization's Actions budget is
-exhausted or set to zero, jobs are refused before their first step with an empty
-runner and no log, and a successful local gate neither bypasses that policy nor
-supplies hosted review approval. Missing dependency/interpreter and intentional
+### Required check
+
+`main` is protected and **requires this check to pass before merge**:
+
+```
+Node 22 & 24 / CPU adapters / Chromium
+```
+
+Branches must also be up to date with `main` before merging, and force-pushes
+and deletions of `main` are refused. `enforce_admins` is deliberately off, so an
+administrator retains an escape hatch if a run ever wedges; using it is a
+recorded override, not a routine path.
+
+Changing the job's `name:` renames the check and silently un-requires it, since
+protection matches on the exact string. `tests/automation.test.js` pins that name
+along with the single-job shape, so a rename fails the suite before it can reach
+`main`.
+
+Billing/provider refusal remains an operator-owned external blocker, and a
+successful local gate never bypasses that policy or supplies hosted review
+approval. The failure signature is worth recognising: when an organization's
+Actions budget is exhausted or set to zero, jobs are refused before their first
+step with an empty runner, no steps and no log, which is a billing refusal and
+not a code failure. Public repositories are not metered, so this repository is
+not currently exposed to it. Missing dependency/interpreter and intentional
 browser failure paths are reproducible in `node --test tests/automation.test.js`.
 
 ## Accessibility evidence and limits
