@@ -18,7 +18,7 @@ import { readReviewFile, prepareReview, recordHumanDecision } from "./human-revi
 import { suiteFacts, decisionHistory, reviewBody, reviewAnnotations } from "./review-view.js";
 import { familiarContextLabel } from "./context-summary.js";
 import { ModelPlayground } from "./playground.js";
-import { handbookModel } from "./handbook.js";
+import { handbookModel, HANDBOOK_BOUNDARY } from "./handbook.js";
 import { agentPrompt, handoffFilename } from "./agent-handoff.js";
 
 const app = document.querySelector("#app");
@@ -381,6 +381,19 @@ function refreshManagedRun(runId) {
       const kind = focused.dataset.kind;
       render();
       if (action) document.querySelector(`[data-action="${CSS.escape(action)}"]${id ? `[data-id="${CSS.escape(id)}"]` : kind ? `[data-kind="${CSS.escape(kind)}"]` : ""}`)?.focus({ preventScroll: true });
+    } else if (current.page === "resources") {
+      // A live managed job keeps mutating and persisting `workspace` under an SSE
+      // stream that survives training.watch(null), so the handbook's adopted run
+      // (subject() picks the most-recently-updated one when no run is explicitly
+      // chosen) can silently drift out from under the user. Re-render so the
+      // screen always matches the run the hand-off button would actually export.
+      const focused = document.activeElement;
+      const isPicker = focused.name === "handbook-run";
+      const action = focused.dataset.action;
+      const id = focused.dataset.id;
+      render();
+      if (isPicker) document.querySelector('select[name="handbook-run"]')?.focus({ preventScroll: true });
+      else if (action) document.querySelector(`[data-action="${CSS.escape(action)}"]${id ? `[data-id="${CSS.escape(id)}"]` : ""}`)?.focus({ preventScroll: true });
     }
     const size = document.querySelector("#workspace-size");
     if (size) size.textContent = `${formatBytes(new TextEncoder().encode(JSON.stringify(workspace)).length)} / 4 MB`;
@@ -684,15 +697,47 @@ function handbookStep(step, index) {
       ${step.command ? `<div class="handbook-command"><pre>${esc(step.command)}</pre>${button("Copy", "copy-command", "copy", "small quiet", `data-command="${esc(step.command)}" aria-label="Copy the ${esc(step.title)} command"`)}</div>
         ${hosted ? '<p class="help">Run this on your Mac. This hosted site cannot run or monitor training.</p>' : ""}` : ""}
       ${step.note ? `<p class="help">${esc(step.note)}</p>` : ""}
+      ${step.setup ? `<details id="handbook-setup-${esc(step.id)}" class="disclosure"><summary>One-time setup <span>Run in a terminal inside the Mamase folder</span></summary><pre>${esc(step.setup.commands)}</pre><p class="help">${esc(step.setup.note)}</p></details>` : ""}
       ${step.boundaries ? `<details class="disclosure"><summary>What this does not do</summary><p>${esc(step.boundaries)}</p></details>` : ""}
     </div></li>`;
 }
 
+// Whether the local runtime has been asked for the managed-mlx lane's capability
+// step: "unset" (not asked yet), "loading" (a request is in flight), "ready" (an
+// answer arrived; read it from training.available) or "failed" (the request
+// itself errored, e.g. no JSON response -- the server did not answer, distinct
+// from never having asked at all).
+let handbookCapabilityState = "unset";
+
 function handbookState() {
+  // undefined = not queried (classifyCapability's "unknown"), null = queried but
+  // the server did not answer ("unreachable"), an object = the last answer. The
+  // ternary below must keep all three distinct -- collapsing null into undefined
+  // would silently hide the unreachable-server state.
+  const capability = training.available !== undefined ? training.available
+    : handbookCapabilityState === "failed" ? null
+    : undefined;
   return handbookModel(workspace, {
     runId: ui.handbookRun,
-    ...(training.available ? { capability: training.available } : {}),
+    ...(capability !== undefined ? { capability } : {}),
   });
+}
+
+// render() calls training.watch(null) on every page but the run detail page, so
+// the handbook's own capability step must ask for itself: the managed-mlx lane
+// is the only one that ever forwards a capability into the receipt (handbook.js
+// refuses it for peft/unselected), so only query there. Re-renders once the
+// answer (or failure) is in, from whatever page is still showing at that point.
+async function refreshHandbookCapability() {
+  if (handbookCapabilityState !== "unset" || handbookState().lane !== "managed-mlx") return;
+  handbookCapabilityState = "loading";
+  try {
+    await training.capability();
+    handbookCapabilityState = "ready";
+  } catch {
+    handbookCapabilityState = "failed";
+  }
+  if (route().page === "resources" && !storageError) render();
 }
 
 function resourcesPage() {
@@ -700,7 +745,7 @@ function resourcesPage() {
   const picker = model.choices.length > 1 && model.run
     ? `<label class="handbook-picker">Run <select name="handbook-run">${model.choices.map((choice) => `<option value="${esc(choice.id)}" ${choice.id === model.run.id ? "selected" : ""}>${esc(choice.name)}</option>`).join("")}</select></label>`
     : "";
-  return `${header("Training handbook", model.run ? button("Hand off to an agent", "agent-handoff", "download", "primary") : "", "Where this run stands, and the next thing to do.")}
+  return `${header("Training handbook", model.run ? button("Hand off to an agent", "agent-handoff", "download", "primary") : model.empty ? button("Download example dataset", "example-dataset", "download", "quiet") : "", "Where this run stands, and the next thing to do.")}
     <section class="card handbook-card">
       <div class="handbook-top">
         <p id="handbook-lane" class="eyebrow">${model.empty ? "NEW WORKSPACE" : `LANE: ${esc(model.lane)} · ${esc(model.run.name)}`}</p>
@@ -708,7 +753,7 @@ function resourcesPage() {
       </div>
       ${model.blockers.length ? `<div class="notice" role="status"><div><strong>Blocked</strong>${model.blockers.map((item) => `<p>${esc(item.message)}</p>`).join("")}</div></div>` : ""}
       <ol id="handbook-steps" class="handbook-steps">${model.steps.map(handbookStep).join("")}</ol>
-      <p class="help handbook-boundary">${model.empty ? "Import a dataset to begin." : "This page reads your saved workspace. It never inspects prepared bundles on disk; pass --bundle to npm run ops -- receipt to verify those files."}</p>
+      <p class="help handbook-boundary">${HANDBOOK_BOUNDARY} ${model.empty ? "Import a dataset to begin." : "This page reads your saved workspace. It never inspects prepared bundles on disk; pass --bundle to npm run ops -- receipt to verify those files."}</p>
     </section>
     <section class="card"><h2>Work with an agent</h2>
       <p>This repository ships a skill at <code>skills/mamase/SKILL.md</code>. Handing off exports your workspace and copies a prompt naming that file, this run and its lane.</p>
@@ -765,6 +810,7 @@ function render() {
   syncThemeControls();
   if (page === "testing" && !storageError) modelPlayground.mount(document.querySelector("#model-playground"), { artifactId: id, workspace });
   void training.watch(page === "sessions" && id && !storageError ? workspace.runs.find((run) => run.id === id) : null);
+  if (page === "resources" && !storageError) void refreshHandbookCapability();
 }
 
 function updateSidebarAccess() {
@@ -1094,8 +1140,10 @@ const actions = {
   "agent-handoff": async () => {
     const model = handbookState();
     assert(model.run, "Save a recipe before handing this workspace to an agent.");
-    const filename = handoffFilename(now());
-    download(filename, exportWorkspaceBackup(workspace, now()));
+    assertWorkspaceSource(savedSource);
+    const timestamp = now();
+    const filename = handoffFilename(timestamp);
+    download(filename, exportWorkspaceBackup(workspace, timestamp));
     const prompt = agentPrompt({ filename, run: model.run, lane: model.lane });
     try {
       await navigator.clipboard.writeText(prompt);
@@ -1405,7 +1453,7 @@ document.addEventListener("change", (event) => {
     modalContext.suggestedPath = run.recipe.outputPath;
     return;
   }
-  else if (event.target.name === "handbook-run") { ui.handbookRun = event.target.value; render(); return; }
+  else if (event.target.name === "handbook-run") { ui.handbookRun = event.target.value; render(); document.querySelector('select[name="handbook-run"]')?.focus({ preventScroll: true }); return; }
   else return;
   ui.runPage = 1;
   updateRunResults();
