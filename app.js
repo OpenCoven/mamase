@@ -470,7 +470,7 @@ function updateTrainingPanel(runId) {
     panel.innerHTML = `<span class="eyebrow">${hosted ? "HOSTED WORKSPACE · NO LOCAL TRAINER" : guide.workflow === "managed" ? "LOCAL TRAINING · MLX / APPLE SILICON" : "TERMINAL TRAINING · EXTERNAL PROCESS"}</span>
       <h2 tabindex="-1">${esc(guide.title)}</h2><p class="run-state-description">${esc(guide.description)}</p>
       ${["ready", "checking", "setup", "busy"].includes(guide.phase) ? `<ul class="launch-checklist"><li><span>${icon("check")}</span><div><strong>Recipe saved</strong><small>${esc(modelName(run.recipe.student))} · ${num(splitCounts(dataset).train)} training examples</small></div></li><li><span>${capability?.available ? icon("check") : icon("local")}</span><div><strong>${loading ? "Checking trainer" : capability?.available ? "Local trainer available" : "Local trainer needs setup"}</strong><small>Model compatibility is checked when the worker opens it.</small></div></li><li><span>${icon("upload")}</span><div><strong>Choose the original file next</strong><small>${esc(dataset.filename)} · ${formatBytes(dataset.bytes)} · no model download</small></div></li></ul>` : ""}
-      ${localJobActive(job) ? `<div class="live-progress"><div><strong id="live-percent"></strong><span id="live-progress-text" role="status"></span></div><progress id="live-progress-bar" aria-label="Reported learning updates"></progress><p class="help">Percentage of learning updates, not time remaining.</p></div>` : ""}
+      ${localJobActive(job) ? `<div class="live-progress"><div><strong id="live-percent"></strong><span id="live-progress-text"></span></div><progress id="live-progress-bar" aria-label="Reported learning updates"></progress><span id="live-progress-announcement" class="sr-only" role="status"></span><p class="help">Percentage of learning updates, not time remaining.</p></div>` : ""}
       ${diagnostic ? `<div class="run-warning" role="status"><strong>${trainingSyncErrors.has(runId) ? "Browser save needs attention" : "Details to resolve"}</strong><p>${esc(diagnostic)}</p></div>` : ""}
       ${guide.phase === "setup" ? `<details id="runtime-setup" class="disclosure" open><summary>One-time setup <span>Run in a terminal inside the Mamase folder</span></summary><pre>python3.12 -m venv .venv-training
 .venv-training/bin/python -m pip install -r training/requirements-mlx.txt
@@ -486,14 +486,25 @@ npm run dev</pre><p class="help">Requires Apple Silicon and Python 3.12. Bring a
     if (log.textContent !== text) { log.textContent = text; if (follow) log.scrollTop = log.scrollHeight; }
   }
   if (localJobActive(job)) {
+    const shown = trainingProgress(job.run.step, job.run.totalSteps, job.run.status);
     const value = `${num(job.run.step)} of ${num(job.run.totalSteps)} learning updates reported`;
     const live = panel.querySelector("#live-progress-text");
     if (live.textContent !== value) live.textContent = value;
-    panel.querySelector("#live-percent").textContent = `${Math.floor(job.run.step / job.run.totalSteps * 100)}%`;
+    panel.querySelector("#live-percent").textContent = `${shown.percent}%`;
     const progress = panel.querySelector("#live-progress-bar");
     progress.max = job.run.totalSteps;
     progress.value = job.run.step;
     progress.setAttribute("aria-valuetext", value);
+    // The visible text above changes on every reported step, which is right to look at and wrong to
+    // listen to: as a live region it queued one announcement per flush -- up to five a second -- and
+    // a screen reader falls behind the run reading a backlog of step counts. Announce each tenth of
+    // the way instead, and on any status change. The exact count stays available on demand through
+    // the progress bar's aria-valuetext, which is read when the user asks for it rather than pushed.
+    const announcement = panel.querySelector("#live-progress-announcement");
+    if (announcement.dataset.milestone !== shown.milestone) {
+      announcement.dataset.milestone = shown.milestone;
+      announcement.textContent = shown.announcement;
+    }
   }
   const files = document.querySelector("#run-job-files");
   if (job && files.dataset.job !== job.id) {
@@ -905,6 +916,18 @@ function notify(message, error = false) {
 
 let modalContext;
 let previousFocus;
+// render() replaces the element the keyboard was on, so focus cannot simply be stashed and put
+// back: it has to be found again afterwards. ids are stable, data-action identifies the control
+// that opened a dialog, and an in-page submit is identified by its form.
+function refindable(element) {
+  if (!element) return "";
+  if (element.id) return `#${CSS.escape(element.id)}`;
+  const action = element.dataset?.action;
+  if (action) return `[data-action="${CSS.escape(action)}"]${element.dataset.id ? `[data-id="${CSS.escape(element.dataset.id)}"]` : ""}`;
+  const owner = element.closest?.("[data-form]")?.dataset.form;
+  return owner && element.type === "submit" ? `[data-form="${CSS.escape(owner)}"] [type="submit"]` : "";
+}
+
 function openModal(title, body, form = "", context = {}) {
   if (!dialog.open) previousFocus = document.activeElement;
   modalContext = context;
@@ -1381,9 +1404,18 @@ async function submitForm(form) {
     saveDraft();
   }
   if (type === "reset" || type === "confirm-restore") { ui.program = "all"; ui.status = "all"; ui.query = ""; training.forget(); pendingTraining.clear(); trainingSyncErrors.clear(); }
+  // Where the keyboard should end up once the page is rebuilt. A submission inside a dialog returns
+  // to the control that opened it; an in-page submission returns to its own submit button.
+  const returnTo = refindable(form.closest("dialog") ? previousFocus : form.querySelector('[type="submit"]'));
   closeModal();
   if (destination && location.hash !== destination) location.hash = destination; else render();
   if (type === "dataset" && context.fromLab) document.querySelector("#field-datasetId")?.focus();
+  // Navigating already moves focus into #main, and the line above places it deliberately. This only
+  // catches the remaining case: a successful submit that rebuilds the page in place and would
+  // otherwise strand a keyboard user on <body>, back at the first Tab stop.
+  if (document.activeElement === document.body) {
+    ((returnTo && document.querySelector(returnTo)) || document.querySelector("#main"))?.focus();
+  }
   notify(message);
 }
 

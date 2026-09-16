@@ -44,6 +44,8 @@ certification, performance benchmark, or security assessment.
 | 7 | Medium | Artifact notes were recorded but not displayed; evaluation entry defaulted to the most recent artifact; changing source run left the old suggested path. | Artifact detail pages show notes, file reference, source run, base model, dataset fingerprint, and evaluations. Evaluation entry preselects the artifact. Source-run changes update only untouched path suggestions, preserving custom paths. |
 | 8 | High | The evaluation table invited comparison but did not enforce comparability. | Explicit baseline/candidate comparison. Different benchmark versions, score scales, sample counts, missing conditions, or differing conditions block the delta. Compatible results show percentage-point change without declaring a winner. |
 | 9 | High | The chart ignored validation loss entirely, including runs with validation-only observations. | Both loss series are rendered with distinct color and line style. Missing series are labeled, zero remains a real observation, the latest validation loss is summarized, and an accessible table exposes exact values. |
+| 12 | High | A scripted keyboard-only pass over the six core flows found that every form submission that did not navigate left focus on `<body>`: the toast announced the outcome, so nothing on screen revealed it, but the keyboard returned to the first Tab stop — nineteen of them from the settings form. | `submitForm` records a re-findable selector for the control the keyboard was on and restores it once the page is rebuilt: a dialog returns to the control that opened it, an in-page form to its own submit button, and anything else to `#main`. Pinned in `scripts/verify-ux.mjs` for both shapes. |
+| 13 | Medium | Training progress was a polite live region updated once per reported step, throttled to 200ms — up to five queued announcements a second, so a screen reader reads a backlog instead of the run. | Shown and announced are now separate: `#live-progress-text` still changes every step and is no longer a live region, `#live-progress-announcement` announces each tenth of the way and on any status change, and the exact count stays on demand through the progress bar's `aria-valuetext`. Over a 500-step run this is 11 announcements instead of 501, measured in `tests/training-state.test.js`. |
 | 10 | High | At 320x568 the overview headline overlapped its action row even though the document itself reported no vertical overflow. Valid unbroken model/objective text could also widen run details to over 21,000px. | Very short screens reflow into a scrollable overview; long prose wraps safely. Ordinary viewport-bounded layouts remain intact. Short drawers scroll naturally. Wide tables remain keyboard-scrollable, with correctly contained screen-reader-only action headings. |
 | 11 | High | Cross-tab conflict feedback disappeared after a temporary toast, leaving stale forms with no persistent recovery path. | A persistent warning preserves form DOM and offers export/reload recovery. Reload requires confirmation; stale saves still fail without overwriting newer data. |
 
@@ -135,6 +137,10 @@ isolated browser contexts. It covers all 11 enhancement journeys, including:
 - The bypass link is the first Tab stop of a fresh load and moves focus into
   `#main`; closing a dialog by Escape, its close button, or Cancel returns focus
   to the control that opened it.
+- A submission that rebuilds the page in place hands focus back rather than
+  dropping it on `<body>` — both an in-page form and a dialog that saves without
+  navigating. The toast announces the outcome either way, so nothing visible
+  revealed that a keyboard user had been returned to the first Tab stop.
 
 The sweep itself lives in `scripts/ux-structure.mjs` and is proved by
 `tests/ux-structure.test.js`, which drives it against pages built to contain one

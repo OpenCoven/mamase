@@ -60,7 +60,7 @@ test("form hints and table actions have explicit accessible associations", () =>
 // streamed training progress, import outcomes, restore results. Dropping role/aria-live from one of
 // these leaves the UI looking identical and silently stops announcing, which no visual test notices.
 const liveRegions = [
-  ["live-progress-text", "role=\"status\"", "streamed training progress"],
+  ["live-progress-announcement", "role=\"status\"", "training progress, at each tenth of the way"],
   ["run-count", "role=\"status\"", "filtered run totals"],
   ["recipe-readiness", "role=\"status\"", "plan readiness"],
   ["report-summary", "role=\"status\"", "paired report import outcome"],
@@ -82,6 +82,26 @@ test("status regions keep the live-region announcement they depend on", async ()
   }
   // The progress bar is not a live region; it carries its own accessible name instead.
   assert.match(app, /<progress id="live-progress-bar" aria-label="[^"]+"/);
+});
+
+test("the step-by-step progress text is shown but not announced, and the announcement is throttled", async () => {
+  const app = await readFile(new URL("../app.js", import.meta.url), "utf8");
+  // #live-progress-text changes on every reported step. As a live region that queued one
+  // announcement per flush -- up to five a second -- so a screen reader fell behind the run reading
+  // a backlog. It must stay visible and stay silent; #live-progress-announcement carries the
+  // announcement instead, and only when the tenth or the status changes.
+  const visible = /<span id="live-progress-text"[^>]*>/.exec(app);
+  assert.ok(visible, "app.js no longer renders the visible progress text");
+  assert.doesNotMatch(visible[0], /role="status"|aria-live/,
+    "the per-step text must not be a live region, or every step is announced again");
+  assert.match(app, /<span id="live-progress-announcement" class="sr-only" role="status">/);
+  // The exact count must still be reachable on demand, which is what aria-valuetext is for.
+  assert.match(app, /progress\.setAttribute\("aria-valuetext", value\)/);
+  // The announcement is written only when the milestone changes, never on every update. How often
+  // that is -- eleven times over a five-hundred-step run -- is pinned behaviourally against
+  // trainingProgress() in tests/training-state.test.js, which is the stronger statement.
+  assert.match(app, /announcement\.dataset\.milestone !== shown\.milestone/);
+  assert.match(app, /announcement\.textContent = shown\.announcement/);
 });
 
 test("toast switches role and politeness together so errors interrupt", async () => {
