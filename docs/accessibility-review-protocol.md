@@ -1,0 +1,147 @@
+# Keyboard-only and screen-reader review protocol
+
+Date: 2026-09-16
+Tracks: [#44](https://github.com/OpenCoven/mamase/issues/44)
+
+This is the script for the half of #44 that a machine cannot run. `npm run
+test:e2e` observes structure: it can prove a button has an accessible name and
+that a heading level does not skip. It cannot judge whether what a screen reader
+says at that moment tells you what happened. That judgement is the whole point
+of this pass, and it is why the `limitations` string in `scripts/validate.mjs`
+says human review was not executed — a sentence that stays true for every run of
+the gate, including after you finish this document.
+
+## Before you start
+
+```sh
+npm ci
+npm start           # http://127.0.0.1:4173
+```
+
+Seed a workspace with real shape rather than an empty one, or most flows below
+have nothing to exercise: import a dataset, save a recipe, and record progress
+against it. `npm run ops -- receipt` tells you which step the workspace is on if
+you lose track.
+
+Two passes, in this order, because they fail differently:
+
+1. **Keyboard only.** Unplug or ignore the mouse. Trackpad included. If you
+   reach for the pointer, that is the finding — record it and continue.
+2. **Screen reader.** VoiceOver is sufficient: `Cmd+F5` to toggle, `Ctrl+Opt`
+   is the VO modifier, `Ctrl+Opt+U` opens the rotor (headings, landmarks, form
+   controls), `Ctrl+Opt+A` reads continuously from the cursor.
+
+Record every finding in the table at the bottom as you go. Do not batch them
+up at the end; the specific keystroke is the part you forget first.
+
+## What the automated gate already covers
+
+Do not re-verify these by hand. `scripts/verify-ux.mjs` asserts them on every
+route, and a human repeating them finds nothing:
+
+- Exactly one `h1` per page, and no skipped heading levels.
+- Every visible Tab stop has an accessible name and a visible focus indicator.
+- No positive `tabindex`, and no focusable control inside `[aria-hidden]` or
+  `[inert]`.
+- Exactly one `main` landmark; every `nav` landmark is named.
+- The first Tab of a fresh load reaches "Skip to content", and activating it
+  moves focus into `#main`.
+- Closing a dialog by Escape, the close button, or Cancel returns focus to the
+  control that opened it.
+- Contrast in light, dark and system appearance; status conveyed by more than
+  colour; no horizontal overflow at 320px, 760px, desktop or short landscape.
+
+Your job is the part underneath all of that: **is the announcement true, timely
+and sufficient to act on?**
+
+## Flows
+
+Each flow lists what to do and the question only a person can answer. Work
+through them in order; later flows depend on state the earlier ones create.
+
+### 1. Workspace creation and recovery
+
+Settings → change the workspace name → save. Then export a backup, reset the
+workspace, and restore from the file.
+
+- Does the screen reader say the name was **saved**, or only re-read the field?
+- On restore, is the preview (source format, collection counts) announced
+  *before* the confirm button, or does the reader meet the confirm first?
+- Reset is destructive. Is that conveyed before activation, not after?
+
+### 2. Identity-bound preparation
+
+Playground → fill the recipe: familiar ID, coven instance ID, dataset, base
+model, hyperparameters. Submit with a field deliberately left blank.
+
+- When validation rejects the form, does focus move to the offending field, and
+  is the error read with it — or is the error announced with focus still on the
+  submit button, leaving you to hunt for which field failed?
+- `#recipe-readiness` announces plan readiness as you type. Is it useful, or
+  does it interrupt you mid-field?
+
+### 3. Training launch and interruption
+
+Launch a run, then interrupt it (close the terminal, or cancel).
+
+- `#live-progress-text` announces streamed progress. Over a run of any length,
+  is that a useful heartbeat or a barrage? A `role="status"` that fires on every
+  reported step can make the page unusable while training.
+- When the run is interrupted, does the reader learn it **stopped**, and does it
+  distinguish cancelled from failed?
+- `#live-progress-bar` is a `progressbar` with an accessible name. Does VoiceOver
+  give you a percentage, or just the name?
+
+### 4. Paired report import, including the delayed-import dialog-close path
+
+Import a paired report. Then repeat it, closing the dialog *while the import is
+still resolving* — this is the path #6 fixed and the one most likely to strand a
+non-visual user.
+
+- `#report-summary` announces new / duplicate / conflict counts. If you closed
+  the dialog early, is the outcome still announced, or did it announce into a
+  dialog that no longer exists?
+- Where is focus after the dialog closes on its own rather than by your action?
+- Replaying an identical report is a no-op. Does the reader convey "nothing
+  changed" as clearly as it conveys a successful import? Silence reads as
+  failure.
+
+### 5. Human review decision recording
+
+Review → open a paired case → record an approve and a reject, each with a
+rationale.
+
+- The decision is the one thing on this site a machine must never record. Is it
+  unambiguous, by ear alone, which candidate you are deciding on?
+- Are the evidence and the limitations read before the decision buttons?
+- After recording, is the new state announced, or must you go looking?
+
+### 6. Backup restore preview
+
+Settings → restore a backup, including a legacy v1 file and a deliberately
+corrupt one.
+
+- `#restore-summary` announces the outcome. For the corrupt file, does the
+  reader convey that **nothing was changed**? An atomic failure that sounds like
+  a partial one is worse than a crash.
+- Is the version mismatch (v1 vs current) audible, or only visible?
+
+## Recording findings
+
+One row per finding. File each as an issue with these columns filled in; link
+the issues back to #44.
+
+| Flow | Step / keystroke | Element | What happened | What should happen | Pass |
+|---|---|---|---|---|---|
+| | | | | | keyboard / screen reader |
+
+## After the pass
+
+1. File the findings as issues with reproduction steps.
+2. For each finding the automated runner **could** have caught and did not, add
+   a regression to `scripts/verify-ux.mjs`. This is the durable half: a human
+   pass that leaves the runner unchanged has to be repeated from scratch next
+   time.
+3. Leave the `limitations` string in `scripts/validate.mjs` alone. It states
+   that human review was not executed *by the gate*, which no single review
+   makes untrue. Change it only if that claim itself stops being accurate.

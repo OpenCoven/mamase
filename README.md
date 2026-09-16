@@ -1295,3 +1295,19 @@ evidence of real model training.
 
 See [the comprehensive UI/UX audit](UI-UX-AUDIT.md) for the findings, implemented
 enhancements, and review boundaries.
+
+`npm run test:e2e` also sweeps every route, using `scripts/ux-structure.mjs`, for
+the structure a keyboard-only or screen-reader user navigates by: one `h1` per page, no skipped heading levels, an
+accessible name and a visible focus indicator on every Tab stop, one `main`
+landmark, a name on every `nav`, a working bypass link, and focus returned to the
+opening control when a dialog closes. **That is automated observation, not
+assistive-technology review.** It cannot judge whether an announcement is useful,
+timely, or sufficient to act on. The human pass that can is scripted in
+[the keyboard and screen-reader review protocol](docs/accessibility-review-protocol.md);
+the `limitations` field in every validation run still records that it was not
+executed.
+
+The sweep's own checks are covered by `tests/ux-structure.test.js` in the Node
+suite, against pages built to contain one defect each. A green gate does not
+establish that a check has teeth, because an app-wide mutation fails an earlier
+assertion in `scripts/verify-ux.mjs` before the sweep is reached.

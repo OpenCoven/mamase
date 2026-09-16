@@ -11,6 +11,7 @@ import { DRAFT_KEY } from "../experience.js";
 import { MAX_BACKUP_BYTES } from "../backups.js";
 import { verifyReviewUx } from "./verify-review-ux.mjs";
 import { contrastRatio, writeFailureEvidence } from "./ux-evidence.mjs";
+import { auditStructure, assertStructure } from "./ux-structure.mjs";
 
 const server = createAppServer({ auth: createAuthApi({ env: {} }) });
 server.listen(0, "127.0.0.1");
@@ -24,6 +25,7 @@ let browser;
 let currentPage;
 let layouts = 0;
 let contrastChecks = 0;
+let structures = 0;
 const newContext = async (options = {}) => {
   const context = await browser.newContext({ ...options, serviceWorkers: "block" });
   await context.route("**/*", (route) => {
@@ -132,6 +134,11 @@ const contrast = async (page) => {
     assert.ok(contrastRatio(fg, bg) >= minimum, `${label}: ${fg} on ${bg} must meet ${minimum}:1`);
     contrastChecks++;
   }
+};
+
+const structure = async (page, label) => {
+  assertStructure(await auditStructure(page), label);
+  structures++;
 };
 
 const keyboardActivate = async (page, target) => {
@@ -887,6 +894,54 @@ try {
   assert.ok(await lab.locator("#workspace-alert").isHidden());
   await other.close();
   await populated.close();
+  // Structure and keyboard reachability over every route, including the states a human reviewer
+  // reaches by mistake — a stale bookmark, a deleted run — which is exactly where page titles and
+  // Tab stops tend to be forgotten.
+  const structureContext = await newContext({ viewport: { width: 1440, height: 900 } });
+  await structureContext.addInitScript((data) => localStorage.setItem("mamase.coven-lab.v1", JSON.stringify(data)), fixture());
+  const structurePage = await structureContext.newPage();
+  watch(structurePage);
+  for (const path of ["home", "projects", "datasets", "datasets/teacher-data", "sessions", "sessions/run-0",
+    "checkpoints", "checkpoints/artifact-0", "playground", "testing", "evaluations", "resources", "settings",
+    "sessions/deleted-run", "datasets/deleted-dataset", "checkpoints/deleted-artifact", "no-such-page"]) {
+    await go(structurePage, path);
+    await structure(structurePage, `#/${path}`);
+  }
+
+  // The first Tab on any page must reach the bypass link, and it must actually move focus into the
+  // main landmark. A skip link that renders but does not move focus is the classic silent failure:
+  // it is invisible until focused, so nothing on screen ever reveals that it stopped working.
+  await go(structurePage, "sessions");
+  // A hash route change keeps the document, and with it whatever the sweep above last focused. The
+  // bypass link is the first stop of a *fresh* load, which is the state a person actually arrives in.
+  await structurePage.reload();
+  await structurePage.locator("#main").waitFor();
+  await structurePage.keyboard.press("Tab");
+  assert.equal(await structurePage.evaluate(() => document.activeElement?.className), "skip-link",
+    "the first Tab stop must be the skip link");
+  await structurePage.keyboard.press("Enter");
+  assert.equal(await structurePage.evaluate(() => document.activeElement?.id), "main",
+    "activating the skip link must move focus into the main landmark, not just the scroll position");
+
+  // Closing a dialog must hand focus back to the control that opened it. Lose it and focus falls to
+  // <body>: a keyboard user restarts from the top of the page after every dialog, and a screen
+  // reader announces nothing at all.
+  await go(structurePage, "datasets");
+  const importer = structurePage.getByRole("button", { name: "Import JSONL", exact: true });
+  for (const dismiss of ["Escape", "Close dialog", "Cancel"]) {
+    await importer.focus();
+    await structurePage.keyboard.press("Enter");
+    await structurePage.locator("dialog[open]").waitFor();
+    assert.ok(await structurePage.evaluate(() => document.querySelector("dialog[open]")?.contains(document.activeElement)),
+      `opening the dialog must move focus inside it (${dismiss})`);
+    if (dismiss === "Escape") await structurePage.keyboard.press("Escape");
+    else await structurePage.getByRole("button", { name: dismiss, exact: true }).click();
+    await structurePage.locator("dialog[open]").waitFor({ state: "hidden" });
+    assert.equal(await structurePage.evaluate(() => document.activeElement?.textContent?.trim()), "Import JSONL",
+      `closing the dialog with ${dismiss} must return focus to the control that opened it`);
+  }
+  await structureContext.close();
+
   const statusData = fixture();
   statusData.runs = statusData.runs.slice(0, 10);
   for (const [index, status] of ["paused", "completed", "failed", "cancelled"].entries()) {
@@ -942,7 +997,7 @@ try {
   }
   assert.deepEqual(errors, []);
   assert.deepEqual(external, []);
-  console.log(`UX end-to-end passed: ${layouts} responsive layouts, ${contrastChecks} contrast assertions, light/dark/system non-color cues and keyboard core actions, interrupted paired text/digest recovery, read-only preflight instructions, recoverable drafts, report previews and no-op replay, atomic import/restore recovery, versioned and legacy private-summary backups, independent appearance, paired-report lineage and regression review, matching CSV exports, guarded comparisons and loss accessibility. Human assistive-technology review was NOT executed.`);
+  console.log(`UX end-to-end passed: ${layouts} responsive layouts, ${contrastChecks} contrast assertions, ${structures} route structure sweeps (headings, Tab-stop names, focus indicators, landmarks), skip-link and dialog focus return, light/dark/system non-color cues and keyboard core actions, interrupted paired text/digest recovery, read-only preflight instructions, recoverable drafts, report previews and no-op replay, atomic import/restore recovery, versioned and legacy private-summary backups, independent appearance, paired-report lineage and regression review, matching CSV exports, guarded comparisons and loss accessibility. Human assistive-technology review was NOT executed.`);
 } catch (error) {
   if (process.env.MAMASE_UX_EVIDENCE) {
     try { await writeFailureEvidence(process.env.MAMASE_UX_EVIDENCE, currentPage, layouts); }

@@ -60,8 +60,10 @@ export function badge(status) {
   return `<span class="badge status-${esc(status)}"><span class="status-dot"></span>${esc(status)}</span>`;
 }
 
-export function empty(title, description, action = "", iconName = "spark", compact = false) {
-  return `<div class="empty-state ${compact ? "compact" : ""}"><div class="empty-icon">${icon(iconName)}</div><h2>${title}</h2><p>${description}</p>${action}</div>`;
+// `level` is 2 for an empty state inside a page that already has its h1, and 1 for the not-found
+// states that are the whole page: without it those pages carry no page title for heading navigation.
+export function empty(title, description, action = "", iconName = "spark", compact = false, level = 2) {
+  return `<div class="empty-state ${compact ? "compact" : ""}"><div class="empty-icon">${icon(iconName)}</div><h${level}>${title}</h${level}><p>${description}</p>${action}</div>`;
 }
 
 export function table(headers, rows, label) {
