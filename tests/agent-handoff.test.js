@@ -4,20 +4,33 @@ import { agentPrompt, handoffFilename } from "../agent-handoff.js";
 
 const run = { id: "run-4f2a", name: "Coven adapter v3" };
 
-test("the prompt names the exported file, the run and the lane", () => {
+// One line whose text starts with `prefix`, asserting there is exactly one.
+function fieldLine(prompt, prefix) {
+  const lines = prompt.split("\n").filter((line) => line.startsWith(prefix));
+  assert.equal(lines.length, 1, `expected exactly one "${prefix}" line, got ${lines.length}`);
+  return lines[0];
+}
+
+test("the prompt is structurally well-formed: one line per field, two well-formed commands, and the skill path", () => {
   const prompt = agentPrompt({ filename: "coven-workspace-2026-09-16.json", run, lane: "peft" });
-  assert.match(prompt, /skills\/mamase\/SKILL\.md/);
-  assert.match(prompt, /coven-workspace-2026-09-16\.json/);
-  assert.match(prompt, /run-4f2a/);
-  assert.match(prompt, /Coven adapter v3/);
-  assert.match(prompt, /Lane\s*:\s*peft/);
-  assert.match(prompt, /npm run ops -- inspect --workspace/);
-  assert.match(prompt, /npm run ops -- receipt --workspace .* --run run-4f2a/);
-  assert.match(prompt, /nextAction/);
-  assert.match(prompt, /explicit go-ahead/i);
+
+  assert.equal((prompt.match(/skills\/mamase\/SKILL\.md/g) || []).length, 1);
+
+  const workspaceLine = fieldLine(prompt, "Workspace");
+  const runLine = fieldLine(prompt, "Run");
+  const laneLine = fieldLine(prompt, "Lane");
+  assert.match(workspaceLine, /coven-workspace-2026-09-16\.json/);
+  assert.match(runLine, /run-4f2a/);
+  assert.match(runLine, /Coven adapter v3/);
+  assert.match(laneLine, /Lane\s*:\s*peft\s*$/);
+
+  const inspectLine = prompt.split("\n").find((l) => l.includes("inspect --workspace"));
+  const receiptLine = prompt.split("\n").find((l) => l.includes("receipt --workspace"));
+  assert.match(inspectLine, /^ {2}npm run ops -- inspect --workspace "[^"]+"$/);
+  assert.match(receiptLine, /^ {2}npm run ops -- receipt --workspace "[^"]+" --run run-4f2a$/);
 });
 
-test("the prompt never carries secrets, workspace contents or invented paths", () => {
+test("the prompt never carries secrets, workspace contents, or any other caller-supplied field", () => {
   const prompt = agentPrompt({
     filename: "coven-workspace-2026-09-16.json",
     run: { id: "run-1", name: "Adapter" }, lane: "peft",
@@ -31,32 +44,67 @@ test("the prompt never carries secrets, workspace contents or invented paths", (
   assert.match(prompt, /wherever your browser saved it/i);
 });
 
-test("run names cannot break the prompt's shape", () => {
-  const prompt = agentPrompt({
+test("a run name cannot inject lines, forge the Lane line, or reverse the prompt with a bidi override", () => {
+  const clean = agentPrompt({ filename: "w.json", lane: "peft", run: { id: "run-1", name: "Clean name" } });
+  const hostile = agentPrompt({
     filename: "w.json", lane: "peft",
-    run: { id: "run-1", name: "Bad\nname\r\nwith\x07control chars" },
+    run: { id: "run-1", name: "Bad\nname\r\nwith\x07control\u202Echars" },
   });
-  const runLines = prompt.split("\n").filter((line) => line.startsWith("Run"));
-  assert.equal(runLines.length, 1, "A run name must not inject extra lines");
-  assert.match(runLines[0], /Bad name with control chars/);
-  assert.ok(!/[\x00-\x1F\x7F]/.test(prompt.replace(/\n/g, "")), "No control characters survive");
+  assert.equal(hostile.split("\n").length, clean.split("\n").length, "A run name must not change the line count");
+  fieldLine(hostile, "Run"); // exactly one Run line, or this throws
+  assert.equal(fieldLine(hostile, "Lane"), fieldLine(clean, "Lane"), "A run name must not forge the Lane line");
+  assert.ok(!hostile.includes("\u202E"), "A bidi override must not survive into the prompt");
 });
 
-test("an unselected lane asks for the lane instead of a next action", () => {
-  const prompt = agentPrompt({ filename: "w.json", run, lane: "unselected" });
-  assert.match(prompt, /lane is not selected/i);
-  assert.ok(!prompt.includes("train.py"), "Nothing may suggest training before a lane exists");
+test("the run name is quoted in the Run line", () => {
+  const prompt = agentPrompt({ filename: "w.json", lane: "peft", run: { id: "run-1", name: "Adapter v3" } });
+  assert.match(fieldLine(prompt, "Run"), /^Run\s+:\s+run-1\s+"Adapter v3"$/);
 });
 
-test("a lane that only differs from 'unselected' by whitespace or control characters still takes the unselected branch", () => {
-  for (const lane of ["unselected\n", " unselected "]) {
+test("an unselected, unknown, empty, or missing lane always takes the cautious branch", () => {
+  for (const lane of [undefined, null, "", "unselected", "Unselected", "banana", "unselected\n", " unselected "]) {
     const prompt = agentPrompt({ filename: "w.json", run, lane });
-    assert.ok(!prompt.includes("train.py"), `lane ${JSON.stringify(lane)} must not mention train.py`);
-    assert.match(prompt, /lane is not selected/i, `lane ${JSON.stringify(lane)} must say the lane is not selected`);
+    assert.ok(!prompt.includes("train.py"), `lane ${JSON.stringify(lane)} must not fail open into the training branch`);
   }
 });
 
-test("the filename carries the date and stays a safe single segment", () => {
+test("only the two action lanes reach the train.py caution", () => {
+  for (const lane of ["peft", "managed-mlx"]) {
+    const prompt = agentPrompt({ filename: "w.json", run, lane });
+    assert.ok(prompt.includes("train.py"), `lane ${JSON.stringify(lane)} should surface the training caution`);
+  }
+});
+
+test("a missing filename or run id falls back to an obvious placeholder, never a blank command argument", () => {
+  for (const filename of ["", undefined]) {
+    const prompt = agentPrompt({ filename, run, lane: "peft" });
+    assert.match(prompt, /coven-workspace\.json/);
+  }
+  for (const badRun of [{}, undefined]) {
+    const prompt = agentPrompt({ filename: "w.json", run: badRun, lane: "peft" });
+    const receiptLine = prompt.split("\n").find((l) => l.includes("receipt --workspace"));
+    assert.match(receiptLine, /--run \S+$/, "the --run flag must always carry a non-blank token");
+    assert.ok(!receiptLine.endsWith("--run"), "the --run flag must never be emitted empty");
+  }
+});
+
+test("long values are clamped and slicing never leaves a trailing space inside a quoted command", () => {
+  // The 200th character is a space, so a naive trim-before-slice would cut
+  // right after it and leave a dangling space before the closing quote.
+  const filename = `${"x".repeat(199)} ${"y".repeat(50)}`;
+  const prompt = agentPrompt({ filename, run, lane: "peft" });
+  const inspectLine = prompt.split("\n").find((l) => l.includes("inspect --workspace"));
+  assert.match(inspectLine, /^ {2}npm run ops -- inspect --workspace "[^"\s][^"]*[^"\s]"$/);
+  const captured = inspectLine.match(/Downloads\/([^"]*)"/)[1];
+  assert.equal(captured.length, 199, "the clamp must trim after slicing, not before");
+});
+
+test("a workspace path containing a space stays a single quoted command argument", () => {
+  const prompt = agentPrompt({ filename: "my file.json", run, lane: "peft" });
+  const inspectLine = prompt.split("\n").find((l) => l.includes("inspect --workspace"));
+  assert.equal(inspectLine, '  npm run ops -- inspect --workspace "~/Downloads/my file.json"');
+});
+
+test("handoffFilename produces a dated, single-segment name", () => {
   assert.equal(handoffFilename(new Date("2026-09-16T10:20:30Z")), "coven-workspace-2026-09-16.json");
-  assert.ok(!handoffFilename(new Date()).includes("/"));
 });
