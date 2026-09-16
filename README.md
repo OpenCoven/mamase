@@ -1166,16 +1166,28 @@ recorded job ID and replays are `unchanged`. Receipts end at human handoff: an
 
 ### Training handbook
 
-`#/resources` renders the same receipt as `npm run ops -- receipt` without
-`--bundle`: the adopted run's lane, every step's state, its command, and the one
-permitted next action. Both read `workflow-receipt.mjs`, so the page and the CLI
-cannot disagree about where a run stands; a test asserts their steps are equal.
+`#/resources` renders `workflow-receipt.mjs`'s own receipt for the adopted run —
+the same function `npm run ops -- receipt` calls, never a page-side
+reimplementation of lane, step or next-action rules. That shared implementation
+is the guarantee a test asserts: neither side re-derives the answer from
+scratch. It is not a guarantee that the two surfaces report the same thing on a
+given workspace, because they can be handed different inputs. The page always
+forwards a live `capability` for the managed-mlx lane and never a `job`, so on
+one identical workspace the page can report `capability=blocked,
+launch=blocked, state=blocked` while a bare `npm run ops -- receipt` (no flags)
+reports `capability=next, launch=pending, state=planned`, and a `--server`
+receipt can diverge the other way once a job exists that the page never passes.
+Match the inputs the two sides read — `--server` for the managed lane's
+capability and job, `--bundle` for PEFT's prepared-file checks — and the
+outputs agree.
 
 Because `--bundle` is omitted, bundle fingerprints and preflight results are
 absent by definition of that mode — the page reads your saved workspace and never
 inspects prepared files on disk. Pass `--bundle` to the CLI receipt to verify
-those. Each step discloses what it does **not** do, and the steps that need a
-Python environment carry the one-time setup commands for their lane. On a hosted
+those. Each step discloses what it does **not** do. Only the first step in each
+lane that invokes a Python environment — `preflight` for PEFT, `capability` for
+managed MLX — carries the one-time setup commands; `train` and `evaluate` also
+run `.venv/bin/python` but assume that environment already exists. On a hosted
 deployment the commands are marked to run on your Mac.
 
 **Hand off to an agent** exports the workspace and copies a prompt naming that
