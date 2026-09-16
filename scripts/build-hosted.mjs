@@ -24,7 +24,7 @@ for (const name of new Set([...publicAssets.values()].map(([name]) => name))) {
   assets.set(name, content);
 }
 const authSources = new Map();
-for (const name of ["auth-api.mjs", "workos-provider.mjs", ...authActions.map((action) => `api/auth/${action}.js`)]) {
+for (const name of ["auth-api.mjs", "access-list.mjs", "workos-provider.mjs", ...authActions.map((action) => `api/auth/${action}.js`)]) {
   const source = join(project, name);
   const info = await lstat(source);
   assert.ok(info.isFile() && !info.isSymbolicLink(), `Auth source must be a regular file: ${name}`);
@@ -57,6 +57,7 @@ if (process.argv.includes("--prebuilt")) {
     await mkdir(join(bundle, "api/auth"), { recursive: true });
     await writeFile(join(bundle, entry), authSources.get(entry));
     await writeFile(join(bundle, "auth-api.mjs"), authSources.get("auth-api.mjs"));
+    await writeFile(join(bundle, "access-list.mjs"), authSources.get("access-list.mjs"));
     await writeFile(join(bundle, "workos-provider.mjs"), authSources.get("workos-provider.mjs"));
     await writeFile(join(bundle, "package.json"), JSON.stringify({ type: "module" }));
     for (const dependency of dependencies) {

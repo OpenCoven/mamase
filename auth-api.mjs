@@ -1,4 +1,5 @@
 import { createCipheriv, createDecipheriv, createHash, randomBytes, timingSafeEqual } from "node:crypto";
+import { accessRefusal, parseAccessList } from "./access-list.mjs";
 
 const TRANSACTION_SECONDS = 600;
 const SESSION_SECONDS = 7 * 24 * 60 * 60;
@@ -28,6 +29,10 @@ function configuration(env) {
     if (!(error instanceof TypeError)) throw error;
     throw new AuthError("WorkOS configuration has an invalid redirect URI.", 503);
   }
+  let accessList;
+  try { accessList = parseAccessList(env.MAMASE_ACCESS_LIST); } catch (error) {
+    throw new AuthError(`WorkOS configuration has an invalid approved-account list. ${error.message}`, 503);
+  }
   const secure = redirect.protocol === "https:";
   if ((!secure && !(redirect.protocol === "http:" && ["localhost", "127.0.0.1", "[::1]"].includes(redirect.hostname))) ||
       redirect.username || redirect.password || redirect.pathname !== "/api/auth/callback" || redirect.search || redirect.hash) {
@@ -35,7 +40,7 @@ function configuration(env) {
   }
   return {
     apiKey: env.WORKOS_API_KEY.trim(), clientId: env.WORKOS_CLIENT_ID.trim(),
-    cookiePassword: env.WORKOS_COOKIE_PASSWORD, redirectUri: redirect.href,
+    cookiePassword: env.WORKOS_COOKIE_PASSWORD, redirectUri: redirect.href, accessList,
     origin: redirect.origin, host: redirect.host, secure,
     stateCookie: `${secure ? "__Host-" : ""}mamase_auth_state`,
     sessionCookie: `${secure ? "__Host-" : ""}mamase_session`,
@@ -137,7 +142,7 @@ export function createAuthApi({ env = process.env, provider = null, clock = Date
     }
     return loadedProvider;
   };
-  return async (request, response, pathname) => {
+  const handler = async (request, response, pathname) => {
     if (!pathname.startsWith("/api/auth/")) return false;
     response.setHeader("Cache-Control", "no-store");
     response.setHeader("Vary", "Cookie");
@@ -153,7 +158,7 @@ export function createAuthApi({ env = process.env, provider = null, clock = Date
       }
       const config = configuration(env);
       if (!config) {
-        if (action === "session") json(response, 200, { configured: false, authenticated: false, message: NOT_CONFIGURED });
+        if (action === "session") json(response, 200, { configured: false, authenticated: false, approved: false, message: NOT_CONFIGURED });
         else json(response, 503, { error: NOT_CONFIGURED });
         return true;
       }
@@ -208,15 +213,19 @@ export function createAuthApi({ env = process.env, provider = null, clock = Date
         }
       } else if (action === "session") {
         const sessionData = sessionCookie(request, response, config);
-        if (!sessionData) { json(response, 200, { configured: true, authenticated: false, user: null }); return true; }
+        if (!sessionData) {
+          json(response, 200, { configured: true, authenticated: false, approved: false, user: null, message: accessRefusal(config.accessList, { authenticated: false }) });
+          return true;
+        }
         const result = await (await getProvider(config)).session(sessionData);
         if (result.authenticated === true) {
           const user = publicUser(result.user);
+          const refusal = accessRefusal(config.accessList, { authenticated: true, email: user.email });
           if (result.sealedSession) setCookie(response, config, config.sessionCookie, result.sealedSession, SESSION_SECONDS);
-          json(response, 200, { configured: true, authenticated: true, user });
+          json(response, 200, { configured: true, authenticated: true, approved: !refusal, user, ...(refusal ? { message: refusal } : {}) });
         } else if (result.authenticated === false) {
           setCookie(response, config, config.sessionCookie, "", 0);
-          json(response, 200, { configured: true, authenticated: false, user: null, message: "Your account session ended. Sign in again." });
+          json(response, 200, { configured: true, authenticated: false, approved: false, user: null, message: "Your account session ended. Sign in again." });
         } else throw new AuthError("Invalid account session response.", 502);
       } else {
         const sessionData = sessionCookie(request, response, config);
@@ -238,4 +247,29 @@ export function createAuthApi({ env = process.env, provider = null, clock = Date
     }
     return true;
   };
+
+  /**
+   * Decide whether a request carries an approved account, without touching the
+   * response. Deployments without WorkOS have no identities to check, so they
+   * report `gated: false` and the local-only workspace stays open. Everything
+   * else must present a signed-in account on the approved list.
+   */
+  handler.authorize = async (request) => {
+    const config = configuration(env);
+    if (!config) return { gated: false, authenticated: false, approved: false, refusal: "" };
+    let sealed = null;
+    try { sealed = cookie(request, config.sessionCookie); } catch (error) {
+      if (!(error instanceof AuthError)) throw error;
+    }
+    let user = null;
+    if (sealed) {
+      const result = await (await getProvider(config)).session(sealed);
+      if (result.authenticated === true) user = publicUser(result.user);
+      else if (result.authenticated !== false) throw new AuthError("Invalid account session response.", 502);
+    }
+    const refusal = accessRefusal(config.accessList, { authenticated: Boolean(user), email: user?.email });
+    return { gated: true, authenticated: Boolean(user), approved: !refusal, refusal };
+  };
+
+  return handler;
 }

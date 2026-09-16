@@ -135,6 +135,26 @@ Mamase uses **WorkOS AuthKit's hosted provider picker** for GitHub, Google and
 any other sign-in methods enabled for the WorkOS environment. Creating these
 routes does not enable a provider in the WorkOS dashboard.
 
+### Approved accounts only
+
+Once WorkOS is configured, **sign-in alone opens nothing**. Every visitor stays
+on the approval gate until their address is on `MAMASE_ACCESS_LIST`: the gate is
+the only page the browser renders, and the server refuses every `/api/` request
+that is not carrying an approved session (`401` when signed out, `403` when
+signed in and unapproved). Matching is case-insensitive on the whole address;
+`member+alias@` is a different address, not an alias.
+
+The list fails closed. An unset or empty list approves **nobody**, and a
+malformed entry makes the account API return `503` rather than silently
+enforcing a shorter list. Configured addresses are never echoed in those errors.
+Approval is checked on every session read, so removing an address closes the
+workspace on that visitor's next request without waiting for their session to
+expire.
+
+Deployments **without** WorkOS configured have no identities to check: the
+loopback-only local workspace stays open exactly as before, and `npm start`
+needs no account setup.
+
 **Sign-in identifies a person; it does not add cloud sync, memberships, or
 per-account isolation of this browser's workspace.** Signing out does not
 delete workspace records, drafts or model files, and does not stop training.
@@ -151,6 +171,7 @@ same variables in the intended deployment environment, then redeploy:
 | `WORKOS_CLIENT_ID` | The matching WorkOS client ID. |
 | `WORKOS_COOKIE_PASSWORD` | A stable random secret of at least 32 characters; generate with `openssl rand -base64 32`. |
 | `WORKOS_REDIRECT_URI` | `https://mamase.ai/api/auth/callback` in production; `http://127.0.0.1:4173/api/auth/callback` locally. |
+| `MAMASE_ACCESS_LIST` | The approved accounts, comma- or newline-separated: full addresses (`member@coven.example`) and whole domains (`@coven.example`). Required to let anyone in once WorkOS is configured. |
 
 Register these URLs in the matching WorkOS environment:
 

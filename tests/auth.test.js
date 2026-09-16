@@ -39,6 +39,7 @@ async function fixture(context, overrides = {}) {
     WORKOS_CLIENT_ID: "client_synthetic_fixture",
     WORKOS_COOKIE_PASSWORD: "synthetic-cookie-password-for-tests-only",
     WORKOS_REDIRECT_URI: `${base}/api/auth/callback`,
+    MAMASE_ACCESS_LIST: "coven@example.test",
     ...overrides.env,
   };
   handler = createAuthApi({ env, provider: overrides.realProvider ? null : provider, clock: () => time, log: (value) => calls.logs.push(value) });

@@ -7,6 +7,36 @@ import { LocalTrainer } from "./local-training.mjs";
 import { publicAssets as files } from "./public-assets.mjs";
 import { createAuthApi } from "./auth-api.mjs";
 
+const denyApi = (response, status, error) => {
+  response.writeHead(status, {
+    "Content-Type": "application/json; charset=utf-8",
+    "Cache-Control": "no-store",
+    Vary: "Cookie",
+    "X-Content-Type-Options": "nosniff",
+    "Referrer-Policy": "no-referrer",
+  }).end(JSON.stringify({ error }));
+};
+
+/**
+ * Workspace APIs stay closed until the signed-in account is on the approved
+ * list. An auth handler without `authorize` (test and offline fixtures) states
+ * no account policy, so nothing is gated and the local workspace is unchanged.
+ */
+async function allowApiRequest(request, response, auth) {
+  if (typeof auth.authorize !== "function") return true;
+  let verdict;
+  try {
+    verdict = await auth.authorize(request);
+  } catch (error) {
+    if (!Number.isInteger(error?.status)) console.error("Unable to check workspace access against the account service.");
+    denyApi(response, Number.isInteger(error?.status) ? error.status : 502, error?.status ? error.message : "Account service unavailable. Try again.");
+    return false;
+  }
+  if (!verdict.gated || verdict.approved) return true;
+  denyApi(response, verdict.authenticated ? 403 : 401, verdict.refusal);
+  return false;
+}
+
 export function createAppServer({ training = null, inference, auth = createAuthApi() } = {}) {
   const trainingApi = createTrainingApi(training, inference);
   const server = createServer(async (request, response) => {
@@ -19,6 +49,7 @@ export function createAppServer({ training = null, inference, auth = createAuthA
       return;
     }
     if (await auth(request, response, pathname)) return;
+    if (pathname.startsWith("/api/") && !(await allowApiRequest(request, response, auth))) return;
     if (await trainingApi(request, response, pathname)) return;
     if (!["GET", "HEAD"].includes(request.method)) {
       response.writeHead(405, { Allow: "GET, HEAD" }).end("Method not allowed");
