@@ -1,6 +1,15 @@
 import test from "node:test";
 import assert from "node:assert/strict";
+import { mkdtemp, mkdir, rm, writeFile } from "node:fs/promises";
+import { join } from "node:path";
+import { tmpdir } from "node:os";
+import { spawnSync } from "node:child_process";
+import { fileURLToPath } from "node:url";
 import { agentPrompt, handoffFilename } from "../agent-handoff.js";
+import { exportWorkspaceBackup } from "../backups.js";
+import { createWorkspace, createRun } from "../workspace.js";
+
+const root = fileURLToPath(new URL("../", import.meta.url));
 
 const run = { id: "run-4f2a", name: "Coven adapter v3" };
 
@@ -88,12 +97,92 @@ test("a missing filename or run id falls back to an obvious placeholder, never a
   }
 });
 
-test("the ordinary case emits an unquoted workspace path so ~ expands, and legitimate values pass through unchanged", () => {
+test("the ordinary case emits the working four-step sequence with unquoted, ~-expanding paths", () => {
   const prompt = agentPrompt({ filename: "coven-workspace-2026-09-16.json", run, lane: "peft" });
-  const inspectLine = prompt.split("\n").find((l) => l.includes("inspect --workspace"));
-  const receiptLine = prompt.split("\n").find((l) => l.includes("receipt --workspace"));
-  assert.equal(inspectLine, "  npm run ops -- inspect --workspace ~/Downloads/coven-workspace-2026-09-16.json");
-  assert.equal(receiptLine, "  npm run ops -- receipt --workspace ~/Downloads/coven-workspace-2026-09-16.json --run run-4f2a");
+  const opsLines = prompt.split("\n").filter((l) => l.includes("npm run ops --"));
+  assert.deepEqual(opsLines, [
+    "  npm run ops -- init --workspace ~/Downloads/coven-ops-run-4f2a.json",
+    "  npm run ops -- inspect --workspace ~/Downloads/coven-ops-run-4f2a.json",
+    "  npm run ops -- import-backup --workspace ~/Downloads/coven-ops-run-4f2a.json --file ~/Downloads/coven-workspace-2026-09-16.json --expected-revision <revision-from-inspect>",
+    "  npm run ops -- receipt --workspace ~/Downloads/coven-ops-run-4f2a.json --run run-4f2a",
+  ]);
+});
+
+// This is the regression test for the shipped defect: every other test in this
+// file asserts the prompt's TEXT, which is exactly how a prompt whose commands
+// fail against ops.mjs's real --workspace loader shipped unnoticed. This test
+// extracts the "npm run ops --" lines from the generated prompt itself (never
+// hardcoding the sequence) and actually executes them, in order, against a
+// real exported backup in a throwaway temp directory -- no network, no writes
+// inside the repo.
+test("the prompt's Start here commands are real: they run end to end against an exported backup", async (context) => {
+  const directory = await mkdtemp(join(tmpdir(), "mamase-handoff-"));
+  context.after(() => rm(directory, { recursive: true, force: true }));
+  // `~` in the prompt always resolves to Downloads; stand in a fake one so the
+  // extracted commands are executable without a real shell's tilde expansion.
+  const downloads = join(directory, "Downloads");
+  await mkdir(downloads, { recursive: true });
+
+  const workspace = createWorkspace();
+  workspace.datasets.push({
+    id: "data", name: "Examples", filename: "data.jsonl", bytes: 100, records: 6,
+    format: "prompt-response", kind: "supervised", teacher: "", provenance: "Original",
+    holdout: 20, sha256: "a".repeat(64), createdAt: "2026-09-14T00:00:00.000Z",
+  });
+  const fixtureRun = createRun({
+    id: "run-4f2a", name: "Coven adapter v3", createdAt: "2026-09-14T00:00:00.000Z",
+    recipe: {
+      workflow: "cli", method: "lora", programId: workspace.programs[0].id, datasetId: "data",
+      student: "./models/local", teacher: "", rank: 4, alpha: 8, learningRate: 0.001,
+      epochs: 1, batchSize: 1, accumulation: 1, maxSequence: 128,
+      objective: "Learn examples.", outputPath: "./outputs/local",
+      familiarId: "fam", instanceId: "inst",
+    },
+  }, workspace);
+  workspace.runs.push(fixtureRun);
+
+  const filename = handoffFilename(new Date("2026-09-16T10:00:00Z"));
+  await writeFile(join(downloads, filename), exportWorkspaceBackup(workspace, new Date().toISOString()));
+
+  const prompt = agentPrompt({ filename, run: fixtureRun, lane: "peft" });
+  const opsLines = prompt.split("\n").filter((line) => line.includes("npm run ops --"));
+  assert.equal(opsLines.length, 4, "the working sequence is init, inspect, import-backup, receipt");
+
+  // Same invocation ops.mjs's own "npm run ops" script resolves to (see
+  // package.json), used directly to avoid npm's startup overhead in a test
+  // that runs it four times; the flags below come only from the prompt text.
+  const opsPath = join(root, "ops.mjs");
+  const toArgs = (line) => line.trim().replace(/^npm run ops --\s*/, "").split(/\s+/)
+    .map((token) => token.startsWith("~/") ? join(directory, token.slice(2)) : token);
+  const run = (args) => {
+    const result = spawnSync(process.execPath, [opsPath, ...args], { encoding: "utf8", cwd: root });
+    assert.equal(result.stderr, "", result.stderr);
+    return { code: result.status, output: JSON.parse(result.stdout) };
+  };
+
+  const init = run(toArgs(opsLines[0]));
+  assert.equal(init.code, 0, JSON.stringify(init.output));
+  assert.equal(init.output.outcome, "changed");
+
+  const inspected = run(toArgs(opsLines[1]));
+  assert.equal(inspected.code, 0, JSON.stringify(inspected.output));
+  const revision = inspected.output.revision.after;
+  assert.match(revision, /^[a-f0-9]{64}$/, "inspect must report the real workspace revision");
+
+  // The one value the static prompt text cannot contain: substitute it for the
+  // placeholder token, exactly as the prompt tells the agent to.
+  const importArgs = toArgs(opsLines[2]).map((token) => (token === "<revision-from-inspect>" ? revision : token));
+  assert.notDeepEqual(importArgs, toArgs(opsLines[2]), "the placeholder token must actually be present to substitute");
+  const imported = run(importArgs);
+  assert.equal(imported.code, 0, JSON.stringify(imported.output));
+  assert.equal(imported.output.outcome, "changed");
+  assert.equal(imported.output.format, "mamase.workspace-backup.v1");
+
+  const receipt = run(toArgs(opsLines[3]));
+  assert.equal(receipt.code, 0, JSON.stringify(receipt.output));
+  assert.equal(receipt.output.schema, "mamase.workflow-receipt.v1");
+  assert.equal(receipt.output.run.id, "run-4f2a");
+  assert.equal(receipt.output.lane, "peft");
 });
 
 test("a filename that could become more than one shell argument is rejected and falls back", () => {

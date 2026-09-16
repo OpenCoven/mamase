@@ -47,17 +47,27 @@ export function agentPrompt({ filename, run, lane }) {
   const id = safeArg(oneLine(run?.id, 80), "MISSING-RUN-ID");
   const name = oneLine(run?.name, 120);
   const cleanLane = oneLine(lane, 40);
-  const path = `~/Downloads/${file}`;
+  const backupPath = `~/Downloads/${file}`;
+  // The download is a mamase.workspace-backup.v1 envelope, not itself a
+  // mamase.workspace-file.v1 -- ops.mjs's --workspace loader rejects the
+  // former outright. `id` is already SAFE_ARG-checked above (or the safe
+  // fallback), so this concatenation stays a single, unquoted, ~-expanding
+  // argument exactly like `backupPath`.
+  const opsWorkspacePath = `~/Downloads/coven-ops-${id}.json`;
   const lines = [
     "Use the mamase skill in this repo (skills/mamase/SKILL.md).",
     "",
-    `Workspace : ${path}  (wherever your browser saved it)`,
+    `Workspace : ${backupPath}  (wherever your browser saved it)`,
     `Run       : ${id}${name ? ` "${name}"` : ""}`,
     `Lane      : ${cleanLane}`,
     "",
-    "Start here:",
-    `  npm run ops -- inspect --workspace ${path}`,
-    `  npm run ops -- receipt --workspace ${path} --run ${id}`,
+    "Start here (steps 1-2 create a private local workspace; step 3 imports",
+    "the export into it using the revision step 2 just reported -- substitute",
+    "that value, never paste the placeholder below literally):",
+    `  npm run ops -- init --workspace ${opsWorkspacePath}`,
+    `  npm run ops -- inspect --workspace ${opsWorkspacePath}`,
+    `  npm run ops -- import-backup --workspace ${opsWorkspacePath} --file ${backupPath} --expected-revision <revision-from-inspect>`,
+    `  npm run ops -- receipt --workspace ${opsWorkspacePath} --run ${id}`,
     "",
   ];
   if (ACTION_LANES.includes(cleanLane)) {
