@@ -16,7 +16,7 @@ for (const name of new Set([...publicAssets.values()].map(([name]) => name))) {
   const info = await lstat(source);
   assert.ok(info.isFile() && !info.isSymbolicLink(), `Public asset must be a regular file: ${name}`);
   let content = await readFile(source);
-  if (name.endsWith(".js")) execFileSync(process.execPath, ["--check", "--input-type=module"], { input: content, stdio: "pipe" });
+  if (/\.m?js$/.test(name)) execFileSync(process.execPath, ["--check", "--input-type=module"], { input: content, stdio: "pipe" });
   if (name === "index.html") {
     const html = content.toString("utf8");
     const marker = 'name="mamase-runtime" content="local"';

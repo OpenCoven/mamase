@@ -45,9 +45,12 @@ test("the receipt module the CLI uses is also served to the browser", async (con
   const response = await fetch(`${base}/workflow-receipt.mjs`);
   assert.equal(response.status, 200);
   assert.match(response.headers.get("content-type"), /javascript/);
-  assert.match(await response.text(), /export function workflowReceipt/);
-  // Its imports must already be public, or the browser cannot load it.
-  for (const dependency of ["/validation.js", "/training-state.js"]) {
-    assert.equal((await fetch(base + dependency)).status, 200, dependency);
+  const source = await response.text();
+  assert.match(source, /export function workflowReceipt/);
+  // Derive the imports from the file so a new one cannot slip past unserved.
+  const imports = [...source.matchAll(/from "\.\/([\w.-]+)"/g)].map((match) => match[1]);
+  assert.ok(imports.length, "The module must declare the imports this test checks.");
+  for (const dependency of imports) {
+    assert.equal((await fetch(`${base}/${dependency}`)).status, 200, dependency);
   }
 });
