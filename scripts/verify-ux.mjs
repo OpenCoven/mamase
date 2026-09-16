@@ -713,13 +713,17 @@ try {
   assert.match(await runInstructions.textContent(), /not preflight managed MLX jobs/);
   const beforeHandbook = await stored(lab);
   await go(lab, "resources");
-  const preflightCard = lab.locator("article.card").filter({ has: lab.getByRole("heading", { name: "Check before loading weights.", exact: true }) });
-  assert.equal(await preflightCard.locator("pre").textContent(), preflightCommand);
-  const preflightText = await preflightCard.textContent();
-  for (const text of ["errors", "warnings", "facts", "ready: false", "exits 1", "not a run report", "OOM guarantee", "browser does not inspect hardware", "training/requirements.txt", "training/requirements-mlx.txt"]) {
-    assert.ok(preflightText.includes(text), `Missing preflight boundary: ${text}`);
-  }
-  assert.deepEqual(await stored(lab), beforeHandbook);
+  await lab.locator("#handbook-steps").waitFor();
+  assert.match(await lab.locator("#handbook-lane").innerText(), /peft/i);
+  const nextHandbookStep = lab.locator('[data-step-state="next"]').first();
+  await nextHandbookStep.waitFor();
+  assert.match(await nextHandbookStep.innerText(), /npm run lab -- prepare/);
+  assert.equal(await lab.locator('[data-step-state="next"]').count(), 1, "Exactly one next step");
+  assert.equal(await lab.locator("#handbook-steps details").count(), 6, "Every step discloses its boundary");
+  const handbookBoundaries = await lab.locator("#handbook-steps details p").allTextContents();
+  assert.ok(handbookBoundaries.some((text) => text.includes("does not train")), "Missing prepare boundary");
+  assert.ok(handbookBoundaries.some((text) => text.includes("not a run report")), "Missing preflight boundary");
+  assert.deepEqual(await stored(lab), beforeHandbook, "Rendering the handbook must not write the workspace");
   await go(lab, "sessions/run-1");
   await lab.getByRole("button", { name: "Duplicate recipe", exact: true }).click();
   modal = lab.locator("#dialog");
