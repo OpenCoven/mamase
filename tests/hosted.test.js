@@ -8,6 +8,7 @@ import { createServer } from "node:http";
 import { once } from "node:events";
 import { chromium } from "playwright";
 import { publicAssets } from "../public-assets.mjs";
+import { HOSTED_CAPABILITIES } from "../hosted-training.mjs";
 import { TrainingClient } from "../training-client.js";
 import { runGuidance } from "../training-guide.js";
 import { createWorkspace, createRun, recordProgress } from "../workspace.js";
@@ -15,19 +16,22 @@ import { existsSync } from "node:fs";
 
 test("hosted static files contain only public assets and functions are limited to accounts", async () => {
   execFileSync(process.execPath, ["scripts/build-hosted.mjs"]);
-  const expected = [...new Set([...publicAssets.values()].map(([name]) => name)), "training-capabilities.json"].sort();
+  const expected = [...new Set([...publicAssets.values()].map(([name]) => name))].sort();
   assert.deepEqual((await readdir("dist")).sort(), expected);
   const html = await readFile("dist/index.html", "utf8");
   assert.match(html, /name="mamase-runtime" content="hosted"/);
-  const capability = JSON.parse(await readFile("dist/training-capabilities.json", "utf8"));
-  assert.equal(capability.hosted, true);
-  assert.equal(capability.enabled, false);
-  assert.equal(capability.available, false);
+  assert.ok(!(await readdir("dist")).includes("training-capabilities.json"), "Capabilities are served by a gated function, not a public file");
+  assert.equal(HOSTED_CAPABILITIES.hosted, true);
+  assert.equal(HOSTED_CAPABILITIES.enabled, false);
+  assert.equal(HOSTED_CAPABILITIES.available, false);
   const config = JSON.parse(await readFile("vercel.json", "utf8"));
   assert.equal(config.framework, null);
   assert.equal(config.outputDirectory, "dist");
-  assert.deepEqual(Object.keys(config.functions), ["api/auth/*.js"]);
-  assert.ok(config.rewrites.some((item) => item.source === "/api/training/capabilities" && item.destination === "/training-capabilities.json"));
+  assert.deepEqual(Object.keys(config.functions).sort(), ["api/auth/*.js", "api/training/*.js"]);
+  assert.ok(!config.rewrites.some((item) => item.source.startsWith("/api/")), "No /api/ path may be rewritten to a public static file");
+  const varies = config.headers.find((rule) => rule.source === "/api/training/(.*)")?.headers || [];
+  assert.ok(varies.some(({ key, value }) => key === "Cache-Control" && value === "no-store"));
+  assert.ok(varies.some(({ key, value }) => key === "Vary" && value === "Cookie"), "A per-account response must never be shared by a cache");
 });
 
 test("hosted clients never request job endpoints or issue training commands", async () => {
@@ -90,13 +94,15 @@ test("invalid browser JavaScript fails before replacing a previous hosted build"
   }
 });
 
-test("prebuilt releases isolate four account functions from browser and training code", async () => {
+test("prebuilt releases isolate the account and capability functions from browser and training code", async () => {
   execFileSync(process.execPath, ["scripts/build-hosted.mjs", "--prebuilt"]);
   const functions = ".vercel/output/functions/api/auth";
   assert.equal(existsSync(functions), true, "The release needs explicit account functions.");
   assert.deepEqual((await readdir(functions)).sort(), ["callback.func", "login.func", "logout.func", "session.func"]);
+  assert.deepEqual((await readdir(".vercel/output/functions/api/training")).sort(), ["capabilities.func"]);
   assert.equal(existsSync(".vercel/output/functions/index.func"), false);
   assert.equal(existsSync(".vercel/output/static/auth-api.mjs"), false);
+  assert.equal(existsSync(".vercel/output/static/training-capabilities.json"), false, "Capabilities must not also sit in the public static tree");
   const isolated = await mkdtemp(join(tmpdir(), "mamase-auth-function-"));
   try {
     const { cp } = await import("node:fs/promises");
@@ -132,7 +138,7 @@ test("prebuilt releases isolate four account functions from browser and training
 test("the built hosted interface boots, explains the handoff and never calls job APIs", async () => {
   const files = new Map();
   for (const [path, [name, mime]] of publicAssets) files.set(path, [await readFile(`dist/${name}`), mime]);
-  files.set("/api/training/capabilities", [await readFile("dist/training-capabilities.json"), "application/json"]);
+  files.set("/api/training/capabilities", [JSON.stringify(HOSTED_CAPABILITIES), "application/json"]);
   files.set("/api/auth/session", [JSON.stringify({ configured: false, authenticated: false, message: "WorkOS sign-in is not configured." }), "application/json"]);
   const config = JSON.parse(await readFile("vercel.json", "utf8"));
   const headers = Object.fromEntries(config.headers[0].headers.map(({ key, value }) => [key, value]));
@@ -191,5 +197,51 @@ test("the built hosted interface boots, explains the handoff and never calls job
   } finally {
     await browser?.close();
     await new Promise((resolve) => server.close(resolve));
+  }
+});
+
+
+test("the isolated capability function serves approved visitors and refuses everyone else", async () => {
+  execFileSync(process.execPath, ["scripts/build-hosted.mjs", "--prebuilt"]);
+  const isolated = await mkdtemp(join(tmpdir(), "mamase-capability-function-"));
+  try {
+    const { cp } = await import("node:fs/promises");
+    await cp(".vercel/output/functions/api/training/capabilities.func", isolated, { recursive: true });
+    const config = JSON.parse(await readFile(join(isolated, ".vc-config.json"), "utf8"));
+    assert.equal(config.handler, "api/training/capabilities.js");
+    for (const name of ["app.js", "playground.js", "server.mjs", "local-training.mjs", "local-inference.mjs", "training", ".mamase", ".env"]) {
+      assert.equal(existsSync(join(isolated, name)), false, name);
+    }
+    const call = (env) => JSON.parse(execFileSync(process.execPath, ["--input-type=module", "-e", `
+      import {createServer} from 'node:http';
+      import {once} from 'node:events';
+      import handler from './api/training/capabilities.js';
+      const server=createServer(handler);server.listen(0,'127.0.0.1');await once(server,'listening');
+      try { const r=await fetch('http://127.0.0.1:'+server.address().port+'/api/training/capabilities');
+        console.log(JSON.stringify({status:r.status,cache:r.headers.get('cache-control'),vary:r.headers.get('vary'),body:await r.json()})); }
+      finally { await new Promise(resolve=>server.close(resolve)); }
+    `], { cwd: isolated, encoding: "utf8", env: { ...process.env, ...env } }));
+
+    const workos = {
+      WORKOS_API_KEY: "sk_test_synthetic_fixture", WORKOS_CLIENT_ID: "client_synthetic_fixture",
+      WORKOS_COOKIE_PASSWORD: "synthetic-cookie-password-for-tests-only",
+      WORKOS_REDIRECT_URI: "https://mamase.example/api/auth/callback",
+    };
+    const open = call({ WORKOS_API_KEY: "", WORKOS_CLIENT_ID: "", WORKOS_COOKIE_PASSWORD: "", WORKOS_REDIRECT_URI: "", MAMASE_ACCESS_LIST: "" });
+    assert.equal(open.status, 200, "A deployment without sign-in has no identities to check");
+    assert.equal(open.body.hosted, true);
+    assert.equal(open.cache, "no-store");
+    assert.equal(open.vary, "Cookie");
+
+    const gated = call({ ...workos, MAMASE_ACCESS_LIST: "member@coven.example" });
+    assert.equal(gated.status, 401, "A signed-out visitor gets no capability payload");
+    assert.match(gated.body.error, /sign in/i);
+    assert.equal(gated.body.hosted, undefined);
+
+    const noList = call({ ...workos, MAMASE_ACCESS_LIST: "" });
+    assert.equal(noList.status, 401);
+    assert.match(noList.body.error, /no approved accounts|sign in/i);
+  } finally {
+    await rm(isolated, { recursive: true, force: true });
   }
 });

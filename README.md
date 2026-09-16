@@ -155,6 +155,13 @@ Deployments **without** WorkOS configured have no identities to check: the
 loopback-only local workspace stays open exactly as before, and `npm start`
 needs no account setup.
 
+On Vercel every `/api/` path is a function behind this gate, `/api/training/capabilities`
+included; no workspace endpoint is rewritten to a public static file, and those
+responses are `no-store` with `Vary: Cookie` so a per-account answer is never
+shared by a cache. The static app shell (HTML, CSS, JS) is still served by the
+CDN ahead of any function — it carries no account data, and hiding the
+deployment itself is Vercel Deployment Protection's job, not a second gate.
+
 **Sign-in identifies a person; it does not add cloud sync, memberships, or
 per-account isolation of this browser's workspace.** Signing out does not
 delete workspace records, drafts or model files, and does not stop training.
