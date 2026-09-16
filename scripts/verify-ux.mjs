@@ -101,6 +101,31 @@ const contrast = async (page) => {
       const style = getComputedStyle(element);
       pairs.push({ label: element.className, fg: style.color, bg: style.backgroundColor, minimum: 4.5 });
     }
+    // De-emphasised handbook steps used to reach this via `opacity` on an
+    // ancestor <li>, which dims already-muted text below AA once composited
+    // over the card. getComputedStyle().color reports the declared color, not
+    // the painted pixel, so it would miss exactly that bug: walk the ancestor
+    // chain and fold in every opacity between the element and the card, then
+    // composite over the card's background the way the browser paints it.
+    const effectiveOpacity = (element, stop) => {
+      let node = element, alpha = 1;
+      while (node && node !== stop) { alpha *= Number(getComputedStyle(node).opacity); node = node.parentElement; }
+      return alpha;
+    };
+    const composite = (fg, bg, alpha) => {
+      if (alpha >= 1) return fg;
+      const channels = (value) => value.match(/[\d.]+/g).map(Number);
+      const [fr, fgc, fb] = channels(fg);
+      const [br, bgc, bb] = channels(bg);
+      return `rgb(${Math.round(br + (fr - br) * alpha)}, ${Math.round(bgc + (fgc - bgc) * alpha)}, ${Math.round(bb + (fb - bb) * alpha)})`;
+    };
+    for (const element of document.querySelectorAll('.handbook-step[data-step-state="pending"] h3, .handbook-step[data-step-state="pending"] > .handbook-body > p, .handbook-step[data-step-state="pending"] .handbook-state, .handbook-step[data-step-state="pending"] .disclosure > summary')) {
+      if (!element.checkVisibility()) continue;
+      const card = element.closest(".card");
+      const bg = card ? getComputedStyle(card).backgroundColor : color("--surface");
+      const fg = composite(getComputedStyle(element).color, bg, effectiveOpacity(element, card));
+      pairs.push({ label: `pending ${element.tagName.toLowerCase()}${element.className ? `.${element.className}` : ""}`, fg, bg, minimum: 4.5 });
+    }
     return pairs;
   });
   for (const { label, fg, bg, minimum } of pairs) {
@@ -713,13 +738,21 @@ try {
   assert.match(await runInstructions.textContent(), /not preflight managed MLX jobs/);
   const beforeHandbook = await stored(lab);
   await go(lab, "resources");
-  const preflightCard = lab.locator("article.card").filter({ has: lab.getByRole("heading", { name: "Check before loading weights.", exact: true }) });
-  assert.equal(await preflightCard.locator("pre").textContent(), preflightCommand);
-  const preflightText = await preflightCard.textContent();
-  for (const text of ["errors", "warnings", "facts", "ready: false", "exits 1", "not a run report", "OOM guarantee", "browser does not inspect hardware", "training/requirements.txt", "training/requirements-mlx.txt"]) {
-    assert.ok(preflightText.includes(text), `Missing preflight boundary: ${text}`);
-  }
-  assert.deepEqual(await stored(lab), beforeHandbook);
+  await lab.locator("#handbook-steps").waitFor();
+  assert.match(await lab.locator("#handbook-lane").innerText(), /peft/i);
+  const nextHandbookStep = lab.locator('[data-step-state="next"]').first();
+  await nextHandbookStep.waitFor();
+  assert.match(await nextHandbookStep.innerText(), /npm run lab -- prepare/);
+  assert.equal(await lab.locator('[data-step-state="next"]').count(), 1, "Exactly one next step");
+  assert.equal(await lab.locator("#handbook-steps details").count(), 7, "Every step discloses its boundary, and preflight also discloses its one-time setup");
+  const handbookBoundaries = await lab.locator("#handbook-steps details p").allTextContents();
+  assert.ok(handbookBoundaries.some((text) => text.includes("does not train")), "Missing prepare boundary");
+  assert.ok(handbookBoundaries.some((text) => text.includes("not a run report")), "Missing preflight boundary");
+  const preflightSetup = lab.locator('[data-step-id="preflight"] #handbook-setup-preflight');
+  assert.match(await preflightSetup.locator("summary").innerText(), /One-time setup/);
+  assert.match(await preflightSetup.locator("pre").textContent(), /python3 -m venv \.venv/);
+  assert.match(await lab.locator(".handbook-boundary").innerText(), /Do not train on private material without permission\./, "The dataset-consent boundary must render even once a run exists");
+  assert.deepEqual(await stored(lab), beforeHandbook, "Rendering the handbook must not write the workspace");
   await go(lab, "sessions/run-1");
   await lab.getByRole("button", { name: "Duplicate recipe", exact: true }).click();
   modal = lab.locator("#dialog");
@@ -820,6 +853,7 @@ try {
           assert.match(await lab.locator("main").ariaSnapshot(), /running|planned/);
           await contrast(lab);
         }
+        if (path === "resources") await contrast(lab);
         if ([1440, 390, 320].includes(width) && height > 620) await capture(lab, `${theme}-${width}x${height}-${path.replaceAll("/", "-")}`);
         if (path === "home" && height > 620) assert.equal(await lab.evaluate(() => document.documentElement.scrollHeight), height);
       }
