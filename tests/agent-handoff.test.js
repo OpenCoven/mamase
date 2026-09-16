@@ -35,8 +35,8 @@ test("the prompt is structurally well-formed: one line per field, two well-forme
 
   const inspectLine = prompt.split("\n").find((l) => l.includes("inspect --workspace"));
   const receiptLine = prompt.split("\n").find((l) => l.includes("receipt --workspace"));
-  assert.match(inspectLine, /^ {2}npm run ops -- inspect --workspace ~\/Downloads\/[A-Za-z0-9._-]+$/);
-  assert.match(receiptLine, /^ {2}npm run ops -- receipt --workspace ~\/Downloads\/[A-Za-z0-9._-]+ --run run-4f2a$/);
+  assert.match(inspectLine, /^ {2}npm run ops -- inspect --workspace \.lab\/agent\/[A-Za-z0-9._-]+$/);
+  assert.match(receiptLine, /^ {2}npm run ops -- receipt --workspace \.lab\/agent\/[A-Za-z0-9._-]+ --run run-4f2a$/);
 });
 
 test("the prompt never carries secrets, workspace contents, or any other caller-supplied field", () => {
@@ -97,14 +97,14 @@ test("a missing filename or run id falls back to an obvious placeholder, never a
   }
 });
 
-test("the ordinary case emits the working four-step sequence with unquoted, ~-expanding paths", () => {
+test("the ordinary case emits the working four-step sequence: .lab/ for the working file, Downloads only for the browser's export", () => {
   const prompt = agentPrompt({ filename: "coven-workspace-2026-09-16.json", run, lane: "peft" });
   const opsLines = prompt.split("\n").filter((l) => l.includes("npm run ops --"));
   assert.deepEqual(opsLines, [
-    "  npm run ops -- init --workspace ~/Downloads/coven-ops-run-4f2a.json",
-    "  npm run ops -- inspect --workspace ~/Downloads/coven-ops-run-4f2a.json",
-    "  npm run ops -- import-backup --workspace ~/Downloads/coven-ops-run-4f2a.json --file ~/Downloads/coven-workspace-2026-09-16.json --expected-revision <revision-from-inspect>",
-    "  npm run ops -- receipt --workspace ~/Downloads/coven-ops-run-4f2a.json --run run-4f2a",
+    "  npm run ops -- init --workspace .lab/agent/workspace-run-4f2a.json",
+    "  npm run ops -- inspect --workspace .lab/agent/workspace-run-4f2a.json",
+    "  npm run ops -- import-backup --workspace .lab/agent/workspace-run-4f2a.json --file ~/Downloads/coven-workspace-2026-09-16.json --expected-revision <revision-from-inspect>",
+    "  npm run ops -- receipt --workspace .lab/agent/workspace-run-4f2a.json --run run-4f2a",
   ]);
 });
 
@@ -115,11 +115,14 @@ test("the ordinary case emits the working four-step sequence with unquoted, ~-ex
 // hardcoding the sequence) and actually executes them, in order, against a
 // real exported backup in a throwaway temp directory -- no network, no writes
 // inside the repo.
-test("the prompt's Start here commands are real: they run end to end against an exported backup", async (context) => {
+test("the prompt's Start here commands are real: they run end to end, and a repeat hand-off skips step 1 on workspace-exists", async (context) => {
   const directory = await mkdtemp(join(tmpdir(), "mamase-handoff-"));
   context.after(() => rm(directory, { recursive: true, force: true }));
-  // `~` in the prompt always resolves to Downloads; stand in a fake one so the
-  // extracted commands are executable without a real shell's tilde expansion.
+  // `~` in the prompt always resolves to Downloads (the browser's export);
+  // stand in a fake one so the extracted commands are executable without a
+  // real shell's tilde expansion. `.lab/agent/...` is a plain relative path,
+  // resolved against `directory` by running ops.mjs with that as its cwd
+  // below -- never against this repo's own working tree.
   const downloads = join(directory, "Downloads");
   await mkdir(downloads, { recursive: true });
 
@@ -150,12 +153,15 @@ test("the prompt's Start here commands are real: they run end to end against an 
 
   // Same invocation ops.mjs's own "npm run ops" script resolves to (see
   // package.json), used directly to avoid npm's startup overhead in a test
-  // that runs it four times; the flags below come only from the prompt text.
+  // that runs it many times; the flags below come only from the prompt text.
+  // cwd is the temp directory, not the repo root, so the prompt's relative
+  // `.lab/agent/...` --workspace path lands inside it, never in this
+  // checkout's own .lab/.
   const opsPath = join(root, "ops.mjs");
   const toArgs = (line) => line.trim().replace(/^npm run ops --\s*/, "").split(/\s+/)
     .map((token) => token.startsWith("~/") ? join(directory, token.slice(2)) : token);
   const run = (args) => {
-    const result = spawnSync(process.execPath, [opsPath, ...args], { encoding: "utf8", cwd: root });
+    const result = spawnSync(process.execPath, [opsPath, ...args], { encoding: "utf8", cwd: directory });
     assert.equal(result.stderr, "", result.stderr);
     return { code: result.status, output: JSON.parse(result.stdout) };
   };
@@ -183,6 +189,34 @@ test("the prompt's Start here commands are real: they run end to end against an 
   assert.equal(receipt.output.schema, "mamase.workflow-receipt.v1");
   assert.equal(receipt.output.run.id, "run-4f2a");
   assert.equal(receipt.output.lane, "peft");
+
+  // Hand off again for the same run, against the same .lab/agent/ file: this
+  // is the repeat-hand-off path the prompt's own skip-on-exists clause
+  // covers, exercised as a real second pass through the identical extracted
+  // commands rather than documented as a hope.
+  const initAgain = run(toArgs(opsLines[0]));
+  assert.equal(initAgain.code, 2, JSON.stringify(initAgain.output));
+  assert.equal(initAgain.output.outcome, "blocked");
+  assert.equal(initAgain.output.error.code, "workspace-exists", "the prompt's skip-on-exists clause names this exact code");
+
+  // Per the prompt: skip step 1 and continue from step 2.
+  const inspectedAgain = run(toArgs(opsLines[1]));
+  assert.equal(inspectedAgain.code, 0, JSON.stringify(inspectedAgain.output));
+  const revisionAgain = inspectedAgain.output.revision.after;
+  assert.match(revisionAgain, /^[a-f0-9]{64}$/);
+
+  const importArgsAgain = toArgs(opsLines[2]).map((token) => (token === "<revision-from-inspect>" ? revisionAgain : token));
+  const importedAgain = run(importArgsAgain);
+  assert.equal(importedAgain.code, 0, JSON.stringify(importedAgain.output));
+  // The export is unchanged since the first pass, so this is the idempotent
+  // path (recovery.md: "Duplicate import ... unchanged -- nothing"), not a
+  // second write; either way it must still exit 0.
+  assert.equal(importedAgain.output.outcome, "unchanged");
+
+  const receiptAgain = run(toArgs(opsLines[3]));
+  assert.equal(receiptAgain.code, 0, JSON.stringify(receiptAgain.output));
+  assert.equal(receiptAgain.output.run.id, "run-4f2a");
+  assert.equal(receiptAgain.output.lane, "peft");
 });
 
 test("a filename that could become more than one shell argument is rejected and falls back", () => {

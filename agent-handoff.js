@@ -50,10 +50,16 @@ export function agentPrompt({ filename, run, lane }) {
   const backupPath = `~/Downloads/${file}`;
   // The download is a mamase.workspace-backup.v1 envelope, not itself a
   // mamase.workspace-file.v1 -- ops.mjs's --workspace loader rejects the
-  // former outright. `id` is already SAFE_ARG-checked above (or the safe
-  // fallback), so this concatenation stays a single, unquoted, ~-expanding
-  // argument exactly like `backupPath`.
-  const opsWorkspacePath = `~/Downloads/coven-ops-${id}.json`;
+  // former outright. The agent's own working file belongs at .lab/agent/,
+  // this repo's established location for exactly that (see
+  // skills/mamase/references/planning.md and human-handoff.md), not in the
+  // user's Downloads folder -- and a relative path is the natural form since
+  // npm run ops already runs from the repo root. `id` is already
+  // SAFE_ARG-checked above (or the safe fallback), so this concatenation
+  // stays a single, unquoted argument exactly like `backupPath`. ops.mjs's
+  // init creates .lab/agent/ itself (mkdir recursive on the parent), so
+  // nothing here needs to create it first.
+  const opsWorkspacePath = `.lab/agent/workspace-${id}.json`;
   const lines = [
     "Use the mamase skill in this repo (skills/mamase/SKILL.md).",
     "",
@@ -61,9 +67,9 @@ export function agentPrompt({ filename, run, lane }) {
     `Run       : ${id}${name ? ` "${name}"` : ""}`,
     `Lane      : ${cleanLane}`,
     "",
-    "Start here (steps 1-2 create a private local workspace; step 3 imports",
-    "the export into it using the revision step 2 just reported -- substitute",
-    "that value, never paste the placeholder below literally):",
+    "Start here (steps 1-2 make a private workspace -- skip step 1 on an",
+    "error.code \"workspace-exists\" receipt, an earlier hand-off's workspace;",
+    "step 3 needs step 2's reported revision, not the placeholder below):",
     `  npm run ops -- init --workspace ${opsWorkspacePath}`,
     `  npm run ops -- inspect --workspace ${opsWorkspacePath}`,
     `  npm run ops -- import-backup --workspace ${opsWorkspacePath} --file ${backupPath} --expected-revision <revision-from-inspect>`,
