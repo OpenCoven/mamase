@@ -967,6 +967,27 @@ try {
   assert.notEqual(await structurePage.evaluate(() => document.activeElement === document.body), true,
     "a dialog that saves without navigating must hand focus back, not drop it to <body>");
 
+  // What assistive technology is actually handed when a restore fails. The message reaches an
+  // assertive alert, so it is read immediately and out of context: it has to say what failed and
+  // that the stored workspace survived, in words rather than the JSON parser's. A raw
+  // "Unexpected end of JSON input" is visually identical and tells a non-visual user nothing.
+  await go(structurePage, "settings");
+  await keyboardActivate(structurePage, structurePage.getByRole("button", { name: "Restore backup", exact: true }));
+  await structurePage.locator("dialog[open]").waitFor();
+  await structurePage.locator('dialog[open] input[type="file"]').setInputFiles({
+    name: "corrupt.json", mimeType: "application/json", buffer: Buffer.from('{"version":1,"workspace":{"runs":'),
+  });
+  await structurePage.locator("dialog[open]").getByRole("button", { name: "Preview backup", exact: true }).click();
+  const restoreError = structurePage.locator("dialog[open] .form-error");
+  await restoreError.waitFor();
+  const restoreMessage = (await restoreError.textContent()).trim();
+  assert.equal(await restoreError.getAttribute("role"), "alert", "a failed restore must interrupt, not queue");
+  assert.doesNotMatch(restoreMessage, /JSON input|Unexpected token|in JSON at position/,
+    `the JSON parser's own words reached the user: ${restoreMessage}`);
+  assert.match(restoreMessage, /No changes were made/,
+    `a failed restore must say the workspace is unchanged, or an atomic failure sounds partial: ${restoreMessage}`);
+  await structurePage.keyboard.press("Escape");
+
   await structureContext.close();
 
   const statusData = fixture();

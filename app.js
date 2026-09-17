@@ -1324,7 +1324,13 @@ async function submitForm(form) {
   } else if (type === "report") {
     assert(!byId(next.runs, context.runId).localJobId && !training.jobs.has(context.runId), "Managed local jobs record their own progress.");
     const { source } = await readFile(form, MAX_WORKSPACE_BYTES);
-    const report = JSON.parse(source);
+    let report;
+    try {
+      report = JSON.parse(source);
+    } catch (error) {
+      if (!(error instanceof SyntaxError)) throw error;
+      throw new Error("The progress report contains invalid JSON. No changes were made.");
+    }
     const preview = previewProgressReport(byId(next.runs, context.runId), report);
     assert(form.isConnected && dialog.open, "The form was closed before saving. No changes were made.");
     assertWorkspaceSource(expectedSource);
