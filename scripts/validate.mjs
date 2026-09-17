@@ -78,6 +78,11 @@ try {
     if (job.name.startsWith("node-")) {
       run(job, node, ["--test", "--test-concurrency=1", "--test-reporter=tap"], "node --test --test-concurrency=1 --test-reporter=tap (explicit Node-only mode)",
         { ...nodeEnv, MAMASE_SKIP_ML: "1" });
+      run(job, node, ["scripts/verify-workspace.mjs"], "node scripts/verify-workspace.mjs (real PostgreSQL)", {
+        ...nodeEnv,
+        ...(process.env.MAMASE_TEST_DATABASE_URL ? { MAMASE_TEST_DATABASE_URL: process.env.MAMASE_TEST_DATABASE_URL } : {}),
+        ...(process.env.MAMASE_POSTGRES_BIN ? { MAMASE_POSTGRES_BIN: process.env.MAMASE_POSTGRES_BIN } : {}),
+      });
     } else if (job.name === "cpu") {
       const mlEnv = { ...nodeEnv, MAMASE_TRAINING_PYTHON: python, MAMASE_REQUIRE_ML: "1" };
       run(job, python, ["-B", "scripts/check-training-env.py"], "selected Python -B scripts/check-training-env.py", mlEnv);

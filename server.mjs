@@ -7,6 +7,8 @@ import { LocalTrainer } from "./local-training.mjs";
 import { publicAssets as files } from "./public-assets.mjs";
 import { createAuthApi } from "./auth-api.mjs";
 import { apiAccessRefusal, sendApiRefusal } from "./api-access.mjs";
+import { createWorkspaceApi } from "./workspace-api.mjs";
+import { createWorkspaceStore } from "./workspace-store.mjs";
 
 /** Workspace APIs stay closed until the signed-in account is on the approved list. */
 async function allowApiRequest(request, response, auth) {
@@ -17,8 +19,9 @@ async function allowApiRequest(request, response, auth) {
   return false;
 }
 
-export function createAppServer({ training = null, inference, auth = createAuthApi() } = {}) {
+export function createAppServer({ training = null, inference, auth = createAuthApi(), store = createWorkspaceStore() } = {}) {
   const trainingApi = createTrainingApi(training, inference);
+  const workspaceApi = createWorkspaceApi({ store, auth });
   const server = createServer(async (request, response) => {
     let pathname;
     try {
@@ -29,6 +32,7 @@ export function createAppServer({ training = null, inference, auth = createAuthA
       return;
     }
     if (await auth(request, response, pathname)) return;
+    if (await workspaceApi(request, response, pathname)) return;
     if (pathname.startsWith("/api/") && !(await allowApiRequest(request, response, auth))) return;
     if (await trainingApi(request, response, pathname)) return;
     if (!["GET", "HEAD"].includes(request.method)) {

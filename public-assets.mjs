@@ -3,6 +3,7 @@ export const publicAssets = new Map([
   ["/index.html", ["index.html", "text/html"]],
   ["/styles.css", ["styles.css", "text/css"]],
   ["/app.js", ["app.js", "text/javascript"]],
+  ["/workspace-client.js", ["workspace-client.js", "text/javascript"]],
   ["/auth-client.js", ["auth-client.js", "text/javascript"]],
   ["/access-gate.js", ["access-gate.js", "text/javascript"]],
   ["/theme.js", ["theme.js", "text/javascript"]],

@@ -21,6 +21,20 @@ jobs:
     name: Node 22 & 24 / CPU adapters / Chromium
     runs-on: ubuntu-24.04
     timeout-minutes: 45
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: mamase_test
+          POSTGRES_PASSWORD: synthetic-test-password
+          POSTGRES_DB: mamase_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U mamase_test -d mamase_test"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
     steps:
       - uses: actions/checkout@v4
         with:
@@ -54,6 +68,7 @@ jobs:
       - name: Run node-22, node-24, cpu and browser lanes
         env:
           MAMASE_TRAINING_PYTHON: ${{ github.workspace }}/.venv/bin/python
+          MAMASE_TEST_DATABASE_URL: postgresql://mamase_test:synthetic-test-password@127.0.0.1:5432/mamase_test
         run: npm run validate -- all
 
       - name: Upload only bounded synthetic failure evidence

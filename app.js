@@ -12,6 +12,7 @@ import { mergeTrainingJob, trainingIdentity, managedRecipeIssue, trainingProgres
 import { trainingWorkflow, runGuidance, formatLoss, lossReading, modelName } from "./training-guide.js";
 import { MAX_BACKUP_BYTES, exportWorkspaceBackup, parseWorkspaceBackup } from "./backups.js";
 import { AuthClient } from "./auth-client.js";
+import { WorkspaceClient } from "./workspace-client.js";
 import { accessPhase, accessGateView, GATE_TITLES } from "./access-gate.js";
 import { syntheticSuiteTemplate, suiteAssessment } from "./evaluation-suites.js";
 import { readReviewFile, prepareReview, recordHumanDecision } from "./human-review.js";
@@ -27,6 +28,9 @@ const toast = document.querySelector("#toast");
 const theme = window.mamaseTheme;
 const hosted = document.querySelector('meta[name="mamase-runtime"]')?.content === "hosted";
 const account = new AuthClient({ onChange: accountChanged });
+const accountWorkspace = new WorkspaceClient();
+let accountScope = "";
+let accountEpoch = 0;
 const pendingTraining = new Map();
 const trainingSyncErrors = new Map();
 let submissionCount = 0;
@@ -143,7 +147,7 @@ function accountContent() {
   else if (phase === "signed-out") content = `<p>Continue to WorkOS AuthKit to choose GitHub, Google, or another sign-in method enabled for the coven.</p><div class="actions">${button("Sign in", "sign-in", "arrow", "primary")}</div>`;
   else if (phase === "unconfigured") content = `<p>${esc(message || "Sign-in is not configured for this deployment.")}</p><p class="help">The deployment owner needs to connect a WorkOS project. You can keep using this workspace offline.</p>`;
   else if (phase === "error") content = `<p class="error-text" role="status">${esc(message)}</p><div class="actions">${button("Retry account connection", "auth-refresh", "arrow", "quiet")}</div>`;
-  return `<h2>Account</h2>${content}<p class="help account-boundary">Sign-in identifies you; it does not sync or isolate this browser's workspace by account. Signing out does not erase records or stop local training. Use a separate browser profile on a shared device.</p>`;
+  return `<h2>Account</h2>${content}${phase === "signed-in" && account.state.approved ? `<div class="actions">${button("Save workspace to account", "account-workspace-save", "upload", "quiet", account.busy || !workspace || storageError ? "disabled" : "")}${button("Restore account workspace", "account-workspace-restore", "download", "quiet", account.busy ? "disabled" : "")}</div><p class="help">Account snapshots are saved and restored only when you ask. Later browser edits stay local until you save another snapshot. Review the account and replacement before confirming.</p>` : ""}<p class="help account-boundary">Signing in does not upload or replace browser records. Account snapshots belong to the signed-in account; this browser's working copy is shared across sign-ins. Signing out does not erase it or stop local training. Use a separate browser profile on a shared device.</p>`;
 }
 
 function accountSettings() {
@@ -162,6 +166,12 @@ const GATE_ACTIONS = new Set(["sign-in", "sign-out", "auth-refresh"]);
 const gated = () => accessPhase(account.state) !== "open";
 
 function accountChanged() {
+  const scope = account.state.phase === "signed-in" && account.state.approved ? account.state.user.id : "";
+  if (scope !== accountScope || account.busy) {
+    accountScope = scope;
+    accountEpoch++;
+    if (dialog.open) closeModal();
+  }
   const gate = accessPhase(account.state);
   if (gate !== "open" || app.querySelector(".gate-shell")) { render(); return; }
   syncAccountControls();
@@ -871,7 +881,7 @@ function settingsPage() {
   return `${header("Workspace settings", "", "A local home for the coven's experiments.")}
     <div class="settings-grid">${accountSettings()}${appearanceSettings()}
     <section class="card"><h2>Workspace identity</h2><form data-form="workspace">${field("Workspace name", "workspaceName", workspace.name, { attrs: 'maxlength="80"' })}<button class="button primary" type="submit">Save name</button><p class="form-error" role="alert" hidden></p></form></section>
-    <section class="card"><h2>Backups &amp; portability</h2><p>Recipes, dataset fingerprints, recorded results, and artifact references are saved in this browser, not in a cloud account.</p><div class="actions">${button("Export workspace", "export-workspace", "download")}${button("Restore backup", "restore-workspace", "upload")}</div><p class="help">Exports use a versioned backup envelope. Restore previews the source format and collection counts before replacement; legacy v1 backups remain supported. Appearance settings, dataset contents and model weights are not included.</p></section>
+    <section class="card"><h2>Backups &amp; portability</h2><p>Recipes, dataset fingerprints, recorded results, and artifact references are saved in this browser. You can also save an account snapshot using the Account controls.</p><div class="actions">${button("Export workspace", "export-workspace", "download")}${button("Restore backup", "restore-workspace", "upload")}</div><p class="help">Exports use a versioned backup envelope. Restore previews the source format and collection counts before replacement; legacy v1 backups remain supported. Appearance settings, dataset contents and model weights are not included.</p></section>
     <section class="card"><h2>Execution boundary</h2><dl class="facts"><dt>Trainer</dt><dd>${hosted ? "Not available on this hosted site" : "Local MLX-LM or explicit PEFT CLI"}</dd><dt>Inference</dt><dd>${hosted ? "Not available on this hosted site" : "Local MLX playground for completed managed models"}</dd><dt>Storage</dt><dd>Workspace in this browser; model files stay on local disk</dd><dt>Workspace size</dt><dd id="workspace-size">${formatBytes(new TextEncoder().encode(JSON.stringify(workspace)).length)} / 4 MB</dd></dl><p>${hosted ? "This site supports workspace planning and account sign-in, not training or inference. Export a backup and restore it in local Mamasé to move your recipes; the two addresses do not share browser storage." : "Managed jobs keep their input, splits, logs and adapters separately. Test their output in the playground. Training and generation share one local runtime slot."}</p></section>
     <section class="card"><h2>Reset workspace</h2><p>Remove this browser's saved metadata and start fresh. Your datasets and local model files are not touched.</p>${button("Reset local workspace", "reset-workspace", "", "danger")}</section></div>`;
 }
@@ -1043,7 +1053,7 @@ function progressReportPreview(preview, report, expectedSource) {
   title.focus();
 }
 
-function workspaceRestorePreview(backup, filename, expectedSource) {
+function workspaceRestorePreview(backup, filename, expectedSource, accountContext = {}) {
   const collections = ["programs", "datasets", "runs", "artifacts", "evaluations"];
   openModal("Review workspace restore", `
     <p id="restore-summary" role="status">No changes have been saved. This replaces all current workspace metadata, not individual records.</p>
@@ -1054,10 +1064,46 @@ function workspaceRestorePreview(backup, filename, expectedSource) {
     <p class="help">Export recovery data first. If storage is full, free space and retry this confirmation. If another tab changes the workspace, reload and preview again.</p>
     <div class="actions">${workspace ? button("Export open workspace", "export-workspace", "download", "small") : button("Download stored data", "raw-backup", "download", "small")}${button("Reload workspace", "reload-workspace", "", "small")}</div>
     <label class="check-label"><input name="confirm" type="checkbox" required> I understand this replaces the browser's saved workspace.</label>${formFooter("Restore workspace")}`,
-  "confirm-restore", { backup, expectedSource });
+  "confirm-restore", { backup, expectedSource, ...accountContext });
   const title = dialog.querySelector("#dialog-title");
   title.tabIndex = -1;
   title.focus();
+}
+
+function assertSnapshotAccount(context) {
+  assert(!account.pending, "Your account connection is being checked. Wait for it to finish, then try again.");
+  assert(!account.busy && account.state.phase === "signed-in" && account.state.approved &&
+    account.state.user.id === context.accountId && accountEpoch === context.accountEpoch,
+  "Your account changed. Reopen the account workspace controls before continuing.");
+}
+
+async function prepareAccountWorkspace(mode) {
+  const context = { accountId: account.state.user?.id, accountEpoch, expectedSource: savedSource };
+  assertSnapshotAccount(context);
+  if (mode === "save") assertWorkspaceSource(context.expectedSource);
+  openModal("Checking account workspace", `<p role="status">Reading the saved account snapshot. Your browser records have not changed.</p><div class="actions">${button("Cancel", "close-dialog", "", "quiet")}</div>`, "", context);
+  const current = () => dialog.open && modalContext === context && context.accountEpoch === accountEpoch;
+  try {
+    const stored = await accountWorkspace.read(context.accountId);
+    if (!current()) return;
+    assertSnapshotAccount(context);
+    assertWorkspaceSource(context.expectedSource);
+    if (mode === "restore") {
+      assert(stored.payload, "This account has no saved workspace yet. Save a snapshot from the browser that holds your records first.");
+      workspaceRestorePreview({ workspace: stored.payload, format: `Account snapshot, revision ${stored.revision}`, exportedAt: stored.updatedAt },
+        account.state.user.email, context.expectedSource, context);
+    } else {
+      openModal("Save workspace to account", `<p>This saves the current browser workspace, <strong>${esc(workspace.name)}</strong>, to <strong>${esc(account.state.user.email)}</strong>.</p>
+        <p>${stored.payload ? `This replaces the account snapshot <strong>${esc(stored.payload.name)}</strong> (revision ${stored.revision}). Other browsers must restore the new snapshot to use it.` : "This account has no saved workspace yet."}</p>
+        <p>Only workspace metadata is included. Dataset contents, model weights, and temporary review text stay on this device. Browser edits after this save will stay local.</p>
+        ${formFooter("Save account snapshot")}`, "account-workspace-save", { ...context, revision: stored.revision });
+      dialog.querySelector('[type="submit"]').focus();
+    }
+  } catch (error) {
+    if (!current()) return;
+    openModal("Account workspace unavailable", `<p role="alert">${esc(error.message)}</p><p>Your browser workspace has not changed. Close this dialog and try the account controls again.</p>${button("Close", "close-dialog", "", "quiet")}`);
+    dialog.querySelector('[data-action="close-dialog"]').focus();
+  }
 }
 
 function searchResults(query) {
@@ -1071,6 +1117,8 @@ function searchResults(query) {
 }
 
 const actions = {
+  "account-workspace-save": () => prepareAccountWorkspace("save"),
+  "account-workspace-restore": () => prepareAccountWorkspace("restore"),
   "auth-refresh": () => account.refresh(),
   "sign-in": () => {
     assert(account.state.phase === "signed-out", "Check the account connection before signing in.");
@@ -1310,7 +1358,17 @@ async function submitForm(form) {
   const input = Object.fromEntries(new FormData(form));
   const type = form.dataset.form;
   const context = { ...modalContext };
-  const expectedSource = ["confirm-report", "confirm-restore", "review-file", "human-review"].includes(type) ? context.expectedSource : savedSource;
+  const expectedSource = ["confirm-report", "confirm-restore", "review-file", "human-review", "account-workspace-save"].includes(type) ? context.expectedSource : savedSource;
+  if (type === "account-workspace-save") {
+    assertSnapshotAccount(context);
+    assertWorkspaceSource(expectedSource);
+    const snapshot = structuredClone(workspace);
+    await accountWorkspace.save(context.accountId, snapshot, context.revision);
+    assertSnapshotAccount(context);
+    if (form.isConnected && dialog.open) closeModal();
+    notify("Account snapshot saved. Browser edits after this save stay local.");
+    return;
+  }
   if (type === "local-launch") {
     const run = structuredClone(byId(workspace.runs, context.runId));
     const dataset = structuredClone(byId(workspace.datasets, run.recipe.datasetId));
@@ -1438,6 +1496,7 @@ async function submitForm(form) {
     workspaceRestorePreview(backup, file.name, expectedSource);
     return;
   } else if (type === "confirm-restore") {
+    if (context.accountId) assertSnapshotAccount(context);
     assert(input.confirm === "on", "Confirm that you want to replace the workspace.");
     next = context.backup.workspace;
     message = "Workspace restored.";

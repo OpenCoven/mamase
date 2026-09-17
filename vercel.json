@@ -9,9 +9,16 @@
     },
     "api/training/*.js": {
       "maxDuration": 30
+    },
+    "api/workspace/*.js": {
+      "maxDuration": 30
     }
   },
   "rewrites": [
+    {
+      "source": "/api/workspace",
+      "destination": "/api/workspace/index"
+    },
     {
       "source": "/",
       "destination": "/index.html"
@@ -54,6 +61,19 @@
     },
     {
       "source": "/api/training/(.*)",
+      "headers": [
+        {
+          "key": "Cache-Control",
+          "value": "no-store"
+        },
+        {
+          "key": "Vary",
+          "value": "Cookie"
+        }
+      ]
+    },
+    {
+      "source": "/api/workspace(.*)",
       "headers": [
         {
           "key": "Cache-Control",

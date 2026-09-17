@@ -230,3 +230,20 @@ test("the real WorkOS SDK creates the hosted provider-picker URL without exposin
   assert.equal(location.searchParams.get("code_challenge_method"), "S256");
   assert.ok(!location.href.includes("sk_test_synthetic_fixture"));
 });
+
+test("workspace authorization returns rotated sessions through an HttpOnly cookie", async () => {
+  const auth = createAuthApi({ env: {
+    WORKOS_API_KEY: "sk_test_synthetic_fixture", WORKOS_CLIENT_ID: "client_fixture",
+    WORKOS_COOKIE_PASSWORD: "synthetic-cookie-password-for-tests-only",
+    WORKOS_REDIRECT_URI: "https://mamase.example/api/auth/callback", MAMASE_ACCESS_LIST: "member@example.test",
+  }, provider: { session: async () => ({ authenticated: true,
+    user: { id: "account-a", email: "member@example.test" }, sealedSession: "rotated-private-seal" }) } });
+  const headers = new Map();
+  const verdict = await auth.authorize({ headers: { cookie: "__Host-mamase_session=old-seal" } }, {
+    getHeader: (name) => headers.get(name), setHeader: (name, value) => headers.set(name, value),
+  });
+  assert.equal(verdict.approved, true);
+  assert.match(headers.get("Set-Cookie")?.[0] || "", /rotated-private-seal; Path=\/; HttpOnly; SameSite=Lax/);
+  assert.match(headers.get("Set-Cookie")[0], /Secure/);
+  assert.ok(!JSON.stringify(verdict).includes("rotated-private-seal"));
+});
