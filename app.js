@@ -521,6 +521,45 @@ npm run dev</pre><p class="help">Requires Apple Silicon and Python 3.12. Bring a
   const externalGuide = document.querySelector("#external-training-guide");
   if (externalGuide) externalGuide.hidden = guide.workflow !== "cli" || Boolean(rawJob || run.localJobId);
 }
+function planChain() {
+  const draft = ui.draft;
+  const dataset = workspace.datasets.find((item) => item.id === draft.datasetId);
+  const recipe = numericRecipe(draft);
+  const split = dataset ? splitCounts(dataset) : null;
+  const sized = [recipe.batchSize, recipe.accumulation].every((value) => Number.isInteger(value) && value > 0);
+  const perUpdate = sized ? recipe.batchSize * recipe.accumulation : null;
+  const epochs = Number.isInteger(recipe.epochs) && recipe.epochs > 0 ? recipe.epochs : null;
+  const cap = Number.isInteger(recipe.maxSequence) && recipe.maxSequence > 0 ? recipe.maxSequence : null;
+  const steps = dataset && sized && epochs ? estimatedSteps(recipe, dataset) : null;
+  return [
+    { id: "examples", label: "Examples", value: dataset ? num(dataset.records) : "—",
+      note: dataset ? esc(dataset.name) : "Select a dataset", state: dataset ? "resolved" : "pending" },
+    { id: "split", label: "Split", value: split ? `${num(split.train)} / ${num(split.holdout)}` : "—",
+      note: split ? `train / holdout · ${num(dataset.holdout)}% kept aside` : "Waiting on the dataset",
+      state: split ? "resolved" : "pending" },
+    { id: "batch", label: "Per update", value: perUpdate ? num(perUpdate) : "—",
+      note: perUpdate ? `${num(recipe.batchSize)} micro-batch × ${num(recipe.accumulation)} accumulation` : "Set a micro batch and accumulation",
+      state: perUpdate ? "resolved" : "pending" },
+    { id: "sequence", label: "Token cap", value: cap ? num(cap) : "—",
+      note: cap ? "Longer examples are truncated" : "Set a max sequence length",
+      state: cap ? "resolved" : "pending" },
+    { id: "updates", label: "Learning updates", value: steps ? num(steps) : "—",
+      note: steps ? `${num(epochs)} ${epochs === 1 ? "pass" : "passes"} over the training split` : "Derived once the inputs above resolve",
+      state: steps ? "resolved" : "pending", result: true },
+  ];
+}
+
+// `data-state` carries the colour; the note carries the same fact in words, so the chain still reads
+// correctly with no colour at all.
+function chainLink(link) {
+  return `<li class="chain-link${link.result ? " chain-result" : ""}" data-state="${link.state}" data-link="${link.id}">
+    <span class="chain-mark" aria-hidden="true"></span>
+    <span class="chain-label">${link.label}</span>
+    <span class="chain-value">${link.value}</span>
+    <span class="chain-note">${link.note}</span>
+  </li>`;
+}
+
 function labPage() {
   const draft = ui.draft;
   const distill = draft.method === "distillation";
@@ -563,7 +602,11 @@ function labPage() {
       </details>
     </div><aside class="lab-settings recipe-overview" aria-label="Recipe overview">
       <div class="inspector-title">${icon("lab")} Your plan</div><div class="recipe-readiness" id="recipe-readiness" role="status"></div>
-      <section><dl class="facts"><dt>Workflow</dt><dd>${managed ? "Local Mac training" : "Train in a terminal"}</dd><dt>Model</dt><dd id="preview-model">${esc(draft.student ? modelName(draft.student) : "Not chosen")}</dd><dt>Examples</dt><dd id="preview-examples">${dataset ? num(dataset.records) : "Not chosen"}</dd><dt>Output</dt><dd>${managed ? "New private job folder, registered automatically" : "Adapter in the terminal bundle; import its result"}</dd></dl><div class="estimate">${icon("clock")}<span id="step-estimate">${stepEstimate()}</span></div></section>
+      <section class="plan-derivation">
+        <h3 class="sr-only">How the learning updates are derived</h3>
+        <ol class="chain" id="plan-chain">${planChain().map(chainLink).join("")}</ol>
+        <dl class="facts plan-context"><dt>Workflow</dt><dd>${managed ? "Local Mac training" : "Train in a terminal"}</dd><dt>Model</dt><dd id="preview-model">${esc(draft.student ? modelName(draft.student) : "Not chosen")}</dd><dt>Output</dt><dd>${managed ? "New private job folder, registered automatically" : "Adapter in the terminal bundle; import its result"}</dd></dl>
+      </section>
       <section><h3>What saving does</h3><p class="help">${managed ? hosted ? "Saves this recipe in this browser and explains how to move it to local Mamase. This website cannot start or monitor training." : "Saves this recipe and opens a review page. You choose the original file and confirm Start training there." : "Saves a recipe to export. You run the trainer yourself and import its reports."}</p><p class="help">An adapter needs its base model. Nothing is deployed or approved automatically.</p></section>
     </aside><div class="lab-submit"><div class="lab-footer"><p>${icon("local")} No training starts when you save.</p><button type="submit" class="button primary">${icon("arrow")} Save recipe &amp; review</button></div>
       <p class="form-error" role="alert" hidden></p></div></form>`;
@@ -595,10 +638,9 @@ function syncRecipe() {
   datasetControl.setCustomValidity(incompatible ? "Response distillation requires a teacher-generated dataset." : "");
   if (teacherControl) teacherControl.setCustomValidity(dataset?.kind === "teacher" && teacherControl.value.trim() !== dataset.teacher ? "The teacher model must match the dataset's recorded teacher." : "");
   document.querySelector("#dataset-summary").textContent = dataset ? datasetSummary(dataset) : "Import and select a JSONL dataset to begin.";
-  document.querySelector("#step-estimate").textContent = stepEstimate();
   document.querySelector("#draft-status").textContent = draftMessage;
   document.querySelector("#preview-model").textContent = ui.draft.student ? modelName(ui.draft.student) : "Not chosen";
-  document.querySelector("#preview-examples").textContent = dataset ? num(dataset.records) : "Not chosen";
+  renderChain();
   const identitiesRequired = ui.draft.workflow === "cli" || Boolean(ui.draft.familiarId || ui.draft.instanceId);
   for (const name of ["familiarId", "instanceId"]) {
     const control = form.elements.namedItem(name);
@@ -612,12 +654,27 @@ function syncRecipe() {
   if (readiness.textContent !== message) readiness.textContent = message;
 }
 
-function stepEstimate() {
-  const dataset = workspace.datasets.find((item) => item.id === ui.draft.datasetId);
-  const recipe = numericRecipe(ui.draft);
-  if (!dataset || recipe.batchSize < 1 || recipe.accumulation < 1 || recipe.epochs < 1) return "Select a dataset to estimate steps.";
-  const steps = estimatedSteps(recipe, dataset);
-  return Number.isFinite(steps) ? `${num(steps)} planned learning updates · ${num(recipe.epochs)} passes through the training data` : "Enter valid parameters to estimate updates.";
+// Rewrite the chain in place rather than re-rendering the aside: the inspector updates on every
+// keystroke, and replacing the subtree would move focus out of the field being typed into.
+function renderChain() {
+  const list = document.querySelector("#plan-chain");
+  if (!list) return;
+  for (const link of planChain()) {
+    const element = list.querySelector(`[data-link="${link.id}"]`);
+    if (!element) continue;
+    if (element.dataset.state !== link.state) element.dataset.state = link.state;
+    const value = element.querySelector(".chain-value");
+    const note = element.querySelector(".chain-note");
+    if (value.textContent !== String(link.value)) {
+      value.textContent = link.value;
+      // Restart the animation on every genuine change; without the reflow a second change inside
+      // the animation window would not replay it.
+      value.classList.remove("settling");
+      void value.offsetWidth;
+      value.classList.add("settling");
+    }
+    if (note.innerHTML !== link.note) note.innerHTML = link.note;
+  }
 }
 
 function numericRecipe(draft) {
