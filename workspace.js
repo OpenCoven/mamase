@@ -346,7 +346,17 @@ export function validateWorkspace(input) {
 
 export function loadWorkspace(storage) {
   const source = storage.getItem(STORAGE_KEY);
-  return source === null ? createWorkspace() : validateWorkspace(JSON.parse(source));
+  if (source === null) return createWorkspace();
+  let stored;
+  try {
+    stored = JSON.parse(source);
+  } catch (error) {
+    if (!(error instanceof SyntaxError)) throw error;
+    // Still a SyntaxError, so callers that distinguish corruption from invalid shape keep working;
+    // the engine's own wording is what the recovery banner would otherwise read out.
+    throw new SyntaxError("stored workspace data is not valid JSON");
+  }
+  return validateWorkspace(stored);
 }
 
 export function saveWorkspace(storage, workspace) {

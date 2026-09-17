@@ -267,7 +267,14 @@ test("workspace persistence round-trips and never hides corrupt or unavailable s
   saveWorkspace(storage, workspace);
   assert.deepEqual(loadWorkspace(storage), workspace);
   storage.setItem(STORAGE_KEY, "not json");
-  assert.throws(() => loadWorkspace(storage), SyntaxError);
+  // Still a SyntaxError, but in words: this message reaches the recovery banner, which reads
+  // "Your workspace could not be opened: <message>. Your stored data has not been changed."
+  assert.throws(() => loadWorkspace(storage), (error) => {
+    assert.ok(error instanceof SyntaxError);
+    assert.doesNotMatch(error.message, /JSON input|Unexpected token|position \d+|in JSON at/);
+    assert.match(error.message, /not valid JSON/);
+    return true;
+  });
   assert.equal(storage.getItem(STORAGE_KEY), "not json");
   assert.throws(() => saveWorkspace({ setItem() { throw new Error("Storage full"); } }, workspace), /Storage full/);
 });
@@ -375,4 +382,29 @@ test("user text is escaped and CSV cells cannot become spreadsheet formulas", ()
   const csv = runsCsv([{ ...run, name: '=HYPERLINK("test")' }]);
   assert.match(csv, /"'=HYPERLINK\(""test""\)"/);
   assert.equal(runsCsv([]).split("\r\n").length, 1);
+});
+
+// #44: a screen-reader pass over the accessibility tree found that a failed restore announces
+// "Unexpected end of JSON input" -- the JavaScript engine's own words, in an assertive alert. Every
+// other failure in parseWorkspaceBackup has a written message, and two other file-parsing paths in
+// this codebase already catch SyntaxError and say what failed and that nothing changed. This one
+// did not, so the one moment a user most needs to know their workspace survived was the moment the
+// message stopped being about their workspace at all.
+test("a backup that is not valid JSON fails in words, not in the parser's", () => {
+  for (const malformed of ['{"version":1,"workspace":{"runs":', "", "not json at all", "{,}"]) {
+    assert.throws(() => parseWorkspaceBackup(malformed), (error) => {
+      assert.doesNotMatch(error.message, /JSON input|Unexpected token|position \d+|in JSON at/,
+        `raw parser text reached the user for ${JSON.stringify(malformed.slice(0, 24))}: ${error.message}`);
+      assert.match(error.message, /not valid JSON/);
+      // An atomic failure that does not say so is indistinguishable from a partial one by ear.
+      assert.match(error.message, /No changes were made/);
+      return true;
+    }, JSON.stringify(malformed.slice(0, 24)));
+  }
+});
+
+test("a syntactically valid backup that is the wrong shape keeps its own written message", () => {
+  // The new guard must catch SyntaxError only, and leave every other assertion's wording alone.
+  assert.throws(() => parseWorkspaceBackup('"a string"'), /Expected a workspace backup object/);
+  assert.throws(() => parseWorkspaceBackup('{"schema":"nope"}'), /Unsupported backup schema/);
 });
