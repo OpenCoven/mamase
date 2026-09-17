@@ -57,14 +57,15 @@ test("form hints and table actions have explicit accessible associations", () =>
 });
 
 // Live regions are the only way a screen reader learns that something changed without focus moving:
-// streamed training progress, import outcomes, restore results. Dropping role/aria-live from one of
-// these leaves the UI looking identical and silently stops announcing, which no visual test notices.
+// streamed training progress, filtered totals, plan readiness, comparison results. Dropping
+// role/aria-live from one of these leaves the UI looking identical and silently stops announcing,
+// which no visual test notices. Only regions that change in place belong here: a region rendered
+// together with its text is new to assistive technology, not changed, and is never spoken -- which
+// is why the two preview summaries are dialog descriptions below, not live regions.
 const liveRegions = [
-  ["live-progress-announcement", "role=\"status\"", "training progress, at each tenth of the way"],
+  ["live-progress-announcement", "role=\"status\"", "training progress and status, at each tenth of the way and on every status change"],
   ["run-count", "role=\"status\"", "filtered run totals"],
   ["recipe-readiness", "role=\"status\"", "plan readiness"],
-  ["report-summary", "role=\"status\"", "paired report import outcome"],
-  ["restore-summary", "role=\"status\"", "backup restore outcome"],
   ["account-panel", "aria-live=\"polite\"", "account/auth phase"],
   ["comparison-result", "aria-live=\"polite\"", "evaluation comparison"],
 ];
@@ -84,7 +85,7 @@ test("status regions keep the live-region announcement they depend on", async ()
   assert.match(app, /<progress id="live-progress-bar" aria-label="[^"]+"/);
 });
 
-test("the step-by-step progress text is shown but not announced, and the announcement is throttled", async () => {
+test("the step-by-step progress text is shown but not announced, and the announcement outlives the progress block", async () => {
   const app = await readFile(new URL("../app.js", import.meta.url), "utf8");
   // #live-progress-text changes on every reported step. As a live region that queued one
   // announcement per flush -- up to five a second -- so a screen reader fell behind the run reading
@@ -94,24 +95,63 @@ test("the step-by-step progress text is shown but not announced, and the announc
   assert.ok(visible, "app.js no longer renders the visible progress text");
   assert.doesNotMatch(visible[0], /role="status"|aria-live/,
     "the per-step text must not be a live region, or every step is announced again");
-  assert.match(app, /<span id="live-progress-announcement" class="sr-only" role="status">/);
+  // The region is rendered once with the run page, empty, outside the training panel. Inside the
+  // panel it was rebuilt with its text on every state change, which assistive technology treats as
+  // a new region rather than a changed one; and it vanished with the progress block, so the run
+  // stopping -- the one status change that matters most -- was never announced.
+  const detailStart = app.indexOf("function runDetail(");
+  const detail = app.slice(detailStart, app.indexOf("\nfunction ", detailStart + 1));
+  assert.match(detail, /<p id="live-progress-announcement" class="sr-only" role="status"><\/p>/,
+    "the announcement region must be part of the run page, rendered empty");
+  const block = /<div class="live-progress">.*?Percentage of learning updates, not time remaining\.<\/p><\/div>/s.exec(app);
+  assert.ok(block, "app.js no longer renders the progress block");
+  assert.doesNotMatch(block[0], /live-progress-announcement/, "the announcement region must not be rebuilt with the progress block");
+  assert.match(app, /const announcement = document\.querySelector\("#live-progress-announcement"\)/);
   // The exact count must still be reachable on demand, which is what aria-valuetext is for.
   assert.match(app, /progress\.setAttribute\("aria-valuetext", value\)/);
   // The announcement is written only when the milestone changes, never on every update. How often
   // that is -- eleven times over a five-hundred-step run -- is pinned behaviourally against
-  // trainingProgress() in tests/training-state.test.js, which is the stronger statement.
+  // trainingProgress() in tests/training-state.test.js, which is the stronger statement. What was
+  // already true when the page opened is recorded as the baseline, not announced.
+  assert.match(app, /if \(!announcement\.dataset\.milestone\) announcement\.dataset\.milestone = shown\.milestone;/);
   assert.match(app, /announcement\.dataset\.milestone !== shown\.milestone/);
-  assert.match(app, /announcement\.textContent = shown\.announcement/);
+  assert.match(app, /const text = shown\.announcement/);
+  // A launch or a cancellation is confirmed from a dialog, and the status it causes can arrive
+  // before that dialog closes. The page behind a modal dialog is inert, so a change made there is
+  // dropped rather than read later: it is held and said when the dialog closes.
+  assert.match(app, /if \(dialog\.open\) announcement\.dataset\.pending = text;\s*else announcement\.textContent = text;/);
+  assert.match(app, /announcement\.textContent = announcement\.dataset\.pending;/);
 });
 
-test("toast switches role and politeness together so errors interrupt", async () => {
+test("toasts are two always-present regions at a fixed politeness, so errors interrupt and the rest are heard", async () => {
   const app = await readFile(new URL("../app.js", import.meta.url), "utf8");
-  // An error toast must be alert+assertive; a normal one status+polite. Changing one without the
-  // other yields an assertive status or a polite alert, both of which announce wrongly.
-  assert.match(app, /toast\.setAttribute\("role", error \? "alert" : "status"\)/);
-  assert.match(app, /toast\.setAttribute\("aria-live", error \? "assertive" : "polite"\)/);
   const markup = await readFile(new URL("../index.html", import.meta.url), "utf8");
-  assert.match(markup, /id="toast"[^>]*role="status"[^>]*aria-live="polite"/);
+  // One region that was unhidden with its message, and switched between polite and assertive as it
+  // was filled, looked right in the accessibility tree and was never spoken: a live region announces
+  // a change to content it already exposes, and at the politeness it had when it was registered.
+  assert.match(markup, /<div id="toast-status" role="status" aria-live="polite"><\/div>/);
+  assert.match(markup, /<div id="toast-alert" class="error" role="alert" aria-live="assertive"><\/div>/);
+  assert.doesNotMatch(/id="toast[^"]*"[^>]*hidden/.exec(markup)?.[0] || "", /hidden/, "a hidden region is not in the tree to announce from");
+  assert.doesNotMatch(app, /toast\w*\.setAttribute\("(?:role|aria-live)"/, "politeness must not be switched per message");
+  assert.doesNotMatch(app, /toast\w*\.hidden/, "the regions must never leave the accessibility tree");
+  assert.match(app, /const region = error \? toastAlert : toastStatus;/);
+  // A repeat of the same message is not a change; it is cleared and re-set so it is heard again.
+  assert.match(app, /if \(region\.textContent === message\) \{/);
+});
+
+test("preview dialogs describe themselves by their summary, which is read on entering them", async () => {
+  const app = await readFile(new URL("../app.js", import.meta.url), "utf8");
+  // The summaries are rendered with the dialog, so as live regions they would never be spoken; the
+  // dialog's accessible description is what a screen reader reads after its name, before the
+  // buttons. Both must be plain paragraphs the dialog points at, and nothing else may keep a
+  // stale description from an earlier dialog.
+  assert.match(app, /dialog\.removeAttribute\("aria-describedby"\);/);
+  for (const id of ["report-summary", "restore-summary"]) {
+    const element = new RegExp(`<p id="${id}"[^>]*>`).exec(app);
+    assert.ok(element, `app.js no longer renders #${id}`);
+    assert.doesNotMatch(element[0], /role=|aria-live/, `#${id} is described, not announced; a live role here promises what cannot happen`);
+    assert.match(app, new RegExp(`dialog\\.setAttribute\\("aria-describedby", "dialog-${id}"\\)`));
+  }
 });
 
 test("loss visualization includes validation-only records and real zeroes", () => {

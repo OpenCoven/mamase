@@ -1380,3 +1380,17 @@ The sweep's own checks are covered by `tests/ux-structure.test.js` in the Node
 suite, against pages built to contain one defect each. A green gate does not
 establish that a check has teeth, because an app-wide mutation fails an earlier
 assertion in `scripts/verify-ux.mjs` before the sweep is reached.
+
+The gate also applies the one rule that decides whether a live region is spoken
+at all, which no snapshot of the accessibility tree shows: a region announces a
+change to content it already exposes, not content it appears with. A region
+inserted together with its text, or unhidden in the same tick its text is set,
+is identical in the tree to one that was announced, and says nothing.
+`scripts/ux-announcements.mjs` records every live-region change with that
+verdict, and `npm run test:e2e` and `npm run test:training` assert that saving
+the workspace name, a cross-tab conflict, plan readiness while typing, the
+restore and report previews, a run starting, stopping, being cancelled and
+failing, and a playground reply completing would each be heard — at the
+politeness assistive technology registered for the region. The rule itself is
+proved by `tests/ux-announcements.test.js`. It is a model of what assistive
+technology does, not a screen reader, and it does not replace the human pass.

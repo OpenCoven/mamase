@@ -10,6 +10,7 @@ import { LocalInference } from "../local-inference.mjs";
 import { createAppServer } from "../server.mjs";
 import { createAuthApi } from "../auth-api.mjs";
 import { STORAGE_KEY, validateWorkspace } from "../workspace.js";
+import { installAnnouncementRecorder, drainAnnouncements, waitForAnnouncement } from "./ux-announcements.mjs";
 
 const protocol = process.argv.includes("--protocol-fixture");
 const keepOutput = Boolean(process.env.MAMASE_TRAINING_OUTPUT);
@@ -51,6 +52,7 @@ try {
   const base = `http://127.0.0.1:${server.address().port}`;
   browser = await chromium.launch({ headless: true });
   const context = await browser.newContext({ viewport: { width: 1440, height: 1000 }, colorScheme: "dark" });
+  await installAnnouncementRecorder(context);
   await context.addInitScript(() => {
     window.trainerMessages = [];
     const Original = window.EventSource;
@@ -117,8 +119,16 @@ try {
   await modal.getByRole("button", { name: "Start training", exact: true }).click();
   await modal.waitFor({ state: "hidden", timeout: 45000 });
   assert.ok((await trainer.findRun(runId)).id);
+  // Flow 3 of docs/accessibility-review-protocol.md: a screen reader follows the run through
+  // #live-progress-announcement without focus moving. The start and the end must each be spoken,
+  // which means the region has to exist before the job does and outlive the progress block.
+  const started = await waitForAnnouncement(page, /^(starting|running), \d+% — \d+ of \d+ learning updates reported$/, { timeout: 45000 });
+  assert.equal(started.politeness, "polite");
+  const ended = await waitForAnnouncement(page, /^completed, 100% — \d+ of \d+ learning updates reported$/, { timeout: 180000 });
+  assert.equal(ended.id, "live-progress-announcement");
+  const messages = await page.evaluate(() => window.trainerMessages);
 
-  // Reopen the run in the same browser storage: the server, not the tab, owns the job.
+  // Reopen the run in the same browser storage: the server, not the tab that launched it, owns the job.
   await page.close();
   page = await context.newPage();
   watch(page);
@@ -136,7 +146,6 @@ try {
   assert.equal(workspace.artifacts.length, 1);
   assert.equal(workspace.artifacts[0].path, job.outputPath);
   assert.ok(await page.locator("#run-artifacts").getByRole("link", { name: /MLX adapter/ }).isVisible());
-  const messages = await page.evaluate(() => window.trainerMessages);
   assert.ok(messages.includes("snapshot"));
   assert.ok(messages.includes("progress"), "Expected live progress over SSE, not only a final snapshot");
   const weights = await readFile(join(job.outputPath, "adapters.safetensors"));
@@ -198,6 +207,8 @@ try {
     await page.getByRole("button", { name: "Send message", exact: true }).click();
     await page.waitForFunction(() => document.querySelector(".pg-reply-meta") && !document.querySelector('[data-pg-action="stop"]'), null, { timeout: 120000 });
     assert.match(await page.locator("#pg-status").innerText(), /Reply complete/, await page.locator("#main").innerText());
+    // The outcome must be heard, not only shown: the panel is rebuilt when generation ends.
+    await waitForAnnouncement(page, /^Reply complete\. \d+ tokens generated\.$/);
     assert.ok((await page.locator('[data-pg-reply="0"]').innerText()).length > 0, "The local model must produce actual text");
     const pendingDownload = page.waitForEvent("download");
     await page.getByRole("button", { name: "Export transcript", exact: true }).click();
@@ -245,6 +256,8 @@ try {
     await page.getByRole("button", { name: "Cancel local training", exact: true }).click();
     await modal.getByRole("button", { name: "Cancel local job", exact: true }).click();
     await modal.waitFor({ state: "hidden" });
+    // Interrupting a run must be heard at once, and heard as cancelled rather than as failed.
+    await waitForAnnouncement(page, /^cancelled, \d+% — \d+ of \d+ learning updates reported$/, { timeout: 45000 });
     await page.waitForFunction((key) => JSON.parse(localStorage.getItem(key)).runs.at(-1).status === "cancelled", STORAGE_KEY);
     await page.getByRole("heading", { name: "Training was cancelled.", exact: true }).waitFor();
     await page.getByRole("button", { name: "Edit a copy & retry", exact: true }).click();
@@ -258,6 +271,9 @@ try {
     await modal.getByRole("button", { name: "Start training", exact: true }).click();
     await modal.waitFor({ state: "hidden" });
     await page.getByRole("heading", { name: "Training stopped with an error.", exact: true }).waitFor();
+    // A failure is announced with the trainer's reason, not only a status word.
+    const failed = await waitForAnnouncement(page, /^failed, \d+% — \d+ of \d+ learning updates reported\. /, { timeout: 45000 });
+    assert.match(failed.text, /Deliberate worker failure/, failed.text);
     await page.getByRole("button", { name: "Show technical details", exact: true }).click();
     assert.equal(await page.locator("#run-technical").evaluate((element) => element.open), true);
     assert.equal(await page.locator(".trainer-log").evaluate((element) => element.open), true);
@@ -273,7 +289,7 @@ try {
     await writeFile(join(root, "workspace.json"), JSON.stringify(workspace, null, 2), { flag: "wx", mode: 0o600 });
   }
   assert.deepEqual(errors, []);
-  console.log(`${protocol ? "Protocol-fixture" : "Real MLX-LM"} training passed: saved recipe -> local process -> streamed observations -> browser reconnect -> completed run -> one registered adapter${reload ? " -> MLX-LM reload" : ""} -> playground adapter/base replies. ${workspace.runs[0].step} optimizer steps; ${weights.length} adapter bytes.${keepOutput ? ` Output retained in ${root}` : ""}`);
+  console.log(`${protocol ? "Protocol-fixture" : "Real MLX-LM"} training passed: saved recipe -> local process -> streamed observations -> browser reconnect -> completed run announced -> one registered adapter${reload ? " -> MLX-LM reload" : ""} -> playground adapter/base replies. ${workspace.runs[0].step} optimizer steps; ${weights.length} adapter bytes.${keepOutput ? ` Output retained in ${root}` : ""}`);
 } finally {
   if (browser) await browser.close();
   if (server) await server.closeLocalRuntime();

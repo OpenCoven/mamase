@@ -66,6 +66,10 @@ Settings → **Workspace identity** → change the name → **Save name**. Then
 exported file.
 
 - Does the screen reader say the name was **saved**, or only re-read the field?
+  Until this was checked by rule it did neither: the toast was a hidden region
+  shown with its text, which is never announced. It is now two regions that are
+  always present, `#toast-status` (polite) and `#toast-alert` (assertive). The
+  gate asserts the save would be spoken; you can confirm that it is.
 - On restore, is the preview (source format, collection counts) announced
   *before* the confirm button, or does the reader meet the confirm first?
 - Reset is destructive. Is that conveyed before activation, not after?
@@ -94,8 +98,16 @@ only real test:
 | Element | Changes | Announced |
 |---|---|---|
 | `#live-progress-text` | every reported step | no — visible only |
-| `#live-progress-announcement` | each tenth, and on any status change | yes, politely |
+| `#live-progress-announcement` | each tenth, and on any status change, including completed, cancelled and failed | yes, politely |
 | `#live-progress-bar` `aria-valuetext` | every reported step | on demand, when you ask |
+
+The announcement region is part of the run page, not of the training panel,
+because the panel is rebuilt on every state change and a region rebuilt with
+its text is new to a screen reader rather than changed. What was already true
+when you opened the page is not announced; what changes after that is. A
+status that arrives while a dialog is still open — the launch or the cancel
+confirmation — is held and said when the dialog closes, because the page
+behind a modal dialog is inert.
 
 - Is one announcement per tenth the right cadence — too sparse to follow, or
   still too much? It was one per reported step, throttled to 200ms, which is up
@@ -105,7 +117,12 @@ only real test:
   (`aria-valuetext`), or only the percentage the browser computes?
 - When the run is interrupted, does the reader learn it **stopped** at once, and
   does it distinguish cancelled from failed? A status change is supposed to
-  announce immediately rather than wait for the next tenth.
+  announce immediately rather than wait for the next tenth. The gate now
+  asserts that "cancelled, N% — …" and "failed, N% — …" followed by the
+  trainer's reason would each be spoken; before it did, neither was, because
+  the region vanished with the progress block. What you can add is whether
+  hearing "cancelled" and then the toast "Cancellation requested" in that
+  order is confusing.
 
 ### 4. Paired report import, including the delayed-import dialog-close path
 
@@ -113,9 +130,10 @@ Evaluations → **Import paired report**. Then repeat it, closing the dialog
 *while the import is still resolving* — this is the path #6 fixed and the one
 most likely to strand a non-visual user.
 
-- `#report-summary` announces new / duplicate / conflict counts. If you closed
-  the dialog early, is the outcome still announced, or did it announce into a
-  dialog that no longer exists?
+- `#report-summary` is the dialog's accessible description, read on entering
+  it: "N new · N duplicates · N conflicts". It was a live region rendered with
+  the dialog, which announces nothing. If you closed the dialog early, the
+  outcome is a toast — is it announced, and does it say enough?
 - Where is focus after the dialog closes on its own rather than by your action?
 - Replaying an identical report is a no-op. Does the reader convey "nothing
   changed" as clearly as it conveys a successful import? Silence reads as
@@ -140,7 +158,8 @@ opinion only)** and a **Rejected**, each with a rationale.
 Settings → restore a backup, including a legacy v1 file and a deliberately
 corrupt one.
 
-- `#restore-summary` announces the outcome. For the corrupt file, does the
+- `#restore-summary` is the dialog's accessible description, read on entering
+  it, and says that nothing has been saved. For the corrupt file, does the
   reader convey that **nothing was changed**? An atomic failure that sounds like
   a partial one is worse than a crash.
 - Is the version mismatch (v1 vs current) audible, or only visible?
@@ -169,6 +188,31 @@ spend the session on them:
 
 So the open questions are the ones about judgement, which is the whole point:
 cadence, sufficiency, and whether an outcome that sounds like success was one.
+
+## What the announcement rule already established
+
+A later pass applied the one rule that decides whether a live region is spoken
+at all: it announces a change to content it already exposes, not content it
+appears with, and at the politeness it had when it was registered. A region
+inserted with its text, unhidden with its text, or removed and recreated with
+new text looks identical in the accessibility tree to one that was announced.
+`scripts/ux-announcements.mjs` records every live-region change in the gate
+with that verdict, and it found that most of what the flows above rely on was
+rendered and never spoken: every routine toast, the run reaching completed,
+cancelled or failed, the playground's "Reply complete", and both preview
+summaries. All of those are fixed and pinned. The rule is a model of assistive
+technology, not a screen reader: it settles whether an outcome is handed to
+one, and nothing about how it sounds.
+
+Two things it raised for you rather than settled:
+
+- After a cancel, the order heard is the held status ("cancelled, 0% — 0 of 4
+  learning updates reported") and then the toast ("Cancellation requested for
+  the local trainer"). Both are true; is the second one noise?
+- Opening a run that is already training announces nothing until the next
+  tenth or status change, on the grounds that what is already true is not
+  news. The panel heading and the progress bar carry the current state on
+  request. Is silence on arrival right?
 
 One the sweep could not answer and is worth your attention: the warning that
 per-case review text is temporary appears on the file-selection dialog, before
