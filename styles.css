@@ -878,3 +878,81 @@ dialog.case-review { width: min(1100px, calc(100vw - 32px)); max-width: 1100px; 
 .handbook-approval { display: flex; align-items: center; gap: 6px; font-size: 11px; }
 .handbook-boundary { padding-top: 14px; margin-top: 16px; border-top: 1px solid var(--line); }
 .handoff-prompt { width: 100%; font: 11px/1.6 var(--font-mono); resize: vertical; }
+
+/* --- Distillation lab: the derivation chain ------------------------------------------------
+   The plan inspector used to state a step count. It now shows how that count was reached: one
+   link per input, each resolved from a real value or waiting on one. Colour is carried by the
+   existing semantic inks rather than a second palette, and every state is also written in words,
+   so the chain reads correctly in greyscale.
+
+   The rail is the signature: solid through the links that resolved, dashed from the first one
+   that has not. Where the line breaks is where the derivation stops. */
+.plan-derivation { display: grid; gap: 18px; }
+.chain { list-style: none; margin: 0; padding: 0; display: grid; gap: 0; }
+.chain-link {
+  display: grid;
+  grid-template-columns: 18px minmax(0, 1fr) auto;
+  grid-template-areas: "mark label value" "rail note note";
+  align-items: baseline;
+  column-gap: 10px;
+  padding-bottom: 12px;
+}
+.chain-link:last-child { padding-bottom: 0; }
+.chain-mark {
+  grid-area: mark; position: relative; justify-self: center; align-self: center;
+  width: 7px; height: 7px; border-radius: 50%;
+  border: 1.5px solid var(--chain-ink); background: transparent;
+  transition: background-color 160ms ease, border-color 160ms ease;
+}
+.chain-link[data-state="resolved"] .chain-mark { background: var(--chain-ink); }
+/* The connector belongs to the mark so it always lines up with it, whatever the row height. */
+.chain-link:not(:last-child) .chain-mark::after {
+  content: ""; position: absolute; left: 50%; top: calc(100% + 3px);
+  width: 0; height: calc(100% + 18px); transform: translateX(-50%);
+  border-left: 1.5px solid var(--chain-rail);
+}
+/* A link's own segment is dashed when that link is unresolved. Deriving the break from an upstream
+   link instead would draw "per update" as broken because no dataset is chosen, which is not true:
+   it is computed from the batch settings alone. */
+.chain-link[data-state="pending"] .chain-mark::after { border-left-style: dashed; }
+.chain-label {
+  grid-area: label; font-size: 11px; font-weight: 500; letter-spacing: 0.07em;
+  text-transform: uppercase; color: var(--secondary);
+}
+.chain-value {
+  grid-area: value; justify-self: end;
+  font-family: ui-monospace, SFMono-Regular, "SF Mono", Menlo, monospace;
+  font-variant-numeric: tabular-nums; font-size: 13px; color: var(--chain-ink);
+}
+.chain-note { grid-area: note; font-size: 11px; line-height: 1.5; color: var(--muted); padding-top: 3px; }
+.chain-link { --chain-ink: var(--validation-ink); --chain-rail: var(--validation-ink); }
+/* --field-border, not --line: the solid/dashed rail carries state, so it has to clear 3:1 against
+   the card. --line sits at 1.4:1 in both themes and the distinction would be invisible. */
+.chain-link[data-state="pending"] { --chain-ink: var(--warning-ink); --chain-rail: var(--field-border); }
+
+/* The terminal figure is the one thing this panel exists to produce, so it is the one thing that
+   gets optical weight. Everything above it stays quiet. */
+.chain-result { margin-top: 4px; padding-top: 14px; border-top: 1px solid var(--line-soft); }
+.chain-result .chain-label { color: var(--ink); font-weight: 600; }
+.chain-result .chain-value { font-size: 22px; line-height: 1; letter-spacing: -0.01em; }
+.chain-result[data-state="resolved"] { --chain-ink: var(--on-primary); }
+/* The terminal mark carries the same weight as the figure beside it. */
+.chain-result .chain-mark { width: 9px; height: 9px; border-width: 2px; }
+
+/* A value only flashes when it actually changed, so the panel visibly recomputes as the recipe is
+   edited. It marks a real recalculation; it is never played on a value that stayed the same. */
+@keyframes chain-settle {
+  from { background-color: var(--accent-surface); }
+  to { background-color: transparent; }
+}
+.chain-value { border-radius: 4px; padding: 1px 4px; margin-right: -4px; }
+.chain-value.settling { animation: chain-settle 520ms ease-out; }
+@media (prefers-reduced-motion: reduce) {
+  .chain-value.settling { animation: none; }
+}
+
+.plan-context { border-top: 1px solid var(--line-soft); padding-top: 14px; }
+
+@media (prefers-reduced-motion: reduce) {
+  .chain-mark { transition: none; }
+}

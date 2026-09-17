@@ -96,6 +96,11 @@ const contrast = async (page) => {
       ["secondary", "--secondary", "--surface"], ["placeholder", "--placeholder", "--surface"],
       ["regression", "--danger-ink", "--surface"], ["warning", "--warning-ink", "--surface"],
       ["focus", "--focus", "--page", 3], ["focus surface", "--focus", "--surface", 3],
+      // The distillation lab's derivation chain: a resolved value, a pending one, the derived
+      // result, and the rail whose solid/dashed state says whether a link resolved.
+      ["chain resolved", "--validation-ink", "--surface"], ["chain pending", "--warning-ink", "--surface"],
+      ["chain result", "--on-primary", "--surface"], ["chain note", "--muted", "--surface"],
+      ["chain label", "--secondary", "--surface"], ["chain rail", "--field-border", "--surface", 3],
     ].map(([label, fg, bg, minimum = 4.5]) => ({ label, fg: color(fg), bg: color(bg), minimum }));
     probe.remove();
     for (const element of document.querySelectorAll(".badge, .button.primary")) {
@@ -987,6 +992,45 @@ try {
   assert.match(restoreMessage, /No changes were made/,
     `a failed restore must say the workspace is unchanged, or an atomic failure sounds partial: ${restoreMessage}`);
   await structurePage.keyboard.press("Escape");
+
+  // The distillation lab states how many learning updates it plans and shows the derivation behind
+  // it. A chain that renders but disagrees with estimatedSteps() would be worse than no chain at
+  // all: it would look like working evidence. The arithmetic is asserted independently here.
+  await go(structurePage, "playground");
+  const chain = (id) => structurePage.locator(`#plan-chain [data-link="${id}"]`);
+  const chainValue = (id) => chain(id).locator(".chain-value").textContent();
+  // Nothing is chosen yet, so the links that need a dataset are unresolved -- and say so in words,
+  // not only in colour.
+  assert.equal(await chain("examples").getAttribute("data-state"), "pending");
+  assert.equal(await chain("updates").getAttribute("data-state"), "pending");
+  assert.match(await chain("examples").locator(".chain-note").textContent(), /Select a dataset/);
+  assert.equal((await chainValue("updates")).trim(), "\u2014");
+
+  await structurePage.getByLabel("Training dataset", { exact: true }).selectOption("teacher-data");
+  await structurePage.locator("#recipe-advanced > summary").click();
+  for (const [label, value] of [["Micro batch", "2"], ["Gradient accumulation", "4"], ["Epochs", "3"], ["Max sequence length", "512"]]) {
+    await structurePage.getByLabel(label, { exact: true }).fill(value);
+  }
+  await structurePage.getByLabel("Run name", { exact: true }).click();
+  await structurePage.locator('#plan-chain [data-link="updates"][data-state="resolved"]').waitFor();
+  // 100 examples, 10% holdout -> 90 train / 10 holdout. 90 / 2 micro-batch = 45 forward passes,
+  // / 4 accumulation = 12 optimizer updates per epoch (rounded up), x 3 epochs = 36.
+  assert.equal((await chainValue("examples")).trim(), "100");
+  assert.equal((await chainValue("split")).trim().replace(/\s+/g, " "), "90 / 10");
+  assert.equal((await chainValue("batch")).trim(), "8");
+  assert.equal((await chainValue("sequence")).trim().replace(/[\s,]/g, ""), "512");
+  assert.equal((await chainValue("updates")).trim(), "36");
+  for (const id of ["examples", "split", "batch", "sequence", "updates"]) {
+    assert.equal(await chain(id).getAttribute("data-state"), "resolved", id);
+  }
+  // Break one input again: the link that depends on it goes back to pending, and the ones that do
+  // not depend on it stay resolved.
+  await structurePage.getByLabel("Micro batch", { exact: true }).fill("");
+  await structurePage.getByLabel("Run name", { exact: true }).click();
+  await structurePage.locator('#plan-chain [data-link="batch"][data-state="pending"]').waitFor();
+  assert.equal(await chain("updates").getAttribute("data-state"), "pending");
+  assert.equal(await chain("examples").getAttribute("data-state"), "resolved",
+    "the example count does not depend on the batch size and must stay resolved");
 
   await structureContext.close();
 
