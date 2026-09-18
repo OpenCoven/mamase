@@ -61,11 +61,18 @@ export function createAppServer({ training = null, inference, auth = createAuthA
     }
   });
   server.closeTrainingConnections = trainingApi.close;
-  server.closeLocalRuntime = async () => {
-    await trainingApi.close();
-    await training?.close();
-  };
-  server.on("close", () => { void trainingApi.close(); });
+  let closing;
+  server.closeLocalRuntime = () => closing ??= (async () => {
+    try {
+      await trainingApi.close();
+    } finally {
+      try { await training?.close(); }
+      finally { await store?.close?.(); }
+    }
+  })();
+  server.on("close", () => {
+    void server.closeLocalRuntime().catch(() => console.error("Unable to close local runtime cleanly."));
+  });
   return server;
 }
 
@@ -80,7 +87,7 @@ if (process.argv[1] === fileURLToPath(import.meta.url)) {
     stopping = true;
     const closing = server.closeLocalRuntime();
     server.close();
-    try { await closing; } catch (error) { console.error(`Unable to close local training cleanly: ${error.message}`); process.exitCode = 1; }
+    try { await closing; } catch { console.error("Unable to close local runtime cleanly."); process.exitCode = 1; }
   };
   process.on("SIGINT", shutdown);
   process.on("SIGTERM", shutdown);

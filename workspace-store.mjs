@@ -1,4 +1,5 @@
 import pg from "pg";
+import { parse } from "pg-connection-string";
 
 /**
  * Per-account workspace storage.
@@ -32,10 +33,17 @@ export class WorkspaceStore {
 
   constructor({ connectionString, ssl } = {}) {
     if (!connectionString) throw new Error("WorkspaceStore needs a connection string.");
-    // Neon terminates TLS and its hostnames are public, so verify certificates there. A local
-    // Postgres over loopback has no certificate to verify and must not be forced into one.
-    const remote = !["localhost", "127.0.0.1", "[::1]"].includes(new URL(connectionString).hostname);
-    this.#pool = new pg.Pool({ connectionString, ssl: ssl ?? (remote ? { rejectUnauthorized: true } : false), max: 3 });
+    // Parse once, then enforce TLS on the actual host (including query overrides).
+    // Passing connectionString to Pool would let its SSL parameters override this policy.
+    const config = parse(connectionString);
+    delete config.connectionString;
+    const remote = !["localhost", "127.0.0.1", "[::1]", "::1"].includes(config.host);
+    const selectedTls = ssl ?? config.ssl;
+    const tls = remote ? { ...(typeof selectedTls === "object" ? selectedTls : {}), rejectUnauthorized: true }
+      : selectedTls ?? false;
+    if (remote) delete tls.checkServerIdentity; // Retain Node's hostname verification, including with verify-ca URLs.
+    this.#pool = new pg.Pool({ ...config, ssl: tls, max: 3 });
+    this.#pool.on("error", () => console.error("Workspace storage connection interrupted."));
   }
 
   /** Create the table once per process, not once per request. */

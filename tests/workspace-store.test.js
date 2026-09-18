@@ -12,6 +12,16 @@ const skip = connectionString ? false : "Set MAMASE_TEST_DATABASE_URL to exercis
 const workspace = (name) => ({ version: 1, name, programs: [], datasets: [], runs: [], artifacts: [], evaluations: [] });
 const account = () => `acct-${Math.random().toString(36).slice(2, 10)}`;
 
+function capturePools(context) {
+  const Pool = pg.Pool;
+  const pools = [];
+  context.mock.method(pg, "Pool", function (options) {
+    const pool = new Pool(options); pools.push(pool); return pool;
+  });
+  context.after(() => Promise.all(pools.map((pool) => pool.ended ? undefined : pool.end())));
+  return pools;
+}
+
 test("an account claims, reads back and revises its own workspace", { skip }, async (context) => {
   const store = new WorkspaceStore({ connectionString });
   context.after(() => store.close());
@@ -137,11 +147,34 @@ test("a stale deletion preserves the newer snapshot", { skip }, async (context) 
 });
 
 test("only exact loopback database hosts disable TLS verification", (context) => {
-  const configurations = [];
-  context.mock.method(pg, "Pool", function (options) { configurations.push(options); });
+  const pools = capturePools(context);
   for (const host of ["localhost", "127.0.0.1", "localhost.remote.example", "127.0.0.10", "db.example"]) {
     new WorkspaceStore({ connectionString: `postgresql://fixture@${host}/test` });
   }
-  assert.deepEqual(configurations.map(({ ssl }) => ssl), [false, false,
+  assert.deepEqual(pools.map(({ options: { ssl } }) => ssl), [false, false,
     { rejectUnauthorized: true }, { rejectUnauthorized: true }, { rejectUnauthorized: true }]);
+});
+
+test("remote database URLs cannot disable certificate or hostname verification", (context) => {
+  const pools = capturePools(context);
+  for (const query of ["sslmode=no-verify", "sslmode=disable", "ssl=0", "sslmode=require&uselibpqcompat=true", "sslmode=verify-full"]) {
+    new WorkspaceStore({ connectionString: `postgresql://fixture@db.example/test?${query}` });
+    const { ssl, host } = new pg.Client(pools.at(-1).options).connectionParameters;
+    assert.equal(host, "db.example");
+    assert.ok(ssl && ssl.rejectUnauthorized !== false, query);
+    assert.equal(ssl.checkServerIdentity, undefined, query);
+  }
+  new WorkspaceStore({ connectionString: "postgresql://fixture@localhost/test?host=db.example&sslmode=disable" });
+  const effective = new pg.Client(pools.at(-1).options).connectionParameters;
+  assert.equal(effective.host, "db.example");
+  assert.ok(effective.ssl && effective.ssl.rejectUnauthorized !== false);
+});
+
+test("idle pool errors are handled without logging database details", (context) => {
+  const pools = capturePools(context);
+  const log = context.mock.method(console, "error", () => {});
+  new WorkspaceStore({ connectionString: "postgresql://fixture@localhost/test" });
+  assert.doesNotThrow(() => pools[0].emit("error", new Error("private database connection details")));
+  assert.equal(log.mock.callCount(), 1);
+  assert.deepEqual(log.mock.calls[0].arguments, ["Workspace storage connection interrupted."]);
 });

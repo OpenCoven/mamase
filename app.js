@@ -1091,7 +1091,7 @@ async function prepareAccountWorkspace(mode) {
     if (mode === "restore") {
       assert(stored.payload, "This account has no saved workspace yet. Save a snapshot from the browser that holds your records first.");
       workspaceRestorePreview({ workspace: stored.payload, format: `Account snapshot, revision ${stored.revision}`, exportedAt: stored.updatedAt },
-        account.state.user.email, context.expectedSource, context);
+        account.state.user.email, context.expectedSource, { ...context, revision: stored.revision });
     } else {
       openModal("Save workspace to account", `<p>This saves the current browser workspace, <strong>${esc(workspace.name)}</strong>, to <strong>${esc(account.state.user.email)}</strong>.</p>
         <p>${stored.payload ? `This replaces the account snapshot <strong>${esc(stored.payload.name)}</strong> (revision ${stored.revision}). Other browsers must restore the new snapshot to use it.` : "This account has no saved workspace yet."}</p>
@@ -1496,8 +1496,14 @@ async function submitForm(form) {
     workspaceRestorePreview(backup, file.name, expectedSource);
     return;
   } else if (type === "confirm-restore") {
-    if (context.accountId) assertSnapshotAccount(context);
     assert(input.confirm === "on", "Confirm that you want to replace the workspace.");
+    if (context.accountId) {
+      assertSnapshotAccount(context);
+      const stored = await accountWorkspace.read(context.accountId);
+      assertSnapshotAccount(context);
+      assert(stored.payload && stored.revision === context.revision,
+        "The account snapshot changed. Close this dialog and preview the latest snapshot before restoring.");
+    }
     next = context.backup.workspace;
     message = "Workspace restored.";
     destination = "#/home";

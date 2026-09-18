@@ -49,6 +49,7 @@ async function fixture(t, remote = null) {
   await page.goto(`${base}/#/settings`); await page.reload();
   await page.locator('[data-form="workspace"]').waitFor();
   return { browser, page, base, stored: () => stored, writes: () => writes,
+    switchAccount() { user.id = `other-${crypto.randomUUID()}`; },
     async advance() {
       await store.write(user.id, { baseRevision: stored.revision, payload: { ...stored.payload, name: "Other browser" } });
     } };
@@ -83,6 +84,52 @@ test("a save preview cannot overwrite a newer account snapshot", async (t) => {
   await f.page.locator('#dialog .form-error:not([hidden])').waitFor();
   assert.match(await f.page.locator('#dialog .form-error').textContent(), /Reload the latest data/);
   assert.equal(f.stored().payload.name, "Other browser");
+  assert.equal(await localName(f.page), "Browser records");
+});
+
+test("a restore preview refuses a newer account revision and requires a new preview", async (t) => {
+  const f = await fixture(t, "Existing account records");
+  await f.page.getByRole("button", { name: "Restore account workspace", exact: true }).click();
+  await f.page.locator('[name="confirm"]').check();
+  await f.advance();
+  await f.page.getByRole("button", { name: "Restore workspace", exact: true }).click();
+  await f.page.locator('#dialog .form-error:not([hidden])').waitFor();
+  assert.match(await f.page.locator('#dialog .form-error').textContent(), /changed.*preview/i);
+  assert.equal(await localName(f.page), "Browser records");
+  await f.page.keyboard.press("Escape");
+  await f.page.getByRole("button", { name: "Restore account workspace", exact: true }).click();
+  await f.page.locator('[name="confirm"]').check();
+  await f.page.getByRole("button", { name: "Restore workspace", exact: true }).click();
+  await f.page.locator("#dialog").waitFor({ state: "hidden" });
+  assert.equal(await localName(f.page), "Other browser");
+});
+
+test("restore reauthorizes the account even without a browser account refresh", async (t) => {
+  const f = await fixture(t, "Account A snapshot");
+  await f.page.getByRole("button", { name: "Restore account workspace", exact: true }).click();
+  await f.page.locator('[name="confirm"]').check();
+  f.switchAccount();
+  await f.page.getByRole("button", { name: "Restore workspace", exact: true }).click();
+  await f.page.locator('#dialog .form-error:not([hidden])').waitFor();
+  assert.match(await f.page.locator('#dialog .form-error').textContent(), /account changed/i);
+  assert.equal(await localName(f.page), "Browser records");
+});
+
+test("closing a restore confirmation during its revision check preserves browser records", async (t) => {
+  const f = await fixture(t, "Account snapshot");
+  await f.page.getByRole("button", { name: "Restore account workspace", exact: true }).click();
+  await f.page.locator('[name="confirm"]').check();
+  let release, observed;
+  const delayed = new Promise((resolve) => { release = resolve; });
+  const requested = new Promise((resolve) => { observed = resolve; });
+  await f.page.route("**/api/workspace", async (route) => { observed(); await delayed; await route.continue(); });
+  await f.page.getByRole("button", { name: "Restore workspace", exact: true }).click();
+  await requested;
+  await f.page.keyboard.press("Escape");
+  const finished = f.page.waitForResponse((response) => response.url().endsWith("/api/workspace"));
+  release(); await finished;
+  await f.page.getByRole("button", { name: "Restore account workspace", exact: true }).click();
+  await f.page.locator('[name="confirm"]').waitFor();
   assert.equal(await localName(f.page), "Browser records");
 });
 

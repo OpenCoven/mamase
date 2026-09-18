@@ -160,6 +160,8 @@ account controls explain the missing setup and leave browser data intact.
 
 Each account has one snapshot. Saves compare the revision shown by their preview;
 a concurrent save returns a conflict instead of overwriting newer records.
+Restore confirmation rechecks the signed-in account and snapshot revision before
+replacing browser records; a changed snapshot requires a new preview.
 Close the dialog and restore/export the latest account copy before preparing
 another replacement. Network failures can leave the outcome of an upload
 unknown, so read the account snapshot again before retrying. No retry silently
