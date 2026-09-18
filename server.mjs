@@ -7,6 +7,8 @@ import { LocalTrainer } from "./local-training.mjs";
 import { publicAssets as files } from "./public-assets.mjs";
 import { createAuthApi } from "./auth-api.mjs";
 import { apiAccessRefusal, sendApiRefusal } from "./api-access.mjs";
+import { createWorkspaceApi } from "./workspace-api.mjs";
+import { createWorkspaceStore } from "./workspace-store.mjs";
 
 /** Workspace APIs stay closed until the signed-in account is on the approved list. */
 async function allowApiRequest(request, response, auth) {
@@ -17,8 +19,9 @@ async function allowApiRequest(request, response, auth) {
   return false;
 }
 
-export function createAppServer({ training = null, inference, auth = createAuthApi() } = {}) {
+export function createAppServer({ training = null, inference, auth = createAuthApi(), store = createWorkspaceStore() } = {}) {
   const trainingApi = createTrainingApi(training, inference);
+  const workspaceApi = createWorkspaceApi({ store, auth });
   const server = createServer(async (request, response) => {
     let pathname;
     try {
@@ -29,6 +32,7 @@ export function createAppServer({ training = null, inference, auth = createAuthA
       return;
     }
     if (await auth(request, response, pathname)) return;
+    if (await workspaceApi(request, response, pathname)) return;
     if (pathname.startsWith("/api/") && !(await allowApiRequest(request, response, auth))) return;
     if (await trainingApi(request, response, pathname)) return;
     if (!["GET", "HEAD"].includes(request.method)) {
@@ -57,11 +61,18 @@ export function createAppServer({ training = null, inference, auth = createAuthA
     }
   });
   server.closeTrainingConnections = trainingApi.close;
-  server.closeLocalRuntime = async () => {
-    await trainingApi.close();
-    await training?.close();
-  };
-  server.on("close", () => { void trainingApi.close(); });
+  let closing;
+  server.closeLocalRuntime = () => closing ??= (async () => {
+    try {
+      await trainingApi.close();
+    } finally {
+      try { await training?.close(); }
+      finally { await store?.close?.(); }
+    }
+  })();
+  server.on("close", () => {
+    void server.closeLocalRuntime().catch(() => console.error("Unable to close local runtime cleanly."));
+  });
   return server;
 }
 
@@ -76,7 +87,7 @@ if (process.argv[1] === fileURLToPath(import.meta.url)) {
     stopping = true;
     const closing = server.closeLocalRuntime();
     server.close();
-    try { await closing; } catch (error) { console.error(`Unable to close local training cleanly: ${error.message}`); process.exitCode = 1; }
+    try { await closing; } catch { console.error("Unable to close local runtime cleanly."); process.exitCode = 1; }
   };
   process.on("SIGINT", shutdown);
   process.on("SIGTERM", shutdown);

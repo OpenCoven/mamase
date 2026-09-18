@@ -56,7 +56,7 @@ test("an approved account reaches the workspace and signing out returns to the g
   await page.locator('#account-panel[data-phase="signed-in"]').waitFor();
   assert.equal(await page.locator("#account-panel b").count(), 0);
   assert.match(await page.locator("#account-panel").innerText(), /coven@example.test/);
-  assert.match(await page.locator("#account-panel").innerText(), /not.*sync|not.*isolated/i);
+  assert.match(await page.locator("#account-panel").innerText(), /working copy is shared across sign-ins/i);
   await page.getByRole("button", { name: "Sign out", exact: true }).click();
   await page.locator('main.gate[data-access="sign-in"]').waitFor();
   assert.equal(await page.locator(".sidebar").count(), 0, "Signing out closes the workspace behind the gate");

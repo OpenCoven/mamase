@@ -176,6 +176,45 @@ any evidence loads, and is gone by the time you are typing a rationale in the
 next dialog. That is the same for sighted users, so it is a design question
 rather than an accessibility defect — but it is a rationale you can lose.
 
+## Review handoff
+
+Track reviewer ownership and timing in [#44](https://github.com/OpenCoven/mamase/issues/44).
+The automated keyboard and accessibility-tree passes have run; the outstanding
+acceptance criterion is a person listening with VoiceOver. Plan a separate
+session for the six flows above. Use synthetic records and a dedicated browser
+profile so resets and restores do not touch your working data.
+
+Before starting, record the tested commit (and whether the checkout is dirty),
+macOS version, browser version, reviewer, and date. Mark a flow blocked when its
+fixtures or local runtime are unavailable. Do not count a blocked or scripted
+flow as a completed human pass.
+
+After the account snapshot integration in #53 is available, also check the
+Workspace settings account controls: save confirmation, restore preview,
+conflict and unavailable-storage messages. Confirm that the announcements
+clearly distinguish a local save, an account snapshot save, and a local restore.
+Use a synthetic test account and database. Keep any unexecuted snapshot coverage
+separate from the original six-flow acceptance criteria.
+
+Copy this receipt into #44 after the session:
+
+```text
+Reviewer:
+Date:
+Commit / dirty checkout:
+macOS / browser / VoiceOver:
+1. Workspace creation and recovery: pass / finding / blocked
+2. Identity-bound preparation: pass / finding / blocked
+3. Training launch and interruption: pass / finding / blocked
+4. Paired report import: pass / finding / blocked
+5. Human review decisions: pass / finding / blocked
+6. Backup restore preview: pass / finding / blocked
+Account snapshots (#53, additional coverage): pass / finding / not run
+Announcement cadence, interruption, and clarity:
+Finding issue links:
+Remaining blockers:
+```
+
 ## Recording findings
 
 One row per finding. File each as an issue with these columns filled in; link

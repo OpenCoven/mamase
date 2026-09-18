@@ -249,12 +249,12 @@ export function createAuthApi({ env = process.env, provider = null, clock = Date
   };
 
   /**
-   * Decide whether a request carries an approved account, without touching the
-   * response. Deployments without WorkOS have no identities to check, so they
-   * report `gated: false` and the local-only workspace stays open. Everything
+   * Decide whether a request carries an approved account. When a response is
+   * supplied, persist a rotated session in its HttpOnly cookie. Deployments
+   * without WorkOS have no identities to check, so they report `gated: false` and the local-only workspace stays open. Everything
    * else must present a signed-in account on the approved list.
    */
-  handler.authorize = async (request) => {
+  handler.authorize = async (request, response) => {
     const config = configuration(env);
     if (!config) return { gated: false, authenticated: false, approved: false, refusal: "" };
     let sealed = null;
@@ -264,11 +264,16 @@ export function createAuthApi({ env = process.env, provider = null, clock = Date
     let user = null;
     if (sealed) {
       const result = await (await getProvider(config)).session(sealed);
-      if (result.authenticated === true) user = publicUser(result.user);
+      if (result.authenticated === true) {
+        user = publicUser(result.user);
+        if (response && result.sealedSession) setCookie(response, config, config.sessionCookie, result.sealedSession, SESSION_SECONDS);
+      }
       else if (result.authenticated !== false) throw new AuthError("Invalid account session response.", 502);
     }
     const refusal = accessRefusal(config.accessList, { authenticated: Boolean(user), email: user?.email });
-    return { gated: true, authenticated: Boolean(user), approved: !refusal, refusal };
+    // `user` rides along so a workspace request can key storage to the account that made it. It is
+    // the same profile the session endpoint already returns, never the sealed session itself.
+    return { gated: true, authenticated: Boolean(user), approved: !refusal, refusal, user };
   };
 
   return handler;

@@ -27,8 +27,8 @@ test("hosted static files contain only public assets and functions are limited t
   const config = JSON.parse(await readFile("vercel.json", "utf8"));
   assert.equal(config.framework, null);
   assert.equal(config.outputDirectory, "dist");
-  assert.deepEqual(Object.keys(config.functions).sort(), ["api/auth/*.js", "api/training/*.js"]);
-  assert.ok(!config.rewrites.some((item) => item.source.startsWith("/api/")), "No /api/ path may be rewritten to a public static file");
+  assert.deepEqual(Object.keys(config.functions).sort(), ["api/auth/*.js", "api/training/*.js", "api/workspace/*.js"]);
+  assert.deepEqual(config.rewrites.filter((item) => item.source.startsWith("/api/")), [{ source: "/api/workspace", destination: "/api/workspace/index" }], "API rewrites must target only the account workspace function");
   const varies = config.headers.find((rule) => rule.source === "/api/training/(.*)")?.headers || [];
   assert.ok(varies.some(({ key, value }) => key === "Cache-Control" && value === "no-store"));
   assert.ok(varies.some(({ key, value }) => key === "Vary" && value === "Cookie"), "A per-account response must never be shared by a cache");
@@ -268,4 +268,29 @@ test("every configured function pattern matches a deployable file that .vercelig
       assert.ok(!entry.split("/").includes(bare), `.vercelignore "${pattern}" excludes ${entry}; anchor it as "/${bare}/"`);
     }
   }
+});
+
+test("the isolated account workspace function includes its runtime and validates access", async () => {
+  execFileSync(process.execPath, ["scripts/build-hosted.mjs", "--prebuilt"]);
+  const bundle = ".vercel/output/functions/api/workspace/index.func";
+  assert.equal(existsSync(bundle), true, "Account snapshots need a deployable function");
+  const isolated = await mkdtemp(join(tmpdir(), "mamase-workspace-function-"));
+  try {
+    const { cp } = await import("node:fs/promises");
+    await cp(bundle, isolated, { recursive: true });
+    for (const name of ["app.js", "server.mjs", "training", ".env.local", ".mamase"]) assert.equal(existsSync(join(isolated, name)), false, name);
+    const result = execFileSync(process.execPath, ["--input-type=module", "-e", `
+      import {createServer} from 'node:http'; import {once} from 'node:events';
+      import handler from './api/workspace/index.js';
+      const server=createServer(handler); server.listen(0,'127.0.0.1'); await once(server,'listening');
+      try { const r=await fetch('http://127.0.0.1:'+server.address().port+'/api/workspace');
+        console.log(JSON.stringify({status:r.status,cache:r.headers.get('cache-control'),body:await r.json()})); }
+      finally { await new Promise(resolve=>server.close(resolve)); }
+    `], { cwd: isolated, encoding: "utf8", env: { PATH: process.env.PATH, WORKOS_API_KEY: "", DATABASE_URL: "", POSTGRES_URL: "" } });
+    const value = JSON.parse(result);
+    assert.equal(value.status, 401); assert.equal(value.cache, "no-store");
+    assert.match(value.body.error, /Sign in/);
+    const config = JSON.parse(await readFile(".vercel/output/config.json", "utf8"));
+    assert.ok(config.routes.some(({ src, dest }) => src === "/api/workspace" && dest === "/api/workspace/index"));
+  } finally { await rm(isolated, { recursive: true, force: true }); }
 });

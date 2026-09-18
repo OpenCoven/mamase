@@ -4,6 +4,28 @@ import { once } from "node:events";
 import { createAppServer } from "../server.mjs";
 import { createAuthApi } from "../auth-api.mjs";
 
+test("local shutdown closes storage once even when training cleanup fails", async () => {
+  let storageClosed = 0;
+  const server = createAppServer({
+    auth: createAuthApi({ env: {} }), inference: null,
+    training: { async close() { throw new Error("synthetic trainer shutdown failure"); } },
+    store: { async close() { storageClosed++; } },
+  });
+  await assert.rejects(server.closeLocalRuntime(), /synthetic trainer shutdown failure/);
+  await assert.rejects(server.closeLocalRuntime(), /synthetic trainer shutdown failure/);
+  assert.equal(storageClosed, 1);
+});
+
+test("closing the HTTP server also closes its workspace store", async () => {
+  let storageClosed = 0;
+  const server = createAppServer({ auth: createAuthApi({ env: {} }), inference: null,
+    store: { async close() { storageClosed++; } } });
+  server.listen(0, "127.0.0.1"); await once(server, "listening");
+  await new Promise((resolve) => server.close(resolve));
+  await server.closeLocalRuntime();
+  assert.equal(storageClosed, 1);
+});
+
 test("local server serves the complete app and only public assets", async (context) => {
   const server = createAppServer();
   server.listen(0, "127.0.0.1");

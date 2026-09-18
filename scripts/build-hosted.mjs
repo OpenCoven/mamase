@@ -8,8 +8,9 @@ import { execFileSync } from "node:child_process";
 const project = fileURLToPath(new URL("../", import.meta.url));
 const output = join(project, "dist");
 const authActions = ["login", "callback", "session", "logout"];
-const functionEntries = [...authActions.map((action) => `api/auth/${action}.js`), "api/training/capabilities.js"];
+const functionEntries = [...authActions.map((action) => `api/auth/${action}.js`), "api/training/capabilities.js", "api/workspace/index.js"];
 const sharedModules = ["auth-api.mjs", "access-list.mjs", "api-access.mjs", "hosted-training.mjs", "workos-provider.mjs"];
+const workspaceModules = ["workspace-api.mjs", "workspace-store.mjs", "workspace-client.js", "workspace.js", "backups.js", "validation.js", "results.js", "human-review.js", "evaluation-suites.js", "context-summary.js"];
 const assets = new Map();
 for (const name of new Set([...publicAssets.values()].map(([name]) => name))) {
   const source = join(project, name);
@@ -26,7 +27,7 @@ for (const name of new Set([...publicAssets.values()].map(([name]) => name))) {
   assets.set(name, content);
 }
 const functionSources = new Map();
-for (const name of [...sharedModules, ...functionEntries]) {
+for (const name of [...sharedModules, ...workspaceModules, ...functionEntries]) {
   const source = join(project, name);
   const info = await lstat(source);
   assert.ok(info.isFile() && !info.isSymbolicLink(), `Function source must be a regular file: ${name}`);
@@ -54,7 +55,7 @@ if (process.argv.includes("--prebuilt")) {
     const bundle = join(prebuilt, "functions", `${entry.slice(0, -3)}.func`);
     await mkdir(join(bundle, directory), { recursive: true });
     await writeFile(join(bundle, entry), functionSources.get(entry));
-    for (const shared of sharedModules) await writeFile(join(bundle, shared), functionSources.get(shared));
+    for (const shared of [...sharedModules, ...(entry.startsWith("api/workspace/") ? workspaceModules : [])]) await writeFile(join(bundle, shared), functionSources.get(shared));
     await writeFile(join(bundle, "package.json"), JSON.stringify({ type: "module" }));
     for (const dependency of dependencies) {
       await cp(dependency, join(bundle, relative(project, dependency)), { recursive: true });

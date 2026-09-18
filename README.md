@@ -101,8 +101,8 @@ for stable check names and the manual maintainer step.
 
 ## Hosted on Vercel
 
-Vercel serves the browser workspace and four small account functions, **not the
-local Node/Python trainer**.
+Vercel serves the browser workspace, account functions, saved workspace snapshots,
+and a capability endpoint. Training runs in the local Node/Python runtime.
 The project must use the static configuration in `vercel.json`, not Vercel's
 Node framework preset. That preset treats `app.js` as a server entry point and
 crashes with `ReferenceError: document is not defined`.
@@ -111,11 +111,12 @@ crashes with `ReferenceError: document is not defined`.
 public asset list into `dist/`. Training code, environments, model weights,
 datasets, job files and secrets are not published. The hosted capability response
 disables job discovery and process commands; the UI explains the local handoff.
-Only `/api/auth/login`, `/api/auth/callback`, `/api/auth/session` and
-`/api/auth/logout` run as Vercel Functions. The prebuilt release includes their
-server code and production SDK dependency inside private function directories;
-browser assets, local trainer code and credentials are not bundled into those
-functions. The browser application is never a server entry point.
+`/api/auth/login`, `/api/auth/callback`, `/api/auth/session`,
+`/api/auth/logout`, `/api/training/capabilities`, and `/api/workspace` run as
+Vercel Functions. The prebuilt release includes their server code and production
+dependencies in private function directories. The workspace function includes
+the shared workspace validators; app rendering code, local trainers, and
+credentials stay outside the functions. The browser application is never a server entry point.
 
 To train, start Mamase locally on an Apple Silicon Mac. Export a workspace backup
 from the hosted site and restore it in the local app, then select the original
@@ -128,6 +129,62 @@ For an authenticated, prebuilt Vercel release:
 npm run build:hosted -- --prebuilt
 vercel deploy --prebuilt
 ```
+
+## Account workspace snapshots
+
+In **Workspace settings → Account**, select **Save workspace to account** to
+preview which account snapshot will be replaced, then confirm **Save account
+snapshot**. In another browser, sign into the same approved account and select
+**Restore account workspace**. Review the workspace name and collection counts
+before confirming the local replacement.
+
+Your browser working copy remains the default. Signing in does not upload it,
+restoring does not merge records, and later browser edits require another explicit
+account save. Browser reset and sign-out leave the account snapshot unchanged.
+Use **Export workspace** before replacing either copy.
+
+Snapshots contain the same validated metadata as workspace backups, up to 4 MB:
+programs, recipes, dataset fingerprints, run history, artifact references,
+evaluation summaries, and recorded review opinions. Original dataset contents,
+model weights, identity files, recipe drafts, and temporary per-case review text
+are excluded. Free-text notes and review rationales are part of your metadata;
+review them before uploading.
+
+Set `DATABASE_URL` (or `POSTGRES_URL`) on the server to enable account storage.
+Use a dedicated PostgreSQL database and keep the URL out of browser configuration.
+The database role needs permission to create and read/write the `workspaces`
+table. The table is created on first use. Remote connections require TLS with
+certificate verification; loopback development connections can use plain TCP.
+WorkOS and `MAMASE_ACCESS_LIST` must also be configured. Without storage, the
+account controls explain the missing setup and leave browser data intact.
+
+Each account has one snapshot. Saves compare the revision shown by their preview;
+a concurrent save returns a conflict instead of overwriting newer records.
+Restore confirmation rechecks the signed-in account and snapshot revision before
+replacing browser records; a changed snapshot requires a new preview.
+Close the dialog and restore/export the latest account copy before preparing
+another replacement. Network failures can leave the outcome of an upload
+unknown, so read the account snapshot again before retrying. No retry silently
+changes the expected revision.
+
+The endpoint uses `GET`, `PUT`, and `DELETE` at `/api/workspace`. Mutations require
+JSON, `X-Mamase-Account` matching the signed-in account, and `baseRevision` from
+the preceding read. `PUT` also requires a validated `payload`. Deletion clears
+metadata while retaining a revision marker, preventing old saves from matching a
+later snapshot. The browser exposes save and restore; browser reset is local.
+
+To verify the storage implementation against a disposable local PostgreSQL cluster:
+
+```sh
+npm run test:workspace
+# If PostgreSQL's server binaries are not beside pg_config:
+MAMASE_POSTGRES_BIN=/opt/homebrew/opt/postgresql@16/bin npm run test:workspace
+```
+
+Alternatively, set `MAMASE_TEST_DATABASE_URL` to a dedicated test database. Tests
+write synthetic account records there. CI provides an isolated PostgreSQL service
+and runs these checks in both Node validation lanes. No production connection
+string is inherited by the validation gate.
 
 ## WorkOS sign-in
 
@@ -162,8 +219,10 @@ shared by a cache. The static app shell (HTML, CSS, JS) is still served by the
 CDN ahead of any function — it carries no account data, and hiding the
 deployment itself is Vercel Deployment Protection's job, not a second gate.
 
-**Sign-in identifies a person; it does not add cloud sync, memberships, or
-per-account isolation of this browser's workspace.** Signing out does not
+**Signing in does not upload or replace browser records.** You can explicitly
+save and restore an account snapshot when PostgreSQL storage is configured.
+The browser working copy is shared across sign-ins and does not automatically
+sync with the account snapshot. Signing out does not
 delete workspace records, drafts or model files, and does not stop training.
 Use separate browser profiles on shared devices. Local training retains its
 loopback, Origin and command-token protections independently of account login.
@@ -178,6 +237,7 @@ same variables in the intended deployment environment, then redeploy:
 | `WORKOS_CLIENT_ID` | The matching WorkOS client ID. |
 | `WORKOS_COOKIE_PASSWORD` | A stable random secret of at least 32 characters; generate with `openssl rand -base64 32`. |
 | `WORKOS_REDIRECT_URI` | `https://mamase.ai/api/auth/callback` in production; `http://127.0.0.1:4173/api/auth/callback` locally. |
+| `DATABASE_URL` | Optional dedicated PostgreSQL connection string for account snapshots. `POSTGRES_URL` is also accepted; `DATABASE_URL` takes precedence. Server-only. |
 | `MAMASE_ACCESS_LIST` | The approved accounts, comma- or newline-separated: full addresses (`member@coven.example`) and whole domains (`@coven.example`). Required to let anyone in once WorkOS is configured. |
 
 Register these URLs in the matching WorkOS environment:
@@ -1095,9 +1155,9 @@ preferences, recipe drafts, original dataset contents, identity snapshots, model
 weights, and per-case report prompts/responses. Restoring does not cancel or delete
 managed jobs or files on disk, and does not change the selected appearance mode.
 
-There is no hosted training, inference endpoint, cloud sync, billing,
-or fabricated training progress. Optional WorkOS accounts identify users but
-do not move workspace data to a server. Managed training runs locally through
+There is no hosted training, inference endpoint, automatic cloud sync, billing,
+or fabricated training progress. Approved WorkOS accounts can explicitly save
+and restore metadata snapshots when PostgreSQL storage is configured. Managed training runs locally through
 MLX-LM; its output files are checked at finalization. Other artifact paths remain
 references; the explicit CLI saves real adapters and fingerprints as well.
 The browser does not merge adapters, quantize weights, or export model binaries.
