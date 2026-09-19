@@ -116,11 +116,8 @@ test("the step-by-step progress text is shown but not announced, and the announc
   assert.match(app, /if \(!announcement\.dataset\.milestone\) announcement\.dataset\.milestone = shown\.milestone;/);
   assert.match(app, /announcement\.dataset\.milestone !== shown\.milestone/);
   assert.match(app, /const text = shown\.announcement/);
-  // A launch or a cancellation is confirmed from a dialog, and the status it causes can arrive
-  // before that dialog closes. The page behind a modal dialog is inert, so a change made there is
-  // dropped rather than read later: it is held and said when the dialog closes.
-  assert.match(app, /if \(dialog\.open\) announcement\.dataset\.pending = text;\s*else announcement\.textContent = text;/);
-  assert.match(app, /announcement\.textContent = announcement\.dataset\.pending;/);
+  // tests/training-announcements.test.js exercises deferral behind dialogs and mobile navigation,
+  // including a newer terminal update delivered before the queued dialog close event.
 });
 
 test("toasts are two always-present regions at a fixed politeness, so errors interrupt and the rest are heard", async () => {

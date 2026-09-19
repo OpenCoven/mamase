@@ -48,6 +48,14 @@ test("a status region inserted with its content is silent, and the tree cannot t
   assert.equal(rebuilt.spoken, false, "filled in the same tick as it was inserted");
 });
 
+test("visibility-hidden regions are not exposed to announcements", async () => {
+  await load('<div style="visibility:hidden"><p id="s" role="status"></p></div>');
+  assert.deepEqual(await act(() => { document.getElementById("s").textContent = "Hidden result."; }), []);
+  await page.evaluate(() => { document.querySelector("div").style.visibility = "visible"; });
+  await drainAnnouncements(page);
+  assert.equal((await act(() => { document.getElementById("s").textContent = "Visible result."; }))[0].spoken, true);
+});
+
 test("a hidden region unhidden with its content is silent, even when made assertive at the same time", async () => {
   await load('<div id="toast" role="status" aria-live="polite" hidden></div>');
   const [entry] = await act(() => {
@@ -127,4 +135,15 @@ test("waitForAnnouncement reports what was logged instead when nothing would be 
   await drainAnnouncements(page);
   setTimeout(() => page.evaluate(() => { document.getElementById("s").textContent = "Workspace name saved."; }), 100);
   assert.equal((await waitForAnnouncement(page, /saved/)).politeness, "polite");
+});
+
+test("waiting for one announcement preserves other buffered outcomes", async () => {
+  await load('<p id="start" role="status"></p><p id="end" role="status"></p>');
+  await page.evaluate(() => {
+    document.getElementById("start").textContent = "Starting.";
+    document.getElementById("end").textContent = "Completed.";
+  });
+  assert.equal((await waitForAnnouncement(page, /Starting/, { timeout: 300 })).id, "start");
+  assert.equal((await waitForAnnouncement(page, /Completed/, { timeout: 300 })).id, "end");
+  assert.deepEqual(await drainAnnouncements(page), []);
 });
