@@ -1128,6 +1128,8 @@ try {
   // Two announcements over twenty-four keystrokes: that the draft is now kept, and what is still
   // missing once a name is present. Neither may repeat while the field is still being typed into.
   const perRegion = Object.groupBy(typed, (entry) => entry.id);
+  assert.deepEqual(Object.keys(perRegion).sort(), ["draft-status", "recipe-readiness"],
+    `typing must announce exactly the draft and readiness changes: ${JSON.stringify(typed)}`);
   for (const [id, entries] of Object.entries(perRegion)) {
     assert.equal(entries.length, 1, `#${id} announced ${entries.length} times while one field was typed into: ${JSON.stringify(entries.map((entry) => entry.text))}`);
   }

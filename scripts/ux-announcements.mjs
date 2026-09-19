@@ -30,7 +30,7 @@ function recorder() {
   };
   // display:none (which the hidden attribute and a closed <dialog> both are), visibility:hidden and
   // an aria-hidden ancestor remove a region from the tree; a clipped .sr-only region stays in it.
-  const exposed = (element) => element.isConnected && element.checkVisibility() && !element.closest('[aria-hidden="true"]');
+  const exposed = (element) => element.isConnected && element.checkVisibility({ visibilityProperty: true }) && !element.closest('[aria-hidden="true"]');
   // Inert content is in the tree but nothing it does reaches assistive technology: a change made
   // behind an open modal dialog is dropped, not held until the dialog closes.
   const inert = (element) => {
@@ -81,11 +81,20 @@ export const spokenAnnouncements = async (page) => (await drainAnnouncements(pag
 // logged instead, so a silent outcome is reported as the finding it is.
 export async function waitForAnnouncement(page, pattern, { timeout = 8000 } = {}) {
   const deadline = Date.now() + timeout;
-  const history = [];
+  let history = [];
   while (Date.now() < deadline) {
-    const entries = await drainAnnouncements(page);
-    history.push(...entries);
-    const hit = entries.find((entry) => entry.spoken && pattern.test(entry.text));
+    // Consume only the match: fast/buffered updates can include a later outcome that the next
+    // wait still needs. Keep unmatched entries available to waits and explicit drains alike.
+    const { entries, hit } = await page.evaluate(({ source, flags }) => {
+      const entries = window.mamaseAnnouncements;
+      const pattern = new RegExp(source, flags);
+      const index = entries.findIndex((entry) => {
+        pattern.lastIndex = 0;
+        return entry.spoken && pattern.test(entry.text);
+      });
+      return { entries: [...entries], hit: index < 0 ? null : entries.splice(index, 1)[0] };
+    }, { source: pattern.source, flags: pattern.flags });
+    history = entries;
     if (hit) return hit;
     await new Promise((resolve) => setTimeout(resolve, 50));
   }

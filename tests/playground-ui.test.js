@@ -7,6 +7,7 @@ import { join } from "node:path";
 import { chromium } from "playwright";
 import { publicAssets } from "../public-assets.mjs";
 import { createWorkspace, STORAGE_KEY } from "../workspace.js";
+import { installAnnouncementRecorder, drainAnnouncements, waitForAnnouncement } from "../scripts/ux-announcements.mjs";
 
 const jobId = "job-00000000-0000-4000-8000-000000000001";
 const model = {
@@ -68,6 +69,7 @@ test("model playground supports honest, private local conversations across layou
   const pageFor = async (options = {}) => {
     const page = await browser.newPage({ viewport: { width: 1440, height: 900 }, colorScheme: "dark", ...options });
     page.on("pageerror", (error) => errors.push(error.message));
+    await installAnnouncementRecorder(page);
     await page.addInitScript(({ workspace, key }) => localStorage.setItem(key, JSON.stringify(workspace)), { workspace: createWorkspace(), key: STORAGE_KEY });
     return page;
   };
@@ -152,15 +154,19 @@ test("model playground supports honest, private local conversations across layou
     const closed = state.closed;
     await send(page, "Please stop this reply.");
     await page.locator('[data-pg-reply="0"]').getByText("Partial local reply", { exact: true }).waitFor();
+    await drainAnnouncements(page);
     await page.getByRole("button", { name: "Stop generation", exact: true }).click();
     await page.locator("#pg-status").getByText("Generation stopped.", { exact: true }).waitFor();
+    assert.equal((await waitForAnnouncement(page, /^Generation stopped\.$/)).id, "pg-status");
     await waitUntil(() => state.closed > closed, "Stopping closes the streaming response");
     assert.match(await page.locator(".pg-reply-meta").innerText(), /partial reply is not used/);
     await page.getByRole("button", { name: "Restore prompt", exact: true }).click();
     assert.equal(await page.getByLabel("Message to the model", { exact: true }).inputValue(), "Please stop this reply.");
     state.mode = "failure";
+    await drainAnnouncements(page);
     await send(page, "This should fail.");
     await page.locator("#pg-status").getByText(/Generation failed/).waitFor();
+    assert.equal((await waitForAnnouncement(page, /^Generation failed: Prompt plus output exceeds/)).id, "pg-status");
     assert.match(await page.locator(".pg-reply-meta").last().innerText(), /Reply failed/);
     state.mode = "success";
     await send(page, "A fresh attempt.");

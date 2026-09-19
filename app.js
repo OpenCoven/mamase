@@ -518,17 +518,18 @@ npm run dev</pre><p class="help">Requires Apple Silicon and Python 3.12. Bring a
   // status change that matters most, the run stopping, went unannounced while the region lived in
   // the progress block it removed. What was already true when the page opened is not news either.
   const announcement = document.querySelector("#live-progress-announcement");
-  if (announcement) {
+  if (announcement && (!loading || announcement.dataset.milestone)) {
+    // watch() first renders saved/cached state, then fetches the live snapshot. Neither that
+    // cached render nor the first snapshot is a new event on this visit.
     const shown = job ? trainingProgress(job.run.step, job.run.totalSteps, job.status) : trainingProgress(run.step, run.totalSteps, run.status);
     if (!announcement.dataset.milestone) announcement.dataset.milestone = shown.milestone;
     else if (announcement.dataset.milestone !== shown.milestone) {
       announcement.dataset.milestone = shown.milestone;
       const text = shown.announcement + (job?.status === "failed" && job.error ? `. ${job.error}` : "");
-      // A launch or a cancellation is confirmed from a dialog, and the status it causes can arrive
-      // before that dialog has closed. The page behind a modal dialog is inert: a change made there
-      // is dropped, not read later. Hold it until the dialog closes, then say it.
-      if (dialog.open) announcement.dataset.pending = text;
-      else announcement.textContent = text;
+      // Dialogs and mobile navigation make this page inert. Keep the latest outcome until the
+      // page is available, and consume it on publication so a queued close cannot replay old news.
+      announcement.dataset.pending = text;
+      flushTrainingAnnouncement();
     }
   }
   const files = document.querySelector("#run-job-files");
@@ -546,6 +547,14 @@ npm run dev</pre><p class="help">Requires Apple Silicon and Python 3.12. Bring a
   const externalGuide = document.querySelector("#external-training-guide");
   if (externalGuide) externalGuide.hidden = guide.workflow !== "cli" || Boolean(rawJob || run.localJobId);
 }
+
+function flushTrainingAnnouncement() {
+  const announcement = document.querySelector("#live-progress-announcement");
+  if (!announcement?.dataset.pending || dialog.open || announcement.closest("[inert]")) return;
+  announcement.textContent = announcement.dataset.pending;
+  delete announcement.dataset.pending;
+}
+
 function planChain() {
   const draft = ui.draft;
   const dataset = workspace.datasets.find((item) => item.id === draft.datasetId);
@@ -955,6 +964,7 @@ function updateSidebarAccess() {
   if (expanded) { sidebar.setAttribute("role", "dialog"); sidebar.setAttribute("aria-modal", "true"); }
   else sidebar.removeAttribute("role");
   document.querySelector("#main").inert = expanded;
+  flushTrainingAnnouncement();
   document.querySelector(".mobile-header").inert = expanded;
   document.querySelector(".menu-scrim").hidden = !expanded;
   toggle.setAttribute("aria-expanded", String(expanded));
@@ -1713,11 +1723,7 @@ dialog.addEventListener("cancel", (event) => { event.preventDefault(); closeModa
 dialog.addEventListener("close", () => {
   if (!dialog.open) { modalContext = undefined; dialog.replaceChildren(); dialog.classList.remove("case-review"); }
   flushTrainingUpdates();
-  const announcement = document.querySelector("#live-progress-announcement");
-  if (announcement?.dataset.pending) {
-    announcement.textContent = announcement.dataset.pending;
-    delete announcement.dataset.pending;
-  }
+  flushTrainingAnnouncement();
 });
 window.addEventListener("pagehide", closeModal);
 render();
