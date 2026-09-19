@@ -1046,6 +1046,22 @@ function openModal(title, body, form = "", context = {}) {
   dialog.querySelector("input, select, textarea")?.focus();
 }
 
+// A dialog is read on entering it: its name, then its description. Content that arrives with the
+// dialog has to be the description, because as a live region it would never announce.
+function describeDialog(...ids) {
+  const present = ids.map((id) => `dialog-${id}`).filter((id) => dialog.querySelector(`#${id}`));
+  if (present.length) dialog.setAttribute("aria-describedby", present.join(" "));
+}
+
+// openModal replaces the contents of an element that is already open, which a screen reader does not
+// treat as entering a dialog. Moving focus to the new title is what makes the name and description
+// reach the reader.
+function focusDialogTitle() {
+  const title = dialog.querySelector("#dialog-title");
+  title.tabIndex = -1;
+  title.focus();
+}
+
 function closeModal() {
   dialog.close();
   modalContext = undefined;
@@ -1119,7 +1135,11 @@ async function prepareAccountWorkspace(mode) {
   const context = { accountId: account.state.user?.id, accountEpoch, expectedSource: savedSource };
   assertSnapshotAccount(context);
   if (mode === "save") assertWorkspaceSource(context.expectedSource);
-  openModal("Checking account workspace", `<p role="status">Reading the saved account snapshot. Your browser records have not changed.</p><div class="actions">${button("Cancel", "close-dialog", "", "quiet")}</div>`, "", context);
+  // Described, not announced: this paragraph is rendered with the dialog, and a live region
+  // announces a change to content it already exposes, not content it appears with. As role="status"
+  // it promised an announcement that could never fire. A dialog's description is read on entering it.
+  openModal("Checking account workspace", `<p id="snapshot-progress">Reading the saved account snapshot. Your browser records have not changed.</p><div class="actions">${button("Cancel", "close-dialog", "", "quiet")}</div>`, "", context);
+  describeDialog("snapshot-progress");
   const current = () => dialog.open && modalContext === context && context.accountEpoch === accountEpoch;
   try {
     const stored = await accountWorkspace.read(context.accountId);
@@ -1131,14 +1151,21 @@ async function prepareAccountWorkspace(mode) {
       workspaceRestorePreview({ workspace: stored.payload, format: `Account snapshot, revision ${stored.revision}`, exportedAt: stored.updatedAt },
         account.state.user.email, context.expectedSource, { ...context, revision: stored.revision });
     } else {
-      openModal("Save workspace to account", `<p>This saves the current browser workspace, <strong>${esc(workspace.name)}</strong>, to <strong>${esc(account.state.user.email)}</strong>.</p>
-        <p>${stored.payload ? `This replaces the account snapshot <strong>${esc(stored.payload.name)}</strong> (revision ${stored.revision}). Other browsers must restore the new snapshot to use it.` : "This account has no saved workspace yet."}</p>
+      openModal("Save workspace to account", `<p id="snapshot-target">This saves the current browser workspace, <strong>${esc(workspace.name)}</strong>, to <strong>${esc(account.state.user.email)}</strong>.</p>
+        <p id="snapshot-consequence">${stored.payload ? `This replaces the account snapshot <strong>${esc(stored.payload.name)}</strong> (revision ${stored.revision}). Other browsers must restore the new snapshot to use it.` : "This account has no saved workspace yet."}</p>
         <p>Only workspace metadata is included. Dataset contents, model weights, and temporary review text stay on this device. Browser edits after this save will stay local.</p>
         ${formFooter("Save account snapshot")}`, "account-workspace-save", { ...context, revision: stored.revision });
-      dialog.querySelector('[type="submit"]').focus();
+      // This dialog replaces the progress dialog in the element already open, so a screen reader
+      // does not re-enter it: without moving focus to the title, all that is announced is "Save
+      // account snapshot, button" -- not which account, not that it replaces an existing snapshot
+      // other browsers depend on. The two sibling previews focus their title for the same reason.
+      describeDialog("snapshot-target", "snapshot-consequence");
+      focusDialogTitle();
     }
   } catch (error) {
     if (!current()) return;
+    // role="alert" is the one live role announced on appearance, so this reaches the reader even
+    // though it arrives with the dialog. Do not turn it into a description.
     openModal("Account workspace unavailable", `<p role="alert">${esc(error.message)}</p><p>Your browser workspace has not changed. Close this dialog and try the account controls again.</p>${button("Close", "close-dialog", "", "quiet")}`);
     dialog.querySelector('[data-action="close-dialog"]').focus();
   }

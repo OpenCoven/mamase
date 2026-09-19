@@ -184,3 +184,87 @@ test("an account restore preview cannot replace edits saved by another local tab
   await f.page.locator('#dialog .form-error:not([hidden])').waitFor();
   assert.equal(await localName(f.page), "New local edit");
 });
+
+// What a screen reader is handed by these dialogs. Each one replaces the progress dialog in an
+// element that is already open, which is not entering a dialog: nothing is re-read on its own, and
+// content that arrives with the dialog cannot announce as a live region -- the rule proved in
+// tests/ux-announcements.test.js. So the name has to be focused and the consequence has to be the
+// description. Asserting the rendered text alone would pass while none of it reached anyone.
+const described = (page) => page.evaluate(() => {
+  const dialog = document.querySelector("dialog[open]");
+  return (dialog?.getAttribute("aria-describedby") || "").split(/\s+/).filter(Boolean)
+    .map((id) => document.getElementById(id)?.textContent.replace(/\s+/g, " ").trim()).join(" ");
+});
+const focused = (page) => page.evaluate(() => `${document.activeElement?.tagName}:${document.activeElement?.textContent?.replace(/\s+/g, " ").trim()}`);
+
+test("the save confirmation names the account and the snapshot it replaces, by ear", async (t) => {
+  const f = await fixture(t, "Existing account records");
+  await f.page.getByRole("button", { name: "Save workspace to account", exact: true }).click();
+  await f.page.getByRole("button", { name: "Save account snapshot", exact: true }).waitFor();
+  // Focus on the submit button announced "Save account snapshot, button" and nothing else: not the
+  // account, and not that an existing snapshot other browsers depend on is about to be replaced.
+  assert.equal(await focused(f.page), "H2:Save workspace to account");
+  const description = await described(f.page);
+  assert.match(description, /This saves the current browser workspace, Browser records, to member@example\.test\./);
+  assert.match(description, /replaces the account snapshot Existing account records \(revision 1\)\. Other browsers must restore/);
+});
+
+test("the first save to an empty account says so rather than naming a replacement", async (t) => {
+  const f = await fixture(t);
+  await f.page.getByRole("button", { name: "Save workspace to account", exact: true }).click();
+  await f.page.getByRole("button", { name: "Save account snapshot", exact: true }).waitFor();
+  const description = await described(f.page);
+  assert.match(description, /This account has no saved workspace yet\./);
+  assert.doesNotMatch(description, /replaces/, "there is nothing to replace; saying so would be false");
+});
+
+test("the account restore preview is read before its confirmation, like any other restore", async (t) => {
+  const f = await fixture(t, "Account records");
+  await f.page.getByRole("button", { name: "Restore account workspace", exact: true }).click();
+  await f.page.locator("#dialog-restore-summary").waitFor();
+  assert.equal(await focused(f.page), "H2:Review workspace restore");
+  assert.match(await described(f.page), /^No changes have been saved\./);
+});
+
+test("the progress dialog is described, not falsely announced, and leaves no stale description", async (t) => {
+  const f = await fixture(t, "Account records");
+  let release; const delayed = new Promise((resolve) => { release = resolve; });
+  await f.page.route("**/api/workspace**", async (route) => { await delayed; await route.continue(); });
+  await f.page.getByRole("button", { name: "Restore account workspace", exact: true }).click();
+  await f.page.locator("#dialog-snapshot-progress").waitFor();
+  // A live region rendered with its dialog never fires. As role="status" this paragraph promised an
+  // announcement that could not happen; it is the dialog's description instead.
+  const progress = f.page.locator("#dialog-snapshot-progress");
+  assert.equal(await progress.getAttribute("role"), null);
+  assert.equal(await progress.getAttribute("aria-live"), null);
+  assert.match(await described(f.page), /^Reading the saved account snapshot\. Your browser records have not changed\.$/);
+  release();
+  await f.page.locator("#dialog-restore-summary").waitFor();
+  assert.doesNotMatch(await described(f.page), /Reading the saved account snapshot/);
+});
+
+test("a dialog that describes nothing carries no description left by the one it replaced", async (t) => {
+  const f = await fixture(t);
+  // The failure dialog sets no description of its own and replaces one that did. Stated precisely,
+  // because it is easy to overclaim here: openModal rewrites the dialog's contents, so a description
+  // left behind points at an element that no longer exists, and a dangling reference is ignored by
+  // assistive technology. Nothing is misread today. What this guards is the attribute itself, so a
+  // later dialog that happens to render an element of the same name cannot inherit a description
+  // written for an earlier one. The assertion is on the attribute for that reason, not on the text.
+  await f.page.route("**/api/workspace**", (route) => route.fulfill({ status: 503, contentType: "application/json", body: JSON.stringify({ error: "The account workspace service is unavailable." }) }));
+  await f.page.getByRole("button", { name: "Save workspace to account", exact: true }).click();
+  await f.page.getByRole("heading", { name: "Account workspace unavailable", exact: true }).waitFor();
+  assert.equal(await f.page.locator("#dialog").getAttribute("aria-describedby"), null);
+});
+
+test("a failed account read interrupts, because an alert is the one role announced on appearance", async (t) => {
+  const f = await fixture(t);
+  await f.page.route("**/api/workspace**", (route) => route.fulfill({ status: 500, contentType: "application/json", body: JSON.stringify({ error: "The account workspace service is unavailable." }) }));
+  await f.page.getByRole("button", { name: "Save workspace to account", exact: true }).click();
+  // Every dialog also carries an always-present hidden .form-error alert; this is the other one.
+  const alert = f.page.locator('#dialog p[role="alert"]:not(.form-error)');
+  await alert.waitFor();
+  assert.match(await alert.textContent(), /unavailable/i);
+  await f.page.getByRole("heading", { name: "Account workspace unavailable", exact: true }).waitFor();
+  assert.equal(await localName(f.page), "Browser records");
+});
