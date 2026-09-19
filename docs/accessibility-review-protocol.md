@@ -240,6 +240,26 @@ clearly distinguish a local save, an account snapshot save, and a local restore.
 Use a synthetic test account and database. Keep any unexecuted snapshot coverage
 separate from the original six-flow acceptance criteria.
 
+Two things about those controls are already settled by the gate, so the session
+need not spend itself re-deriving them. Each of these dialogs replaces the
+progress dialog inside an element that is already open, which is not entering a
+dialog: nothing is re-read on its own, and content arriving with the dialog
+cannot announce as a live region.
+
+- The save confirmation moves focus to its own title and describes itself with
+  the account it writes to and the snapshot it replaces, including the revision.
+  Before that it announced only "Save account snapshot, button" — on the one
+  screen that overwrites a snapshot other browsers depend on.
+- The progress dialog is described rather than announced. It carried a
+  `role="status"` that could never fire, which is the false promise #55 was
+  about; the failure dialog's `role="alert"` does fire, because an alert is the
+  one live role announced on appearance.
+
+What is left for you is the question the gate cannot answer and the section
+above already asks: whether a local save, an account snapshot save, and a local
+restore are **distinguishable by ear** — three similar-sounding confirmations
+with very different consequences.
+
 Copy this receipt into #44 after the session:
 
 ```text
