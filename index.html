@@ -15,7 +15,8 @@
     <div id="app"></div>
     <noscript>Mamasé requires JavaScript to manage your local training workspace.</noscript>
     <dialog id="dialog" aria-labelledby="dialog-title"></dialog>
-    <div id="toast" class="toast" role="status" aria-live="polite" hidden></div>
+    <!-- Both regions stay in the document, empty, at a fixed politeness: a live region announces a change to content it already exposes, not content it appears with. -->
+    <div id="toast" class="toast"><div id="toast-status" role="status" aria-live="polite"></div><div id="toast-alert" class="error" role="alert" aria-live="assertive"></div></div>
     <script type="module" src="./app.js"></script>
   </body>
 </html>

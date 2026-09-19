@@ -24,7 +24,8 @@ import { agentPrompt, handoffFilename } from "./agent-handoff.js";
 
 const app = document.querySelector("#app");
 const dialog = document.querySelector("#dialog");
-const toast = document.querySelector("#toast");
+const toastStatus = document.querySelector("#toast-status");
+const toastAlert = document.querySelector("#toast-alert");
 const theme = window.mamaseTheme;
 const hosted = document.querySelector('meta[name="mamase-runtime"]')?.content === "hosted";
 const account = new AuthClient({ onChange: accountChanged });
@@ -307,6 +308,7 @@ function runDetail(id) {
     ${header(esc(run.name), button("Duplicate recipe", "duplicate-run", "plus", "quiet", `data-id="${run.id}"`), `${workflow === "managed" ? "Local Mac training" : "Terminal workflow"} · ${esc(modelName(run.recipe.student))}`)}
     <div id="run-journey"></div>
     <section class="card local-training-panel run-control" id="local-training-panel" data-run-id="${run.id}" aria-label="Training status"><h2>Loading this run…</h2></section>
+    <p id="live-progress-announcement" class="sr-only" role="status"></p>
     <section class="card run-output" id="run-output-section" ${workspace.artifacts.some((item) => item.runId === id) ? "" : "hidden"}><h2>Saved output</h2><div id="run-artifacts">${runArtifacts(run)}</div></section>
     <section id="run-measurements" aria-label="Training measurements" ${latest || validation ? "" : "hidden"}>
       <div class="metrics three run-metrics">${metric("Learning updates", `<span id="run-step-value">${num(run.step)} / ${num(run.totalSteps)}</span>`, "One update adjusts the adapter's weights.", "runs")}${metric("Training loss", `<span id="run-loss-value">${formatLoss(latest?.loss)}</span>`, "Fit to the examples the model learns from.", "evaluations")}${metric("Holdout loss", `<span id="run-validation-value">${formatLoss(validation?.evalLoss)}</span>`, "Fit to examples kept out of training.", "datasets")}</div>
@@ -480,7 +482,7 @@ function updateTrainingPanel(runId) {
     panel.innerHTML = `<span class="eyebrow">${hosted ? "HOSTED WORKSPACE · NO LOCAL TRAINER" : guide.workflow === "managed" ? "LOCAL TRAINING · MLX / APPLE SILICON" : "TERMINAL TRAINING · EXTERNAL PROCESS"}</span>
       <h2 tabindex="-1">${esc(guide.title)}</h2><p class="run-state-description">${esc(guide.description)}</p>
       ${["ready", "checking", "setup", "busy"].includes(guide.phase) ? `<ul class="launch-checklist"><li><span>${icon("check")}</span><div><strong>Recipe saved</strong><small>${esc(modelName(run.recipe.student))} · ${num(splitCounts(dataset).train)} training examples</small></div></li><li><span>${capability?.available ? icon("check") : icon("local")}</span><div><strong>${loading ? "Checking trainer" : capability?.available ? "Local trainer available" : "Local trainer needs setup"}</strong><small>Model compatibility is checked when the worker opens it.</small></div></li><li><span>${icon("upload")}</span><div><strong>Choose the original file next</strong><small>${esc(dataset.filename)} · ${formatBytes(dataset.bytes)} · no model download</small></div></li></ul>` : ""}
-      ${localJobActive(job) ? `<div class="live-progress"><div><strong id="live-percent"></strong><span id="live-progress-text"></span></div><progress id="live-progress-bar" aria-label="Reported learning updates"></progress><span id="live-progress-announcement" class="sr-only" role="status"></span><p class="help">Percentage of learning updates, not time remaining.</p></div>` : ""}
+      ${localJobActive(job) ? `<div class="live-progress"><div><strong id="live-percent"></strong><span id="live-progress-text"></span></div><progress id="live-progress-bar" aria-label="Reported learning updates"></progress><p class="help">Percentage of learning updates, not time remaining.</p></div>` : ""}
       ${diagnostic ? `<div class="run-warning" role="status"><strong>${trainingSyncErrors.has(runId) ? "Browser save needs attention" : "Details to resolve"}</strong><p>${esc(diagnostic)}</p></div>` : ""}
       ${guide.phase === "setup" ? `<details id="runtime-setup" class="disclosure" open><summary>One-time setup <span>Run in a terminal inside the Mamase folder</span></summary><pre>python3.12 -m venv .venv-training
 .venv-training/bin/python -m pip install -r training/requirements-mlx.txt
@@ -505,15 +507,28 @@ npm run dev</pre><p class="help">Requires Apple Silicon and Python 3.12. Bring a
     progress.max = job.run.totalSteps;
     progress.value = job.run.step;
     progress.setAttribute("aria-valuetext", value);
-    // The visible text above changes on every reported step, which is right to look at and wrong to
-    // listen to: as a live region it queued one announcement per flush -- up to five a second -- and
-    // a screen reader falls behind the run reading a backlog of step counts. Announce each tenth of
-    // the way instead, and on any status change. The exact count stays available on demand through
-    // the progress bar's aria-valuetext, which is read when the user asks for it rather than pushed.
-    const announcement = panel.querySelector("#live-progress-announcement");
-    if (announcement.dataset.milestone !== shown.milestone) {
+  }
+  // The visible text above changes on every reported step, which is right to look at and wrong to
+  // listen to: as a live region it queued one announcement per flush -- up to five a second -- and
+  // a screen reader falls behind the run reading a backlog of step counts. Announce each tenth of
+  // the way instead, and on any status change. The exact count stays available on demand through
+  // the progress bar's aria-valuetext, which is read when the user asks for it rather than pushed.
+  // The region sits outside this panel, which is rebuilt on every state change: a region rebuilt
+  // with its text is new to assistive technology, not changed, and is not spoken -- so the one
+  // status change that matters most, the run stopping, went unannounced while the region lived in
+  // the progress block it removed. What was already true when the page opened is not news either.
+  const announcement = document.querySelector("#live-progress-announcement");
+  if (announcement) {
+    const shown = job ? trainingProgress(job.run.step, job.run.totalSteps, job.status) : trainingProgress(run.step, run.totalSteps, run.status);
+    if (!announcement.dataset.milestone) announcement.dataset.milestone = shown.milestone;
+    else if (announcement.dataset.milestone !== shown.milestone) {
       announcement.dataset.milestone = shown.milestone;
-      announcement.textContent = shown.announcement;
+      const text = shown.announcement + (job?.status === "failed" && job.error ? `. ${job.error}` : "");
+      // A launch or a cancellation is confirmed from a dialog, and the status it causes can arrive
+      // before that dialog has closed. The page behind a modal dialog is inert: a change made there
+      // is dropped, not read later. Hold it until the dialog closes, then say it.
+      if (dialog.open) announcement.dataset.pending = text;
+      else announcement.textContent = text;
     }
   }
   const files = document.querySelector("#run-job-files");
@@ -971,14 +986,22 @@ function persist(next, expectedSource) {
   storageError = "";
 }
 
+// Two regions that are always in the document, each at a fixed politeness. One region that was
+// unhidden with its message, and switched between polite and assertive as it was filled, looked
+// right in the accessibility tree and was never spoken: a live region announces a change to content
+// it already exposes, not content it appears with, and it is queued at the politeness it had when
+// assistive technology registered it, not the one set alongside the message.
 function notify(message, error = false) {
-  toast.textContent = message;
-  toast.classList.toggle("error", error);
-  toast.setAttribute("role", error ? "alert" : "status");
-  toast.setAttribute("aria-live", error ? "assertive" : "polite");
-  toast.hidden = false;
+  const region = error ? toastAlert : toastStatus;
+  (error ? toastStatus : toastAlert).textContent = "";
   clearTimeout(notify.timer);
-  notify.timer = setTimeout(() => { toast.hidden = true; }, error ? 10000 : 4500);
+  clearTimeout(notify.repeat);
+  if (region.textContent === message) {
+    // The same message again is not a change. Clear it, and let the repeat land as one.
+    region.textContent = "";
+    notify.repeat = setTimeout(() => { region.textContent = message; }, 50);
+  } else region.textContent = message;
+  notify.timer = setTimeout(() => { region.textContent = ""; }, error ? 10000 : 4500);
 }
 
 let modalContext;
@@ -998,6 +1021,7 @@ function refindable(element) {
 function openModal(title, body, form = "", context = {}) {
   if (!dialog.open) previousFocus = document.activeElement;
   modalContext = context;
+  dialog.removeAttribute("aria-describedby");
   dialog.classList.toggle("case-review", form === "human-review");
   dialog.innerHTML = `<div class="modal-header"><h2 id="dialog-title">${title}</h2><button type="button" class="icon-button" data-action="close-dialog" aria-label="Close dialog">${icon("close")}</button></div>
     ${form ? `<form data-form="${form}">` : "<div>"}${body}<p class="form-error" role="alert" hidden></p>${form ? "</form>" : "</div>"}`;
@@ -1040,7 +1064,7 @@ function importDialog(title, form, description, context = {}, label = "Import") 
 function progressReportPreview(preview, report, expectedSource) {
   const { additions, duplicates, conflicts } = preview;
   openModal("Review progress report", `
-    <p id="report-summary" role="status">${num(additions.length)} new · ${num(duplicates.length)} duplicates · ${num(conflicts.length)} conflicts</p>
+    <p id="report-summary">${num(additions.length)} new · ${num(duplicates.length)} duplicates · ${num(conflicts.length)} conflicts</p>
     <p>No changes have been saved. Duplicates match recorded evidence or repeat an observation in this file. Original timestamps and journal order are preserved.</p>
     ${conflicts.length ? `<p class="warning">The entire import is blocked. Correct the source report or use a separate run; existing evidence cannot be overwritten.</p><ul>${conflicts.slice(0, 20).map(({ index, message }) => `<li>Observation ${index + 1}: ${esc(message)}</li>`).join("")}</ul>${conflicts.length > 20 ? "<p>Showing the first 20 conflicts.</p>" : ""}` : additions.length ? "<p>Confirm to append only the new observations below.</p>" : "<p>This report contains no new observations. Keeping the existing history will not write to storage, even for a closed run.</p>"}
     ${additions.length ? `${table(["Report row", "Recorded", "Status", "Step", "Loss / validation", "Notes"], additions.slice(0, 20).map(({ index, update }) => [index + 1, esc(update.recordedAt), badge(update.status), `${update.step} / ${update.totalSteps}`, `${update.loss ?? "—"} / ${update.evalLoss ?? "—"}`, esc(update.note) || "—"]), "Proposed progress observations")}${additions.length > 20 ? `<p class="help">Showing the first 20 of ${num(additions.length)} proposed additions.</p>` : ""}` : ""}
@@ -1048,6 +1072,9 @@ function progressReportPreview(preview, report, expectedSource) {
     <div class="actions">${button("Export open workspace", "export-workspace", "download", "small")}${button("Reload workspace", "reload-workspace", "", "small")}</div>
     ${conflicts.length ? `<div class="modal-footer">${button("Cancel", "close-dialog", "", "quiet")}${button("Choose another report", "import-report", "upload", "primary", `data-id="${preview.runId}"`)}</div>` : formFooter(additions.length ? "Import new observations" : "Keep existing history")}`,
   conflicts.length ? "" : "confirm-report", { runId: preview.runId, report, expectedSource });
+  // The summary arrives with the dialog, so as a live region it would say nothing. Entering a dialog
+  // reads its name and description; the description is how the counts are heard before the buttons.
+  dialog.setAttribute("aria-describedby", "dialog-report-summary");
   const title = dialog.querySelector("#dialog-title");
   title.tabIndex = -1;
   title.focus();
@@ -1056,7 +1083,7 @@ function progressReportPreview(preview, report, expectedSource) {
 function workspaceRestorePreview(backup, filename, expectedSource, accountContext = {}) {
   const collections = ["programs", "datasets", "runs", "artifacts", "evaluations"];
   openModal("Review workspace restore", `
-    <p id="restore-summary" role="status">No changes have been saved. This replaces all current workspace metadata, not individual records.</p>
+    <p id="restore-summary">No changes have been saved. This replaces all current workspace metadata, not individual records.</p>
     <dl class="facts"><dt>Source file</dt><dd>${esc(filename)}</dd><dt>Backup format</dt><dd>${esc(backup.format)}</dd><dt>Workspace version</dt><dd>${backup.workspace.version}</dd><dt>Exported at</dt><dd>${backup.exportedAt ? esc(backup.exportedAt) : "Not recorded in a legacy backup"}</dd><dt>Current workspace</dt><dd>${esc(workspace?.name || "Unavailable: stored data needs recovery")}</dd><dt>Replacement workspace</dt><dd>${esc(backup.workspace.name)}</dd></dl>
     ${backup.migration ? '<p class="help">Legacy workspace v1 will be validated and restored as workspace v1. The next export uses the versioned backup envelope; existing lineage and comparisons are retained.</p>' : ""}
     ${table(["Collection", "Current", "Backup"], collections.map((key) => [esc(key), workspace ? num(workspace[key].length) : "Unavailable", num(backup.workspace[key].length)]), "Workspace restore collection counts")}
@@ -1065,6 +1092,7 @@ function workspaceRestorePreview(backup, filename, expectedSource, accountContex
     <div class="actions">${workspace ? button("Export open workspace", "export-workspace", "download", "small") : button("Download stored data", "raw-backup", "download", "small")}${button("Reload workspace", "reload-workspace", "", "small")}</div>
     <label class="check-label"><input name="confirm" type="checkbox" required> I understand this replaces the browser's saved workspace.</label>${formFooter("Restore workspace")}`,
   "confirm-restore", { backup, expectedSource, ...accountContext });
+  dialog.setAttribute("aria-describedby", "dialog-restore-summary");
   const title = dialog.querySelector("#dialog-title");
   title.tabIndex = -1;
   title.focus();
@@ -1685,6 +1713,11 @@ dialog.addEventListener("cancel", (event) => { event.preventDefault(); closeModa
 dialog.addEventListener("close", () => {
   if (!dialog.open) { modalContext = undefined; dialog.replaceChildren(); dialog.classList.remove("case-review"); }
   flushTrainingUpdates();
+  const announcement = document.querySelector("#live-progress-announcement");
+  if (announcement?.dataset.pending) {
+    announcement.textContent = announcement.dataset.pending;
+    delete announcement.dataset.pending;
+  }
 });
 window.addEventListener("pagehide", closeModal);
 render();

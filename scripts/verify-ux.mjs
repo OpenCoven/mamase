@@ -12,6 +12,7 @@ import { MAX_BACKUP_BYTES } from "../backups.js";
 import { verifyReviewUx } from "./verify-review-ux.mjs";
 import { contrastRatio, writeFailureEvidence } from "./ux-evidence.mjs";
 import { auditStructure, assertStructure } from "./ux-structure.mjs";
+import { installAnnouncementRecorder, drainAnnouncements, waitForAnnouncement } from "./ux-announcements.mjs";
 
 const server = createAppServer({ auth: createAuthApi({ env: {} }) });
 server.listen(0, "127.0.0.1");
@@ -546,8 +547,9 @@ try {
       delete window.releasePairedRead;
     }, method);
     await pairedPage.locator("#toast").getByText(/form was closed.*No changes were made/).waitFor();
-    assert.equal(await pairedPage.locator("#toast").getAttribute("role"), "alert");
-    assert.equal(await pairedPage.locator("#toast").getAttribute("aria-live"), "assertive");
+    assert.equal(await pairedPage.locator("#toast-alert").getAttribute("role"), "alert");
+    assert.equal(await pairedPage.locator("#toast-alert").getAttribute("aria-live"), "assertive");
+    await pairedPage.locator("#toast-alert").getByText(/form was closed/).waitFor();
     assert.deepEqual(await stored(pairedPage), beforeInvalid, `Interrupted paired ${method} read must preserve exact workspace`);
     assert.equal(await reportModal.isVisible(), true);
     assert.equal(await reportModal.locator('[type="submit"]').isEnabled(), true);
@@ -1087,9 +1089,101 @@ try {
     }
     await context.close();
   }
+
+  // What assistive technology is handed at the moments docs/accessibility-review-protocol.md asks
+  // about. The structure sweep and the aria snapshots above establish what the tree contains; this
+  // establishes whether a change would be spoken at all, which is decided by whether the region
+  // existed before it changed (scripts/ux-announcements.mjs). Each assertion answers one question
+  // in the protocol, and the first two began as findings: every routine toast was a hidden region
+  // shown with its text, so no save, import or export outcome was ever announced.
+  const heard = await newContext({ viewport: { width: 1440, height: 900 }, colorScheme: "dark" });
+  await heard.addInitScript((workspace) => {
+    if (!localStorage.getItem("mamase.coven-lab.v1")) localStorage.setItem("mamase.coven-lab.v1", JSON.stringify(workspace));
+  }, fixture());
+  await installAnnouncementRecorder(heard);
+  const ear = await heard.newPage();
+  watch(ear);
+
+  // Flow 1: does the screen reader say the name was saved, or only re-read the field?
+  await go(ear, "settings");
+  await drainAnnouncements(ear);
+  await ear.getByLabel("Workspace name", { exact: true }).fill("Heard workspace");
+  await keyboardActivate(ear, ear.getByRole("button", { name: "Save name", exact: true }));
+  const saved = await waitForAnnouncement(ear, /Workspace name saved/);
+  assert.equal(saved.politeness, "polite", "a routine outcome waits its turn; it must not interrupt");
+  // A repeat of the same message is a change nobody can hear unless the region is cleared first.
+  await ear.getByLabel("Workspace name", { exact: true }).fill("Heard workspace again");
+  await keyboardActivate(ear, ear.getByRole("button", { name: "Save name", exact: true }));
+  await waitForAnnouncement(ear, /Workspace name saved/);
+
+  // Flow 2: #recipe-readiness changes as you type. Opening the lab must not announce it, and typing
+  // a run name must announce once -- when what is missing changes -- not once per keystroke.
+  await go(ear, "playground");
+  await ear.getByLabel("Run name", { exact: true }).waitFor();
+  await ear.waitForTimeout(100);
+  const opened = (await drainAnnouncements(ear)).filter((entry) => entry.spoken);
+  assert.deepEqual(opened, [], `opening the lab must announce nothing: ${JSON.stringify(opened.map((entry) => entry.text))}`);
+  await ear.getByLabel("Run name", { exact: true }).pressSequentially("Twenty-four characters!!", { delay: 5 });
+  const typed = (await drainAnnouncements(ear)).filter((entry) => entry.spoken);
+  // Two announcements over twenty-four keystrokes: that the draft is now kept, and what is still
+  // missing once a name is present. Neither may repeat while the field is still being typed into.
+  const perRegion = Object.groupBy(typed, (entry) => entry.id);
+  for (const [id, entries] of Object.entries(perRegion)) {
+    assert.equal(entries.length, 1, `#${id} announced ${entries.length} times while one field was typed into: ${JSON.stringify(entries.map((entry) => entry.text))}`);
+  }
+  assert.match(perRegion["recipe-readiness"]?.[0].text || "", /^Add an objective, a dataset, a base\/student model\.$/,
+    `readiness must name exactly what is still missing: ${JSON.stringify(typed.map((entry) => entry.text))}`);
+
+  // Flows 4 and 6: the preview summaries arrive inside the dialog they describe, so as live regions
+  // they say nothing. What a screen reader reads on entering a dialog is its name and description,
+  // so the description has to be the summary -- read before the confirm button is reached.
+  const described = (page) => page.evaluate(() => {
+    const dialog = document.querySelector("dialog[open]");
+    return (dialog?.getAttribute("aria-describedby") || "").split(/\s+/).filter(Boolean)
+      .map((id) => document.getElementById(id)?.textContent.replace(/\s+/g, " ").trim()).join(" ");
+  });
+  await go(ear, "settings");
+  const heardBackup = await downloaded(ear, ear.getByRole("button", { name: "Export workspace", exact: true }));
+  await ear.getByRole("button", { name: "Restore backup", exact: true }).click();
+  await ear.locator('dialog[open] input[type="file"]').setInputFiles({ name: "heard.json", mimeType: "application/json", buffer: Buffer.from(heardBackup) });
+  await ear.locator("dialog[open]").getByRole("button", { name: "Preview backup", exact: true }).click();
+  await ear.locator("#dialog-restore-summary").waitFor();
+  assert.match(await described(ear), /^No changes have been saved\./, "entering the restore preview must say nothing has been saved yet");
+  await ear.keyboard.press("Escape");
+  await go(ear, "sessions/run-1");
+  await ear.getByRole("button", { name: "Import report", exact: true }).click();
+  await ear.locator("dialog[open]").getByLabel("JSON file", { exact: true }).setInputFiles({
+    name: "heard-report.json", mimeType: "application/json",
+    buffer: Buffer.from(JSON.stringify({ schema: "mamase.run-report.v1", runId: "run-1", updates: [
+      { status: "running", step: 0, totalSteps: 2, loss: null, evalLoss: 2, note: "Heard fixture", recordedAt: new Date().toISOString() },
+    ] })),
+  });
+  await ear.locator("dialog[open]").getByRole("button", { name: "Preview report", exact: true }).click();
+  await ear.locator("#dialog-report-summary").waitFor();
+  assert.match(await described(ear), /^1 new · 0 duplicates · 0 conflicts/, "entering the report preview must read the counts");
+  await ear.keyboard.press("Escape");
+
+  // Errors interrupt; routine messages wait. The cross-tab conflict is the error every flow can hit,
+  // and it must arrive at the politeness assistive technology registered for the region -- not one
+  // switched on alongside the message, which is queued as whatever the region was before.
+  await go(ear, "settings");
+  await drainAnnouncements(ear);
+  const elsewhere = await heard.newPage();
+  await go(elsewhere, "settings");
+  await elsewhere.getByLabel("Workspace name", { exact: true }).fill("Changed elsewhere");
+  await elsewhere.getByRole("button", { name: "Save name", exact: true }).click();
+  const conflict = await waitForAnnouncement(ear, /changed in another tab/);
+  assert.equal(conflict.politeness, "assertive", "a conflict must interrupt");
+  await ear.getByLabel("Workspace name", { exact: true }).fill("Overwrite attempt");
+  await keyboardActivate(ear, ear.getByRole("button", { name: "Save name", exact: true }));
+  const refused = await waitForAnnouncement(ear, /changed while you were editing/);
+  assert.equal(refused.politeness, "assertive", "a refused save is an error and must interrupt at the politeness the region already had");
+  await elsewhere.close();
+  await heard.close();
+
   assert.deepEqual(errors, []);
   assert.deepEqual(external, []);
-  console.log(`UX end-to-end passed: ${layouts} responsive layouts, ${contrastChecks} contrast assertions, ${structures} route structure sweeps (headings, Tab-stop names, focus indicators, landmarks), skip-link and dialog focus return, light/dark/system non-color cues and keyboard core actions, interrupted paired text/digest recovery, read-only preflight instructions, recoverable drafts, report previews and no-op replay, atomic import/restore recovery, versioned and legacy private-summary backups, independent appearance, paired-report lineage and regression review, matching CSV exports, guarded comparisons and loss accessibility. Human assistive-technology review was NOT executed.`);
+  console.log(`UX end-to-end passed: ${layouts} responsive layouts, ${contrastChecks} contrast assertions, ${structures} route structure sweeps (headings, Tab-stop names, focus indicators, landmarks), skip-link and dialog focus return, light/dark/system non-color cues and keyboard core actions, interrupted paired text/digest recovery, read-only preflight instructions, recoverable drafts, report previews and no-op replay, atomic import/restore recovery, versioned and legacy private-summary backups, independent appearance, paired-report lineage and regression review, matching CSV exports, guarded comparisons and loss accessibility, and whether save, conflict, readiness and preview outcomes would be spoken. Human assistive-technology review was NOT executed.`);
 } catch (error) {
   if (process.env.MAMASE_UX_EVIDENCE) {
     try { await writeFailureEvidence(process.env.MAMASE_UX_EVIDENCE, currentPage, layouts); }

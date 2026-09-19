@@ -46,6 +46,7 @@ certification, performance benchmark, or security assessment.
 | 9 | High | The chart ignored validation loss entirely, including runs with validation-only observations. | Both loss series are rendered with distinct color and line style. Missing series are labeled, zero remains a real observation, the latest validation loss is summarized, and an accessible table exposes exact values. |
 | 12 | High | A scripted keyboard-only pass over the six core flows found that every form submission that did not navigate left focus on `<body>`: the toast announced the outcome, so nothing on screen revealed it, but the keyboard returned to the first Tab stop — nineteen of them from the settings form. | `submitForm` records a re-findable selector for the control the keyboard was on and restores it once the page is rebuilt: a dialog returns to the control that opened it, an in-page form to its own submit button, and anything else to `#main`. Pinned in `scripts/verify-ux.mjs` for both shapes. |
 | 13 | Medium | Training progress was a polite live region updated once per reported step, throttled to 200ms — up to five queued announcements a second, so a screen reader reads a backlog instead of the run. | Shown and announced are now separate: `#live-progress-text` still changes every step and is no longer a live region, `#live-progress-announcement` announces each tenth of the way and on any status change, and the exact count stays on demand through the progress bar's `aria-valuetext`. Over a 500-step run this is 11 announcements instead of 501, measured in `tests/training-state.test.js`. |
+| 14 | High | Applying the rule that decides whether a live region is spoken — it must exist and be exposed before its content changes — showed that every routine toast was a hidden region shown with its text, and switched between polite and assertive as it was filled: "Workspace name saved", "Recipe saved", every import and export outcome, was rendered and never announced. The run-status region lived inside the panel that is rebuilt on every state change and vanished with the progress block, so a run completing, failing or being cancelled was never announced either; and the cancelled status arrived while the confirmation dialog was still open, into an inert page. The playground rebuilt its status line with "Reply complete" in it. The two preview dialogs' summaries were live regions rendered with the dialog, which announces nothing. | Toasts are two always-present regions at a fixed politeness, emptied rather than hidden, with a repeat cleared and re-set so it is heard. The run-status region is part of the run page, outside the rebuilt panel, records what was already true when the page opened as a baseline rather than news, announces every milestone and status change including the terminal ones, and holds an announcement made behind a modal dialog until it closes. The playground says the outcome into the existing region and rebuilds one task later. The preview summaries are the dialogs' accessible descriptions, read on entering. `scripts/ux-announcements.mjs` applies the rule in both gates; `tests/ux-announcements.test.js` proves it. |
 | 10 | High | At 320x568 the overview headline overlapped its action row even though the document itself reported no vertical overflow. Valid unbroken model/objective text could also widen run details to over 21,000px. | Very short screens reflow into a scrollable overview; long prose wraps safely. Ordinary viewport-bounded layouts remain intact. Short drawers scroll naturally. Wide tables remain keyboard-scrollable, with correctly contained screen-reader-only action headings. |
 | 11 | High | Cross-tab conflict feedback disappeared after a temporary toast, leaving stale forms with no persistent recovery path. | A persistent warning preserves form DOM and offers export/reload recovery. Reload requires confirmation; stale saves still fail without overwriting newer data. |
 
@@ -150,6 +151,20 @@ sweep runs — so each check is shown to fail on the defect it names, and to sta
 quiet on the lookalikes that are not defects: a disabled button, a hidden
 heading, `tabindex="0"`, a bypass link that reveals itself by moving, and a page
 that never styled focus and so keeps the browser's own ring.
+
+Structure is what the tree contains. Whether a change to it is spoken is a
+separate question with one answer: a live region is announced when its content
+changes after the region is already exposed, and role="alert" is announced on
+appearance. `scripts/ux-announcements.mjs` records every live-region change in
+the gate with that verdict and the reason when it would be silent, and the two
+gates assert it at the moments the review protocol asks about — a save, a
+conflict, readiness while typing, the two previews, a run starting, ending,
+cancelled and failed, a playground reply completing. It found that the toast,
+the run's terminal status, the playground outcome and the preview summaries were
+all rendered and none of them spoken (finding 14). The rule is proved by
+`tests/ux-announcements.test.js` against pages built to contain each shape of
+change, including the one the tree cannot distinguish: the same id, in the same
+place, with the same role, removed and recreated with new text.
 
 The suite exercises 127 responsive layout cases across dark/light appearance
 and 1440x900, 1024x768, 390x844, 320x640, 320x568, and 844x390 viewports. It checks

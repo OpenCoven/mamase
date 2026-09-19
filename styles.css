@@ -564,8 +564,11 @@ dialog p.muted { font-size: 12px; }
 dialog pre { max-height: 55vh; overflow: auto; padding: 18px; border: 1px solid var(--line); border-radius: 6px; background: var(--subtle); white-space: pre-wrap; overflow-wrap: anywhere; }
 .check-label { display: flex; align-items: start; gap: 10px; font-size: 12px; }
 input[type="checkbox"] { accent-color: var(--indigo); width: 17px; height: 17px; flex-shrink: 0; }
-.toast { position: fixed; bottom: 24px; left: 50%; transform: translateX(-50%); z-index: 100; padding: 12px 16px; width: max-content; max-width: calc(100% - 32px); background: var(--surface); color: var(--ink); border: 1px solid var(--field-border); border-radius: 8px; box-shadow: var(--glass-raised-shadow); font-size: 12px; }
-.toast.error { background: var(--danger-surface); color: var(--danger-ink); border-color: var(--danger-ink); }
+.toast { position: fixed; bottom: 24px; left: 50%; transform: translateX(-50%); z-index: 100; width: max-content; max-width: calc(100% - 32px); font-size: 12px; }
+.toast > div { padding: 12px 16px; background: var(--surface); color: var(--ink); border: 1px solid var(--field-border); border-radius: 8px; box-shadow: var(--glass-raised-shadow); }
+.toast > .error { background: var(--danger-surface); color: var(--danger-ink); border-color: var(--danger-ink); }
+/* Empty, an announcement region takes no space but stays in the accessibility tree; display: none would remove it, and its next message with it. */
+.toast > div:empty { padding: 0; border: 0; box-shadow: none; }
 .mobile-header, .menu-scrim { display: none; }
 .collapsed { --sidebar: 70px; }
 .collapsed .brand { display: none; }

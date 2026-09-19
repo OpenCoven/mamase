@@ -263,6 +263,13 @@ export class ModelPlayground {
     } finally {
       this.busy = false;
       this.controller = null;
+      // Say the outcome into the status region that exists, and give assistive technology a task to
+      // see the change before the panel is rebuilt: a region rebuilt with its text is new to it, not
+      // changed, and is not spoken -- and a change made in the same tick as the rebuild is gone before
+      // it is processed. "Generating..." reached the reader through updateReply; "Reply complete",
+      // "Generation stopped." and "Generation failed" arrive here.
+      if (this.turns[index] === turn) this.updateReply(index);
+      await new Promise((resolve) => setTimeout(resolve, 0));
       this.render();
       if (this.active) await this.load();
     }
